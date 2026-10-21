@@ -43,3 +43,6 @@ litestream.yml
 # --- local Claude Code state ---
 .claude/settings.local.json
 .mcp.json
+
+# --- agent workflow scratch (task briefs, review packages) ---
+.superpowers/
