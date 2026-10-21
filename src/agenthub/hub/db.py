@@ -241,6 +241,27 @@ MIGRATIONS: list[str] = [
         UNIQUE (intent_a, intent_b)
     );
     """,
+    # 5: several agents per task, each with an operator-written role and a stage
+    """
+    CREATE TABLE task_agents (
+        task_id       INTEGER NOT NULL REFERENCES tasks(id),
+        agent_id      TEXT NOT NULL REFERENCES agents(id),
+        role          TEXT NOT NULL DEFAULT '',
+        stage         TEXT NOT NULL CHECK (stage IN ('works', 'reviews')),
+        budget        TEXT NOT NULL,
+        finished_at   TEXT,
+        verdict       TEXT CHECK (verdict IN ('approve', 'changes')),
+        verdict_notes TEXT NOT NULL DEFAULT '',
+        paused_until  TEXT,
+        added_by      TEXT NOT NULL,
+        added_at      TEXT NOT NULL,
+        PRIMARY KEY (task_id, agent_id)
+    );
+    CREATE INDEX task_agents_agent ON task_agents(agent_id);
+    INSERT INTO task_agents (task_id, agent_id, role, stage, budget, added_by, added_at)
+        SELECT id, assignee, '', 'works', budget, 'migration', updated_at FROM tasks WHERE assignee IS NOT NULL;
+    UPDATE tasks SET assignee = NULL;
+    """,
 ]
 
 

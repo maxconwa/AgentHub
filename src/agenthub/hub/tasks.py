@@ -84,16 +84,23 @@ def normalize_budget(budget: dict[str, Any] | None, defaults: dict[str, Any] | N
 
 
 _SELECT = (
-    "SELECT t.*, a.name AS assignee_name, c.name AS created_by_name, ap.status AS approval_status, "
+    "SELECT t.*, c.name AS created_by_name, ap.status AS approval_status, "
     "(SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id) AS run_count FROM tasks t "
-    "LEFT JOIN agents a ON a.id = t.assignee LEFT JOIN agents c ON c.id = t.created_by "
+    "LEFT JOIN agents c ON c.id = t.created_by "
     "LEFT JOIN approvals ap ON ap.id = t.approval_id "
 )
 
 
-def _row(row: sqlite3.Row) -> dict[str, Any]:
-    out = dict(row)
+# Columns still in the table but superseded; never exposed on task dicts.
+_LEGACY_COLUMNS = ("assignee",)
+
+
+def _row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    from agenthub.hub import task_agents  # task_agents imports this module
+
+    out = {k: v for k, v in dict(row).items() if k not in _LEGACY_COLUMNS}  # membership: task_agents
     out["budget"] = json.loads(out["budget"])
+    out["agents"] = task_agents.list_agents(conn, out["id"])
     return out
 
 
@@ -101,7 +108,7 @@ def get_task(conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
     row = conn.execute(_SELECT + "WHERE t.id = ?", (task_id,)).fetchone()
     if row is None:
         raise NotFound(f"no task {task_id}")
-    return _row(row)
+    return _row(conn, row)
 
 
 def list_tasks(
@@ -109,7 +116,7 @@ def list_tasks(
     *,
     projects: list[str] | None,
     state: str | None = None,
-    assignee: str | None = None,
+    agent: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     sql = _SELECT + "WHERE 1 = 1 "
@@ -124,21 +131,12 @@ def list_tasks(
             raise Invalid(f"unknown task state {state!r}")
         sql += "AND t.state = ? "
         params.append(state)
-    if assignee is not None:
-        sql += "AND t.assignee = ? "
-        params.append(assignee)
+    if agent is not None:
+        sql += "AND EXISTS (SELECT 1 FROM task_agents ta WHERE ta.task_id = t.id AND ta.agent_id = ?) "
+        params.append(agent)
     sql += "ORDER BY t.id LIMIT ?"
     params.append(limit)
-    return [_row(r) for r in conn.execute(sql, params)]
-
-
-def _resolve_assignee(conn: sqlite3.Connection, assignee: str | None, project: str) -> str | None:
-    if assignee is None:
-        return None
-    agent = find_agent(conn, assignee)
-    if agent.status != "active" or project not in agent.allowed_projects:
-        raise Invalid(f"agent {assignee!r} is not an active member of project {project!r}")
-    return agent.id
+    return [_row(conn, r) for r in conn.execute(sql, params)]
 
 
 def create_task(
@@ -149,6 +147,7 @@ def create_task(
     title: str,
     body: str = "",
     assignee: str | None = None,
+    role: str = "",
     budget: dict[str, Any] | None = None,
     budget_defaults: dict[str, Any] | None = None,
     state: str = "open",
@@ -160,19 +159,22 @@ def create_task(
         raise Invalid(f"tasks cannot be created in state {state!r}")
     if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone():
         raise NotFound(f"no project {project!r}")
-    assignee_id = _resolve_assignee(conn, assignee, project)
     ts = now_iso()
     cur = conn.execute(
-        "INSERT INTO tasks (project, title, body, created_by, assignee, state, budget, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (project, title, body, actor, assignee_id, state,
+        "INSERT INTO tasks (project, title, body, created_by, state, budget, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (project, title, body, actor, state,
          json.dumps(normalize_budget(budget, budget_defaults)), ts, ts),
     )
     task_id = cur.lastrowid
     events.emit(
         conn, type="task.created", actor=actor, project=project, device=device,
-        payload={"task_id": task_id, "title": title, "body": body, "state": state, "assignee": assignee_id},
+        payload={"task_id": task_id, "title": title, "body": body, "state": state},
     )
+    if assignee is not None:
+        from agenthub.hub import task_agents
+
+        task_agents.add_agent(conn, task_id, assignee, role=role, stage="works", actor=actor)
     return get_task(conn, task_id)
 
 
@@ -217,24 +219,35 @@ def transition(
     return get_task(conn, task_id)
 
 
-def assign(conn: sqlite3.Connection, task_id: int, assignee: str | None, *, actor: str) -> dict[str, Any]:
-    """Operator (or approved reassignment) sets the assignee.
+def assign(
+    conn: sqlite3.Connection, task_id: int, agent: str | None, *, actor: str, role: str = ""
+) -> dict[str, Any]:
+    """Operator (or approved reassignment) makes ``agent`` the only ``works`` agent.
 
-    A task that was already claimed goes back to ``open`` for the new assignee,
-    so the runner's "open and assigned to me" launch check applies afresh.
+    Other ``works`` agents are removed and reviewers stay. A task that was already
+    claimed goes back to ``open`` for the new agent, so the runner's launch check
+    applies afresh. ``agent=None`` just clears the ``works`` agents.
     """
+    from agenthub.hub import task_agents
+
     task = get_task(conn, task_id)
     if task["state"] in TERMINAL:
         raise Conflict(f"task {task_id} is {task['state']}")
-    assignee_id = _resolve_assignee(conn, assignee, task["project"])
+    target = find_agent(conn, agent) if agent is not None else None
+    for m in task["agents"]:
+        if m["stage"] == "works" and (target is None or m["agent_id"] != target.id):
+            task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor)
+    if target is not None:
+        if task_agents.member(task, target.id):
+            task_agents.update_agent(conn, task_id, target.id, actor=actor, role=role, stage="works")
+        else:
+            task_agents.add_agent(conn, task_id, target.id, role=role, stage="works", actor=actor)
     state = "open" if task["state"] in ("claimed", "in_progress", "blocked") else task["state"]
-    conn.execute(
-        "UPDATE tasks SET assignee = ?, state = ?, updated_at = ? WHERE id = ?",
-        (assignee_id, state, now_iso(), task_id),
-    )
+    conn.execute("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?", (state, now_iso(), task_id))
     events.emit(
         conn, type="task.assigned", actor=actor, project=task["project"],
-        payload={"task_id": task_id, "assignee": assignee_id, "from_state": task["state"], "state": state},
+        payload={"task_id": task_id, "agent_id": target.id if target else None,
+                 "from_state": task["state"], "state": state},
     )
     return get_task(conn, task_id)
 
