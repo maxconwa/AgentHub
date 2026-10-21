@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<form class="filters" method="get" action="/ui/search">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search messages, tasks, approvals…" maxlength="500" autofocus>
+  <button type="submit">Search</button>
+</form>
+{% if q %}<p class="muted">{{ results|length }} result{{ '' if results|length == 1 else 's' }}</p>{% endif %}
+<ul class="events">{% for e in results %}{% include "_event_row.html" %}{% endfor %}</ul>
+{% endblock %}

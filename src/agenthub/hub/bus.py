@@ -71,10 +71,20 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
 
 
 class EventBus:
-    def __init__(self, connect: Callable[[], sqlite3.Connection], poll_seconds: float = 0.5) -> None:
+    def __init__(
+        self,
+        connect: Callable[[], sqlite3.Connection],
+        poll_seconds: float = 0.5,
+        *,
+        render_for_operator: Callable[[dict[str, Any], dict[str, str]], str] | None = None,
+        notifier: Any = None,
+    ) -> None:
         self._connect = connect
         self.poll_seconds = poll_seconds
+        self.render_for_operator = render_for_operator
+        self.notifier = notifier
         self._sockets: dict[str, set[Socket]] = defaultdict(set)
+        self._operators: set[Socket] = set()
         self._task: asyncio.Task | None = None
         self._last_id = 0
 
@@ -95,6 +105,12 @@ class EventBus:
             sockets.discard(socket)
             if not sockets:
                 del self._sockets[agent_id]
+
+    def add_operator(self, socket: Socket) -> None:
+        self._operators.add(socket)
+
+    def remove_operator(self, socket: Socket) -> None:
+        self._operators.discard(socket)
 
     async def close_agent(self, agent_id: str, code: int = CLOSE_REVOKED, reason: str = "revoked") -> None:
         for socket in list(self._sockets.pop(agent_id, ())):
@@ -118,6 +134,9 @@ class EventBus:
                 await self._task
         for agent_id in list(self._sockets):
             await self.close_agent(agent_id, code=1001, reason="hub shutting down")
+        for socket in list(self._operators):
+            with contextlib.suppress(Exception):
+                await socket.close(code=1001, reason="hub shutting down")
 
     async def _run(self) -> None:
         while True:
@@ -133,10 +152,18 @@ class EventBus:
         try:
             rows = conn.execute("SELECT * FROM events WHERE id > ? ORDER BY id LIMIT 500", (self._last_id,)).fetchall()
             deliveries: list[tuple[str, dict[str, Any]]] = []
+            operator_rows: list[dict[str, Any]] = []
             revoked: list[str] = []
+            names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")} if rows else {}
             for row in rows:
                 event = row_to_event(row)
                 self._last_id = event["id"]
+                if self.notifier is not None:
+                    self.notifier.submit(event, names)
+                if self._operators and self.render_for_operator is not None:
+                    operator_rows.append({"type": "event", "id": event["id"], "event_type": event["type"],
+                                          "project": event["project"], "actor": event["actor"],
+                                          "html": self.render_for_operator(event, names)})
                 if event["type"] == "agent.revoked":
                     revoked.append(event["payload"]["agent_id"])
                     continue
@@ -150,6 +177,13 @@ class EventBus:
             await self.close_agent(agent_id)
         for agent_id, message in deliveries:
             await self.send(agent_id, message)
+        for message in operator_rows:
+            data = json.dumps(message)
+            for socket in list(self._operators):
+                try:
+                    await socket.send_text(data)
+                except Exception:  # noqa: BLE001
+                    self._operators.discard(socket)
         return len(rows)
 
     async def send(self, agent_id: str, message: dict[str, Any]) -> None:

@@ -12,3 +12,17 @@ operators = ["operator@example.com"]
 whois_cache_seconds = 30
 tailscale_bin = "tailscale"
 max_body_bytes = 65536
+
+# The hub's tailnet URL; used for links in phone notifications.
+public_url = "https://HUB-NODE.YOUR-TAILNET.ts.net"
+
+# ntfy push notifications for new approvals, agent replies, and tasks reaching
+# review/blocked. Leave ntfy_url empty to disable.
+# ntfy.sh topics are public to anyone who knows the name: use a long random
+# topic, or better a self-hosted / access-controlled server with a token.
+ntfy_url = "https://ntfy.sh"
+ntfy_topic = "agenthub-REPLACE-WITH-A-LONG-RANDOM-STRING"
+ntfy_token_file = ""            # e.g. /home/HUB_USER/.config/agenthub/ntfy.token (mode 0600)
+# Notifications go to a third party, so by default they carry only the
+# approval id, kind and requester, never commands or task text.
+ntfy_include_details = false

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_macros.html" import approval_summary, chip, agent_text %}
+{% block title %}Approval #{{ a.id }}{% endblock %}
+{% block content %}
+{% set d = a.details %}
+<p><a href="/ui/approvals">← Approvals</a></p>
+<h1>#{{ a.id }} {{ a.kind.replace('_', ' ') }} {{ chip(a.status) }}</h1>
+<p class="muted">Requested by <strong>{{ a.requester_name or a.requester }}</strong>{% if a.project %} in {{ a.project }}{% endif %} · {{ ago(a.created_at) }}</p>
+
+<section class="panel">
+  <div class="summary big">{{ approval_summary(a) }}</div>
+  {% if a.kind == 'command' %}
+    <dl><dt>Directory</dt><dd><code>{{ d.cwd }}</code></dd>
+    <dt>Effect</dt><dd>If approved, this exact command may run once, from this directory, within an hour.</dd></dl>
+  {% elif a.kind == 'tool_permission' %}
+    <dl><dt>Task</dt><dd>{% if task %}<a href="/ui/tasks/{{ task.id }}">#{{ task.id }} {{ task.title }}</a>{% else %}#{{ d.task_id }}{% endif %}</dd>
+    <dt>Tool input</dt><dd><div class="pre">{{ d.input | tojson(indent=2) }}</div></dd>
+    <dt>Effect</dt><dd>The paused headless session may make this exact call once.</dd></dl>
+  {% elif a.kind == 'budget_exceeded' %}
+    <dl><dt>Task</dt><dd>{% if task %}<a href="/ui/tasks/{{ task.id }}">#{{ task.id }} {{ task.title }}</a>{% endif %}</dd>
+    <dt>Limit</dt><dd>{{ d.limit.replace('_', ' ') }}: {{ d.current }} → <strong>{{ d.extend_to }}</strong> if approved</dd>
+    <dt>Used so far</dt><dd>{{ d.used.runs }} runs · {{ d.used.turns }} turns · {{ d.used.wall_clock_minutes }} min</dd></dl>
+  {% elif a.kind == 'task_create' %}
+    {% if task %}<p><a href="/ui/tasks/{{ task.id }}">Open task #{{ task.id }}</a></p>{{ agent_text(task.title ~ "\n\n" ~ task.body, task.created_by, names) }}{% endif %}
+  {% elif a.kind == 'agent_enrollment' %}
+    <dl><dt>Device</dt><dd>{{ d.device.name }} ({{ d.device.ip }})</dd><dt>Projects</dt><dd>{{ d.projects | join(', ') or 'none' }}</dd></dl>
+  {% endif %}
+  {% if a.reason %}{{ agent_text(a.reason, a.requester, names) }}{% endif %}
+  <details><summary>Raw details</summary><div class="pre">{{ d | tojson(indent=2) }}</div></details>
+</section>
+
+<h2>Discussion</h2>
+{% include "_thread.html" %}
+{% if a.status == 'pending' %}
+<form class="chat" method="post" action="/ui/approvals/{{ a.id }}/discuss"
+      hx-post="/ui/approvals/{{ a.id }}/discuss" hx-target="#thread" hx-swap="outerHTML" data-reset>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="body" rows="2" maxlength="4000" required placeholder="Ask {{ a.requester_name or 'the agent' }} something before deciding…"></textarea>
+  <button type="submit">Send</button>
+</form>
+
+<h2>Decision</h2>
+<form class="decide" method="post" action="/ui/approvals/{{ a.id }}/decide">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="note" rows="2" maxlength="2000" placeholder="Optional note for the agent"></textarea>
+  <div class="buttons">
+    <button class="approve" type="submit" name="decision" value="approve">Approve</button>
+    <button class="reject" type="submit" name="decision" value="reject">Reject</button>
+  </div>
+</form>
+{% else %}
+<p class="muted">Decided by {{ a.decided_by }} {{ ago(a.decided_at) }}{% if a.decision_note %}: “{{ a.decision_note }}”{% endif %}</p>
+{% endif %}
+{% endblock %}

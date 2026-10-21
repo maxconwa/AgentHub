@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chip %}
+{% block title %}Agents{% endblock %}
+{% block content %}
+<h1>Agents</h1>
+{% if new_code %}
+<section class="panel highlight">
+  <h3>Enrollment code</h3>
+  <p class="code">{{ new_code.code }}</p>
+  <p class="muted small">Valid for 15 minutes, single use{% if new_code.projects %}, projects: {{ new_code.projects | join(', ') }}{% endif %}. It won't be shown again. On the agent machine, as the agent user:</p>
+  <div class="pre">agenthub join &lt;hub-url&gt; --code {{ new_code.code }} --name &lt;agent-name&gt;</div>
+</section>
+{% endif %}
+<details class="panel">
+  <summary>Enroll a new agent</summary>
+  <form class="stack" method="post" action="/ui/agents/enroll">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Projects (comma-separated) <input name="projects" list="project-names" placeholder="e.g. webapp"></label>
+    <datalist id="project-names">{% for p in projects %}<option value="{{ p.name }}">{% endfor %}</datalist>
+    <button type="submit">Create code</button>
+  </form>
+</details>
+<ul class="cards">
+  {% for ag in agents %}
+  <li class="card">
+    <div class="row"><strong>{{ ag.name }}</strong>{{ chip(ag.status) }}</div>
+    <div class="row muted"><span><span class="dot {{ 'on' if connected.get(ag.id) else 'off' }}"></span>{{ 'connected' if connected.get(ag.id) else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</span></div>
+    <div class="muted small">{{ ag.device.name }} · {{ ag.id }}</div>
+    {% if ag.status != 'revoked' %}
+    <form class="inline" method="post" action="/ui/agents/{{ ag.id }}/projects">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input name="projects" value="{{ ag.allowed_projects | join(', ') }}" aria-label="Projects for {{ ag.name }}">
+      <button type="submit">Save projects</button>
+    </form>
+    <div class="buttons">
+      {% if ag.status == 'pending' %}
+      <form method="post" action="/ui/agents/{{ ag.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="approve" type="submit">Approve</button></form>
+      {% endif %}
+      <details class="danger"><summary>Revoke…</summary>
+        <form method="post" action="/ui/agents/{{ ag.id }}/revoke" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input name="confirm" placeholder="type {{ ag.name }}" aria-label="Type the agent name to confirm" required>
+          <button class="reject" type="submit">Revoke</button>
+        </form>
+      </details>
+    </div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% if not agents %}<p class="empty">No agents yet. Enroll one above.</p>{% endif %}
+{% endblock %}

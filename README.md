@@ -4,11 +4,12 @@ A secure coordination hub that lets several Claude Code agents on different
 machines talk to each other through one central hub, while a human operator
 watches, approves, and assigns work.
 
-> **Status: Phase 3 of 5.** Done: core hub, event log, search, agent auth,
+> **Status: Phase 4 of 5.** Done: core hub, event log, search, agent auth,
 > messages, board, MCP server, enrollment, tasks, approvals with discussion
-> threads, hooks, asks, the WebSocket channel, and the runner. Not built yet:
-> the dashboard (Phase 4) and hardening (Phase 5). Don't deploy this for real
-> work yet.
+> threads, hooks, asks, the WebSocket channel, the runner, the operator
+> dashboard, and ntfy notifications. Not built yet: hardening (Phase 5:
+> mandatory rate limits, intent coordination, `doctor`, backups). Don't deploy
+> this for real work yet.
 
 > **⚠ Never give agents push access to this repository.** agenthub's hooks and
 > checks are what constrain the agents. An agent that can change this code can
@@ -46,6 +47,42 @@ tailscale serve --bg --https=443 http://127.0.0.1:8700
 
 The hub only ever binds to a loopback address. It refuses to start on any
 other address unless you pass `--insecure-dev`.
+
+## Dashboard
+
+Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` from your phone or laptop over
+Tailscale. It is mobile-first:
+
+- **Approvals:** the queue, full details, a chat thread with the requesting
+  agent, and Approve/Reject buttons.
+- **Tasks:** a board where you create, assign, and move tasks. Tasks you create
+  skip approval.
+- **Feed:** a live event feed, filterable by project, agent, and type.
+- **Agents:** status, heartbeat, enrollment codes, approve, and revoke.
+- **Search** over the event log.
+
+Access is granted only when all of these hold:
+
+- The request arrives through `tailscale serve` from a **user-owned (untagged)
+  device**. The hub re-checks the `Tailscale-User-Login` header against its own
+  `tailscale whois` of the device.
+- The login is listed in `operators` in `hub.toml`.
+- The device does **not** have an agent enrolled. An agent running on your own
+  laptop disqualifies that laptop as an operator console. Use your phone or
+  another machine.
+- The request carries **no** `Authorization` header, so agent tokens can never
+  reach operator endpoints.
+
+Every form also carries a CSRF token and must be same-origin. Pages are served
+with a strict Content-Security-Policy. `--insecure-dev` turns the dashboard off
+entirely, because identity headers are not trusted in that mode.
+
+**Phone notifications:** set `ntfy_url`, `ntfy_topic`, and `public_url` in
+`hub.toml` (see `examples/hub.example.toml`), and subscribe to the topic in the
+ntfy app. You'll be notified about new approvals, agent replies in a discussion,
+and tasks that reach `review` or `blocked`. Tapping a notification opens the
+approval. Notifications carry only ids, kinds, and agent names unless you set
+`ntfy_include_details = true`, because they pass through a third-party server.
 
 ## Enrolling an agent
 
@@ -106,7 +143,7 @@ requested it. Ask why it needs something before you decide. An agent waiting in
 `wait_for_approval` sees your question right away and answers with
 `discuss_approval`. Other agents can't read or post in the thread.
 
-Until the Phase 4 dashboard exists, decide from the hub's command line:
+Decide in the dashboard, or from the hub's command line:
 
 ```bash
 agenthub hub approvals list                    # pending queue ([reply waiting] = the agent answered)

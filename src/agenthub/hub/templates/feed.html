@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Feed{% endblock %}
+{% block content %}
+<h1>Live feed <span id="live" class="live" data-state="connecting">connecting</span></h1>
+<form class="filters" method="get" action="/ui/feed">
+  <select name="project" aria-label="Project"><option value="">All projects</option>{% for p in projects %}<option value="{{ p.name }}" {{ 'selected' if p.name == filters.project else '' }}>{{ p.name }}</option>{% endfor %}</select>
+  <select name="agent" aria-label="Agent"><option value="">All actors</option>{% for ag in agents %}<option value="{{ ag.id }}" {{ 'selected' if ag.id == filters.agent else '' }}>{{ ag.name }}</option>{% endfor %}</select>
+  <select name="type" aria-label="Type"><option value="">All types</option>{% for t in ['message', 'task', 'approval', 'board', 'ask', 'agent'] %}<option value="{{ t }}" {{ 'selected' if t == filters.type else '' }}>{{ t }}</option>{% endfor %}</select>
+  <button type="submit">Filter</button>
+</form>
+<ul id="feed" class="events" data-project="{{ filters.project }}" data-agent="{{ filters.agent }}" data-type="{{ filters.type }}">
+  {% for e in events %}{% include "_event_row.html" %}{% endfor %}
+</ul>
+{% if not events %}<p class="empty">No events yet.</p>{% endif %}
+{% endblock %}

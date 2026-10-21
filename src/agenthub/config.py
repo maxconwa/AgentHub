@@ -55,6 +55,16 @@ class HubConfig:
     whois_cache_seconds: int = 30
     tailscale_bin: str = "tailscale"
     max_body_bytes: int = 64 * 1024
+    # The hub's tailnet URL (e.g. https://hub.example.ts.net), used for links in notifications.
+    public_url: str = ""
+    # ntfy push notifications for new approvals. Empty ntfy_url disables them.
+    ntfy_url: str = ""
+    ntfy_topic: str = ""
+    # Optional file holding an ntfy access token (kept out of this config).
+    ntfy_token_file: str = ""
+    # Off by default: notifications go to an external service, so they carry
+    # only the approval id, kind and requester, not commands or task text.
+    ntfy_include_details: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:

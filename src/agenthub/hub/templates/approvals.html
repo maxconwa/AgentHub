@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "_macros.html" import approval_summary, chip %}
+{% block title %}Approvals{% endblock %}
+{% block content %}
+<h1>Waiting for you{% if pending %} <span class="count">{{ pending|length }}</span>{% endif %}</h1>
+{% if not pending %}<p class="empty">Nothing needs a decision right now.</p>{% endif %}
+<ul class="cards">
+  {% for a in pending %}
+  <li class="card">
+    <a class="card-link" href="/ui/approvals/{{ a.id }}">
+      <div class="row"><strong>{{ a.kind.replace('_', ' ') }}</strong><span class="muted">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
+      <div class="summary">{{ approval_summary(a) }}</div>
+      <div class="row muted"><span>from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</span>
+        {% if a.awaiting_reply %}<span class="chip chip-waiting">waiting on agent</span>{% elif a.discussion %}<span class="chip chip-reply">agent replied</span>{% endif %}</div>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% if recent %}
+<h2>Recently decided</h2>
+<ul class="list">
+  {% for a in recent %}
+  <li><a href="/ui/approvals/{{ a.id }}">#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a> {{ chip(a.status) }}
+    <span class="muted">{{ a.requester_name or a.requester }} · {{ ago(a.decided_at) }}</span></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

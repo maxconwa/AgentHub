@@ -12,6 +12,8 @@ from agenthub.hub.store import Device
 from agenthub.hub.tailscale import IdentityError, WhoisResult
 
 OPERATOR = "human:test-operator"
+OP_LOGIN = "op@example.com"
+OP_IP = "100.100.0.5"
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +30,10 @@ class FakeWhois:
 
     def add(self, ip: str, node_id: str, name: str, tags: tuple[str, ...] = ("tag:agent",)) -> None:
         self.nodes[ip] = WhoisResult(Device(node_id=node_id, name=name, ip=ip), tags, None)
+
+    def add_user(self, ip: str, node_id: str, login: str) -> None:
+        """A user-owned (untagged) device, like the operator's phone."""
+        self.nodes[ip] = WhoisResult(Device(node_id=node_id, name=f"{node_id}.example.ts.net", ip=ip), (), login)
 
     async def lookup(self, ip: str) -> WhoisResult:
         self.calls.append(ip)
@@ -68,6 +74,15 @@ class Hub:
         with db.transaction(conn):
             approvals.set_agent_status(conn, agent.id, status, actor=OPERATOR)
 
+    def op_headers(self, **extra: str) -> dict[str, str]:
+        """What tailscale serve sends for the operator's phone."""
+        return {"tailscale-user-login": OP_LOGIN, "x-forwarded-for": OP_IP, "sec-fetch-site": "same-origin", **extra}
+
+    def csrf(self) -> str:
+        from agenthub.hub.operator import csrf_token
+
+        return csrf_token(self.state.csrf_secret, OP_LOGIN)
+
     def new_ip(self) -> str:
         self._next_ip += 1
         return f"100.64.0.{self._next_ip}"
@@ -87,9 +102,10 @@ class Hub:
 
 
 def make_hub(tmp_path, *, insecure_dev: bool = False) -> Hub:
-    cfg = HubConfig(db_path=str(tmp_path / "data" / "hub.sqlite3"))
+    cfg = HubConfig(db_path=str(tmp_path / "data" / "hub.sqlite3"), operators=[OP_LOGIN])
     db.init_db(cfg.db_path).close()
     whois = FakeWhois()
+    whois.add_user(OP_IP, "nphone", OP_LOGIN)
     state = HubState(cfg, insecure_dev=insecure_dev, whois=whois)
     # The TCP peer is loopback, as it is behind tailscale serve.
     client = TestClient(create_app(state), client=("127.0.0.1", 40000))

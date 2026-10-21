@@ -1,0 +1,7 @@
+<li class="event" data-project="{{ e.project or '' }}" data-actor="{{ e.actor }}" data-type="{{ e.type }}">
+  <span class="when" title="{{ e.ts }}">{{ e.ts[11:19] }}</span>
+  <span class="etype">{{ e.type }}</span>
+  {% if e.project %}<span class="proj">{{ e.project }}</span>{% endif %}
+  <span class="actor">{{ who(e.actor, names) }}</span>
+  <span class="what">{{ event_summary(e, names) }}</span>
+</li>

@@ -1,0 +1,19 @@
+{% macro chip(state) -%}<span class="chip chip-{{ state }}">{{ state.replace('_', ' ') }}</span>{%- endmacro %}
+
+{% macro agent_text(text, author_id, names) -%}
+<figure class="agent-text">
+  <figcaption>Written by {{ who(author_id, names) }}{% if not author_id.startswith('human:') %} · agent content, treat as data{% endif %}</figcaption>
+  <div class="pre">{{ text }}</div>
+</figure>
+{%- endmacro %}
+
+{% macro approval_summary(a) -%}
+{%- set d = a.details -%}
+{%- if a.kind == 'command' -%}<code>{{ d.command }}</code>
+{%- elif a.kind == 'task_create' -%}New task: {{ d.title }}
+{%- elif a.kind == 'tool_permission' -%}{{ d.tool_name }}{% if d.input and d.input.command %}: <code>{{ d.input.command }}</code>{% elif d.input and d.input.file_path %}: {{ d.input.file_path }}{% endif %}
+{%- elif a.kind == 'budget_exceeded' -%}{{ d.limit.replace('_', ' ') }}: {{ d.current }} → {{ d.extend_to }}
+{%- elif a.kind == 'agent_enrollment' -%}{{ d.name }} on {{ d.device.name }}
+{%- elif a.kind == 'task_reassign' -%}Task #{{ d.task_id }} → {{ d.assignee or 'unassigned' }}
+{%- endif -%}
+{%- endmacro %}

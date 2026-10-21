@@ -61,12 +61,22 @@ class HubState:
     insecure_dev: bool = False
     whois: Whois = field(default=None)  # type: ignore[assignment]
     bus_poll_seconds: float = 0.5
+    csrf_secret: bytes = b""
     bus: EventBus = field(init=False)
 
     def __post_init__(self) -> None:
+        if not self.csrf_secret:
+            from agenthub.hub.operator import load_csrf_secret
+
+            self.csrf_secret = load_csrf_secret()
         if self.whois is None:
             self.whois = TailscaleWhois(self.config.tailscale_bin, self.config.whois_cache_seconds)
-        self.bus = EventBus(self.connect, poll_seconds=self.bus_poll_seconds)
+        from agenthub.hub.dashboard import render_event_row
+        from agenthub.hub.notify import Notifier
+
+        self.notifier = Notifier(self.config)
+        self.bus = EventBus(self.connect, poll_seconds=self.bus_poll_seconds,
+                            render_for_operator=render_event_row, notifier=self.notifier)
 
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.config.db_path)
@@ -164,6 +174,12 @@ Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 Caller = Annotated[AgentCaller, Depends(active_agent)]
 
 
+def jsonable(value: Any) -> Any:
+    from fastapi.encoders import jsonable_encoder
+
+    return jsonable_encoder(value)
+
+
 def create_app(state: HubState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -180,9 +196,18 @@ def create_app(state: HubState) -> FastAPI:
     app.state.hub = state
     app.add_middleware(BodySizeLimit, max_bytes=state.config.max_body_bytes)
 
+    from fastapi.staticfiles import StaticFiles
+
+    from agenthub.hub import dashboard
+
+    app.include_router(dashboard.build_router())
+    app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
+
     @app.exception_handler(store.StoreError)
-    async def store_error(request: Request, exc: store.StoreError) -> JSONResponse:
+    async def store_error(request: Request, exc: store.StoreError):
         status = {store.NotFound: 404, store.Conflict: 409, store.Invalid: 422, store.Forbidden: 403}
+        if request.url.path.startswith("/ui"):
+            return dashboard.error_page(status.get(type(exc), 400), str(exc))
         body: dict[str, Any] = {"detail": str(exc)}
         if isinstance(exc, store.Conflict):
             body.update(exc.details)
@@ -501,7 +526,17 @@ def create_app(state: HubState) -> FastAPI:
         return {"results": events.search(conn, q, projects=projects, limit=limit)}
 
     @app.exception_handler(HTTPException)
-    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    async def http_error(request: Request, exc: HTTPException):
+        if request.url.path.startswith("/ui"):
+            return dashboard.error_page(exc.status_code, str(exc.detail))
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+
+    from fastapi.exceptions import RequestValidationError
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith("/ui"):
+            return dashboard.error_page(422, "; ".join(str(e.get("msg")) for e in exc.errors()))
+        return JSONResponse({"detail": jsonable(exc.errors())}, status_code=422)
 
     return app

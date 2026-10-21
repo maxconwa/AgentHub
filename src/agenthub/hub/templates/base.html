@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "historyCacheSize": 0}'>
+  <title>{% block title %}agenthub{% endblock %} · agenthub</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script src="/ui/static/htmx-2.0.11.min.js" defer></script>
+  <script src="/ui/static/app.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
+  <header class="top">
+    <a class="brand" href="/ui/approvals">agenthub</a>
+    <nav>
+      {% for href, label in [("/ui/approvals", "Approvals"), ("/ui/tasks", "Tasks"), ("/ui/feed", "Feed"), ("/ui/agents", "Agents"), ("/ui/search", "Search")] %}
+      <a href="{{ href }}" class="{{ 'active' if path.startswith(href) else '' }}">{{ label }}{% if href == "/ui/approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>Signed in as {{ operator.login }}</footer>
+</body>
+</html>
