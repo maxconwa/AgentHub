@@ -1,0 +1,6 @@
+# Written by `agenthub join` to ~/.config/agenthub/agent.toml (mode 0600).
+# Placeholders only. The token itself lives in a separate 0600 file.
+hub_url = "https://agent-hub.example-tailnet.ts.net"
+agent_id = "ag000000000000"
+name = "example-agent"
+token_file = "/home/agent/.config/agenthub/token"

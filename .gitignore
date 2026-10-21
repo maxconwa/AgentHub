@@ -1,0 +1,45 @@
+# --- Python / tooling ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- agenthub runtime state: must never be committed ---
+# (runtime state lives in ~/.config/agenthub and ~/.local/share/agenthub;
+#  these patterns are a backstop in case someone points it at the repo)
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*-wal
+*-shm
+*.log
+logs/
+token
+*.token
+agent.toml
+hub.toml
+*.env
+.env*
+!.env.example
+secrets/
+litestream.yml
+!examples/*.example.*
+
+# --- editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- local Claude Code state ---
+.claude/settings.local.json
+.mcp.json

@@ -1,0 +1,9 @@
+# Default gitleaks rules plus agenthub's own secret formats.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "agenthub-agent-token"
+description = "agenthub agent bearer token"
+regex = '''ahk_ag[0-9a-f]{12}_[A-Za-z0-9_-]{40,}'''
+keywords = ["ahk_"]

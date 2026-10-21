@@ -1,0 +1,14 @@
+# Copy to ~/.config/agenthub/hub.toml (or run `agenthub hub init`).
+# Placeholders only. Never commit a real config.
+
+# Loopback only. The hub refuses any other address unless started with --insecure-dev.
+bind_host = "127.0.0.1"
+port = 8700
+db_path = "/home/HUB_USER/.local/share/agenthub/hub.sqlite3"
+
+# Tailscale logins allowed to use the dashboard and approve actions (Phase 4).
+operators = ["operator@example.com"]
+
+whois_cache_seconds = 30
+tailscale_bin = "tailscale"
+max_body_bytes = 65536
