@@ -105,6 +105,116 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (project, key)
     );
     """,
+    # 2: phase 2 tasks and approvals
+    """
+    CREATE TABLE approvals (
+        id            INTEGER PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK (kind IN ('command', 'task_create', 'task_reassign',
+                                                    'budget_exceeded', 'agent_enrollment')),
+        project       TEXT REFERENCES projects(name),
+        requester     TEXT NOT NULL,
+        details       TEXT NOT NULL,
+        reason        TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        decided_by    TEXT,
+        decided_at    TEXT,
+        decision_note TEXT,
+        created_at    TEXT NOT NULL,
+        -- command approvals only: hash of (agent, cwd, command) and one-time use
+        command_key   TEXT,
+        consumed_at   TEXT
+    );
+    CREATE INDEX approvals_status ON approvals(status, id);
+    CREATE INDEX approvals_command_key ON approvals(command_key, status);
+
+    CREATE TABLE tasks (
+        id          INTEGER PRIMARY KEY,
+        project     TEXT NOT NULL REFERENCES projects(name),
+        title       TEXT NOT NULL,
+        body        TEXT NOT NULL DEFAULT '',
+        created_by  TEXT NOT NULL,
+        assignee    TEXT REFERENCES agents(id),
+        state       TEXT NOT NULL CHECK (state IN ('proposed', 'awaiting_approval', 'open', 'claimed',
+                                                   'in_progress', 'blocked', 'review', 'done',
+                                                   'rejected', 'cancelled')),
+        budget      TEXT NOT NULL DEFAULT '{}',
+        approval_id INTEGER REFERENCES approvals(id),
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+    );
+    CREATE INDEX tasks_project_state ON tasks(project, state);
+    CREATE INDEX tasks_assignee_state ON tasks(assignee, state);
+    """,
+    # 3: phase 3: approval discussions, tool_permission approvals, asks, task runs.
+    # SQLite cannot alter a CHECK constraint, so approvals is rebuilt (migrate()
+    # disables foreign keys around migrations and re-checks them afterwards).
+    """
+    CREATE TABLE approvals_v3 (
+        id            INTEGER PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK (kind IN ('command', 'task_create', 'task_reassign',
+                                                    'budget_exceeded', 'agent_enrollment',
+                                                    'tool_permission')),
+        project       TEXT REFERENCES projects(name),
+        requester     TEXT NOT NULL,
+        details       TEXT NOT NULL,
+        reason        TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        decided_by    TEXT,
+        decided_at    TEXT,
+        decision_note TEXT,
+        created_at    TEXT NOT NULL,
+        command_key   TEXT,
+        consumed_at   TEXT
+    );
+    INSERT INTO approvals_v3 SELECT * FROM approvals;
+    DROP TABLE approvals;
+    ALTER TABLE approvals_v3 RENAME TO approvals;
+    CREATE INDEX approvals_status ON approvals(status, id);
+    CREATE INDEX approvals_command_key ON approvals(command_key, status);
+
+    CREATE TABLE approval_messages (
+        id          INTEGER PRIMARY KEY,
+        approval_id INTEGER NOT NULL REFERENCES approvals(id),
+        author      TEXT NOT NULL,
+        body        TEXT NOT NULL,
+        ts          TEXT NOT NULL
+    );
+    CREATE INDEX approval_messages_approval ON approval_messages(approval_id, id);
+
+    CREATE TABLE asks (
+        id          INTEGER PRIMARY KEY,
+        project     TEXT NOT NULL REFERENCES projects(name),
+        from_agent  TEXT NOT NULL REFERENCES agents(id),
+        to_agent    TEXT NOT NULL REFERENCES agents(id),
+        question    TEXT NOT NULL,
+        answer      TEXT,
+        status      TEXT NOT NULL CHECK (status IN ('pending', 'answered', 'expired')),
+        message_id  INTEGER REFERENCES messages(id),
+        created_at  TEXT NOT NULL,
+        expires_at  TEXT NOT NULL,
+        answered_at TEXT
+    );
+    CREATE INDEX asks_to_status ON asks(to_agent, status);
+
+    CREATE TABLE task_runs (
+        id          INTEGER PRIMARY KEY,
+        task_id     INTEGER NOT NULL REFERENCES tasks(id),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        session_id  TEXT,
+        started_at  TEXT NOT NULL,
+        ended_at    TEXT,
+        outcome     TEXT,
+        num_turns   INTEGER,
+        cost_usd    REAL
+    );
+    CREATE INDEX task_runs_task ON task_runs(task_id, id);
+
+    -- the most recent transition note, so a resumed session sees e.g. the
+    -- operator's "changes requested" message
+    ALTER TABLE tasks ADD COLUMN last_note TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tasks ADD COLUMN last_moved_by TEXT;
+    ALTER TABLE agents ADD COLUMN connected INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -139,6 +249,22 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply pending migrations; return the resulting schema version."""
     current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= len(MIGRATIONS):
+        return current
+    # Table rebuilds need foreign keys off; this pragma is a no-op inside a
+    # transaction, so it is toggled around the whole batch.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        _apply_migrations(conn, current)
+        problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if problems:
+            raise sqlite3.IntegrityError(f"foreign key violations after migration: {problems[:5]}")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    return len(MIGRATIONS)
+
+
+def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
     for version, script in enumerate(MIGRATIONS[current:], start=current + 1):
         # executescript commits implicitly, so wrap the script and the version
         # bump in one explicit transaction inside the script itself.
@@ -148,7 +274,6 @@ def migrate(conn: sqlite3.Connection) -> int:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise
-    return len(MIGRATIONS)
 
 
 def init_db(db_path: str | Path) -> sqlite3.Connection:

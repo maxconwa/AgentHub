@@ -8,19 +8,23 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import db, events, store
-from agenthub.hub.auth import AgentCaller, active_agent, any_agent, get_conn, require_project, resolve_device
+from agenthub.hub import approvals, asks, db, events, store, tasks
+from agenthub.hub.auth import (
+    AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
+)
+from agenthub.hub.bus import CLOSE_FORBIDDEN, CLOSE_REVOKED, EventBus
 from agenthub.hub.limits import BodySizeLimit
 from agenthub.hub.tailscale import TailscaleWhois, Whois
 
 MAX_MESSAGE_CHARS = 16_000
 MAX_BOARD_VALUE_CHARS = 32_000
+MAX_COMMAND_CHARS = 8_000
 
 
 class BindError(Exception):
@@ -56,10 +60,13 @@ class HubState:
     config: HubConfig
     insecure_dev: bool = False
     whois: Whois = field(default=None)  # type: ignore[assignment]
+    bus_poll_seconds: float = 0.5
+    bus: EventBus = field(init=False)
 
     def __post_init__(self) -> None:
         if self.whois is None:
             self.whois = TailscaleWhois(self.config.tailscale_bin, self.config.whois_cache_seconds)
+        self.bus = EventBus(self.connect, poll_seconds=self.bus_poll_seconds)
 
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.config.db_path)
@@ -84,6 +91,75 @@ class BoardPutRequest(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+class CreateTaskRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    assignee: str | None = Field(default=None, max_length=64)
+    budget: dict[str, int] | None = None
+    reason: str = Field(default="", max_length=2000)
+
+
+class UpdateTaskRequest(BaseModel):
+    state: str | None = Field(default=None, max_length=32)
+    note: str = Field(default="", max_length=4000)
+
+
+class ApprovalRequest(BaseModel):
+    kind: str = Field(max_length=32)
+    project: str | None = Field(default=None, max_length=64)
+    reason: str = Field(default="", max_length=2000)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AskRequest(BaseModel):
+    to: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    timeout_seconds: int = Field(default=300, ge=asks.MIN_TIMEOUT, le=asks.MAX_TIMEOUT)
+
+
+class AnswerRequest(BaseModel):
+    answer: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+
+
+class RunEndRequest(BaseModel):
+    outcome: str = Field(max_length=64)
+    session_id: str | None = Field(default=None, max_length=128)
+    num_turns: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+
+
+class RunSessionRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+
+
+class ProgressItem(BaseModel):
+    kind: str = Field(max_length=32)
+    text: str = Field(max_length=2000)
+
+
+class ProgressRequest(BaseModel):
+    run_id: int | None = None
+    items: list[ProgressItem] = Field(max_length=tasks.MAX_PROGRESS_ITEMS)
+
+
+class ToolPermissionRequest(BaseModel):
+    task_id: int
+    tool_name: str = Field(min_length=1, max_length=200)
+    tool_input: Any = None
+    reason: str = Field(default="", max_length=2000)
+
+
+class DiscussionRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class CommandApprovalRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=MAX_COMMAND_CHARS)
+    cwd: str = Field(min_length=1, max_length=4096)
+    project: str | None = Field(default=None, max_length=64)
+    reason: str = Field(default="", max_length=2000)
+
+
 Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 Caller = Annotated[AgentCaller, Depends(active_agent)]
 
@@ -92,8 +168,13 @@ def create_app(state: HubState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         conn = db.init_db(state.config.db_path)
+        conn.execute("UPDATE agents SET connected = 0")
         conn.close()
-        yield
+        state.bus.start()
+        try:
+            yield
+        finally:
+            await state.bus.stop()
 
     app = FastAPI(title="agenthub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.hub = state
@@ -120,6 +201,11 @@ def create_app(state: HubState) -> FastAPI:
         device = await resolve_device(request)
         with db.transaction(conn):
             agent, token = store.redeem_enrollment(conn, code=body.code, name=body.name, device=device)
+            approvals.create(
+                conn, kind="agent_enrollment", requester=agent.id, device=device.name,
+                details={"agent_id": agent.id, "name": agent.name, "device": device.__dict__,
+                         "projects": list(agent.allowed_projects)},
+            )
         return {"agent": agent.public(), "token": token}
 
     @app.get(f"{api}/agents/me")
@@ -155,10 +241,12 @@ def create_app(state: HubState) -> FastAPI:
         project: str | None = None,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         peek: bool = False,
+        addressed_only: bool = False,
     ) -> dict[str, Any]:
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
         with db.transaction(conn):
-            return store.read_inbox(conn, caller.agent, projects=projects, limit=limit, mark_read=not peek)
+            return store.read_inbox(conn, caller.agent, projects=projects, limit=limit, mark_read=not peek,
+                                    addressed_only=addressed_only)
 
     # --- board ---------------------------------------------------------------
 
@@ -180,6 +268,225 @@ def create_app(state: HubState) -> FastAPI:
                 conn, actor=caller.agent.actor, project=project, key=key, value=body.value,
                 expected_version=body.expected_version, device=caller.device.name,
             )
+
+    # --- tasks ---------------------------------------------------------------
+
+    def visible_task(caller: AgentCaller, conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
+        task = tasks.get_task(conn, task_id)
+        if task["project"] not in caller.agent.allowed_projects:
+            raise HTTPException(404, f"no task {task_id}")  # don't reveal other projects' tasks
+        return task
+
+    @app.get(f"{api}/projects/{{project}}/tasks")
+    def list_tasks(
+        project: str, caller: Caller, conn: Conn, state: str | None = None, mine: bool = False,
+    ) -> dict[str, Any]:
+        require_project(caller, project)
+        assignee = caller.agent.id if mine else None
+        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, assignee=assignee)}
+
+    @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
+    def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        require_project(caller, project)
+        with db.transaction(conn):
+            task, approval = approvals.agent_create_task(
+                conn, caller.agent, project=project, title=body.title, body=body.body,
+                assignee=body.assignee, budget=body.budget, reason=body.reason, device=caller.device.name,
+            )
+        return {"task": task, "approval": approval}
+
+    @app.get(f"{api}/tasks/{{task_id}}")
+    def get_task(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        return visible_task(caller, conn, task_id)
+
+    @app.post(f"{api}/tasks/{{task_id}}/claim")
+    def claim_task(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return tasks.transition(conn, task_id, "claimed", actor=caller.agent.id, role="agent",
+                                    agent=caller.agent, device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/update")
+    def update_task(task_id: int, body: UpdateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        if body.state is None and not body.note:
+            raise HTTPException(422, "provide a new state and/or a note")
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            if body.state is None:
+                tasks.add_note(conn, task_id, body.note, agent=caller.agent, device=caller.device.name)
+                return tasks.get_task(conn, task_id)
+            return tasks.transition(conn, task_id, body.state, actor=caller.agent.id, role="agent",
+                                    agent=caller.agent, note=body.note, device=caller.device.name)
+
+    @app.get(f"{api}/tasks/{{task_id}}/runs")
+    def task_runs(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        visible_task(caller, conn, task_id)
+        return {"runs": tasks.list_runs(conn, task_id), "usage": tasks.usage(conn, task_id)}
+
+    @app.post(f"{api}/tasks/{{task_id}}/runs", status_code=201)
+    def start_run(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return tasks.start_run(conn, task_id, caller.agent, device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/runs/{{run_id}}/session")
+    def run_session(task_id: int, run_id: int, body: RunSessionRequest, caller: Caller, conn: Conn) -> dict:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            tasks.set_run_session(conn, task_id, run_id, caller.agent, body.session_id)
+        return {"ok": True}
+
+    @app.post(f"{api}/tasks/{{task_id}}/runs/{{run_id}}/end")
+    def end_run(task_id: int, run_id: int, body: RunEndRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return tasks.end_run(conn, task_id, run_id, caller.agent, outcome=body.outcome,
+                                 session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
+                                 device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/progress", status_code=201)
+    def progress(task_id: int, body: ProgressRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            event_id = tasks.record_progress(conn, task_id, caller.agent, [i.model_dump() for i in body.items],
+                                             run_id=body.run_id, device=caller.device.name)
+        return {"event_id": event_id}
+
+    # --- approvals (agents may file and read their own; never decide) ----------
+
+    @app.post(f"{api}/approvals/tool", status_code=201)
+    def request_tool(body: ToolPermissionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, body.task_id)
+            return approvals.request_tool_permission(
+                conn, caller.agent, task_id=body.task_id, tool_name=body.tool_name, tool_input=body.tool_input,
+                reason=body.reason, device=caller.device.name)
+
+    @app.post(f"{api}/approvals/tool/consume")
+    def consume_tool(body: ToolPermissionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, body.task_id)
+            approval = approvals.consume_tool_permission(conn, caller.agent, task_id=body.task_id,
+                                                         tool_name=body.tool_name, tool_input=body.tool_input)
+        return {"allowed": approval is not None, "approval_id": approval["id"] if approval else None}
+
+    @app.post(f"{api}/approvals", status_code=201)
+    def request_approval(body: ApprovalRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return approvals.request(conn, caller.agent, kind=body.kind, details=body.details,
+                                     project=body.project, reason=body.reason, device=caller.device.name)
+
+    @app.get(f"{api}/approvals/{{approval_id}}")
+    def get_approval(approval_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        approval = approvals.get(conn, approval_id)
+        if approval["requester"] != caller.agent.id:
+            raise HTTPException(404, f"no approval {approval_id}")
+        return approval
+
+    @app.get(f"{api}/approvals")
+    def my_approvals(caller: Caller, conn: Conn, awaiting_reply: bool = False) -> dict[str, Any]:
+        """The caller's own pending approvals (optionally only those where the operator asked something)."""
+        return {"approvals": approvals.list_for_agent(conn, caller.agent.id, awaiting_reply_only=awaiting_reply)}
+
+    @app.post(f"{api}/approvals/{{approval_id}}/discussion", status_code=201)
+    def discuss(approval_id: int, body: DiscussionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            if approvals.get(conn, approval_id)["requester"] != caller.agent.id:
+                raise HTTPException(404, f"no approval {approval_id}")
+            return approvals.post_discussion(conn, approval_id, author=caller.agent.id, body=body.body,
+                                             device=caller.device.name)
+
+    @app.post(f"{api}/approvals/command", status_code=201)
+    def request_command(body: CommandApprovalRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return approvals.request_command(conn, caller.agent, command=body.command, cwd=body.cwd,
+                                             project=body.project, reason=body.reason, device=caller.device.name)
+
+    @app.post(f"{api}/approvals/command/consume")
+    def consume_command(body: CommandApprovalRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            approval = approvals.consume_command(conn, caller.agent, command=body.command, cwd=body.cwd)
+        return {"allowed": approval is not None, "approval_id": approval["id"] if approval else None}
+
+    # --- asks ----------------------------------------------------------------
+
+    @app.post(f"{api}/projects/{{project}}/asks", status_code=201)
+    def create_ask(project: str, body: AskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        require_project(caller, project)
+        with db.transaction(conn):
+            return asks.create(conn, caller.agent, project=project, to=body.to, question=body.question,
+                               timeout_seconds=body.timeout_seconds, device=caller.device.name)
+
+    @app.get(f"{api}/asks")
+    def pending_asks(caller: Caller, conn: Conn) -> dict[str, Any]:
+        return {"asks": asks.pending_for(conn, caller.agent)}
+
+    @app.get(f"{api}/asks/{{ask_id}}")
+    def get_ask(ask_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        return asks.get(conn, ask_id, viewer=caller.agent)
+
+    @app.post(f"{api}/asks/{{ask_id}}/answer")
+    def answer_ask(ask_id: int, body: AnswerRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return asks.answer(conn, caller.agent, ask_id, body.answer, device=caller.device.name)
+
+    # --- WebSocket: push notifications + heartbeats -------------------------
+
+    @app.websocket(f"{api}/ws")
+    async def agent_socket(websocket: WebSocket) -> None:
+        conn = state.connect()
+        try:
+            try:
+                caller = await authenticate(websocket, conn, allow_pending=False)
+            except HTTPException as exc:
+                # Closing before accept makes the handshake fail with HTTP 403.
+                await websocket.close(code=CLOSE_FORBIDDEN, reason=str(exc.detail)[:120])
+                return
+            agent_id = caller.agent.id
+            if not state.bus.register(agent_id, websocket):
+                await websocket.close(code=CLOSE_FORBIDDEN, reason="too many connections")
+                return
+            try:
+                await websocket.accept()
+                _set_connected(conn, agent_id, +1, device=caller.device.name)
+                last_event = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+                await websocket.send_json(
+                    {"type": "hello", "agent": caller.agent.public(), "last_event_id": last_event}
+                )
+                await _agent_socket_loop(websocket, conn, agent_id)
+            except WebSocketDisconnect:
+                pass
+            finally:
+                state.bus.unregister(agent_id, websocket)
+                _set_connected(conn, agent_id, -1)
+        finally:
+            conn.close()
+
+    def _set_connected(conn: sqlite3.Connection, agent_id: str, delta: int, device: str | None = None) -> None:
+        with db.transaction(conn):
+            conn.execute(
+                "UPDATE agents SET connected = MAX(connected + ?, 0), last_heartbeat = ? WHERE id = ?",
+                (delta, db.now_iso(), agent_id),
+            )
+            events.emit(conn, type="agent.connected" if delta > 0 else "agent.disconnected",
+                        actor=agent_id, device=device)
+
+    async def _agent_socket_loop(websocket: WebSocket, conn: sqlite3.Connection, agent_id: str) -> None:
+        while True:
+            try:
+                message = await websocket.receive_json()
+            except ValueError:
+                await websocket.close(code=CLOSE_FORBIDDEN, reason="invalid frame")
+                return
+            if not isinstance(message, dict) or message.get("type") != "heartbeat":
+                continue
+            # Re-check the agent on every heartbeat as a backstop to the bus.
+            agent = store.get_agent(conn, agent_id)
+            if agent is None or agent.status != "active":
+                await websocket.close(code=CLOSE_REVOKED, reason="agent is no longer active")
+                return
+            conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
+            await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 
     # --- search --------------------------------------------------------------
 

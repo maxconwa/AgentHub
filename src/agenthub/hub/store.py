@@ -312,11 +312,12 @@ _MESSAGE_SELECT = (
 )
 
 
-def _inbox_where(agent: Agent, projects: list[str]) -> tuple[str, list[Any]]:
+def _inbox_where(agent: Agent, projects: list[str], addressed_only: bool) -> tuple[str, list[Any]]:
     placeholders = ",".join("?" * len(projects))
+    addressed = "m.to_agent = ?" if addressed_only else "(m.to_agent IS NULL OR m.to_agent = ?)"
     where = (
         f"WHERE m.project IN ({placeholders}) AND m.author != ? "
-        "AND (m.to_agent IS NULL OR m.to_agent = ?) "
+        f"AND {addressed} "
         "AND m.id > COALESCE((SELECT last_read_id FROM inbox_cursors "
         "  WHERE agent_id = ? AND project = m.project), 0) "
     )
@@ -330,10 +331,15 @@ def read_inbox(
     projects: list[str],
     limit: int = 50,
     mark_read: bool = True,
+    addressed_only: bool = False,
 ) -> dict[str, Any]:
+    """Unread messages. ``addressed_only`` (used by the Stop hook) never marks read,
+    because advancing the cursor would also skip unaddressed messages."""
     if not projects:
         return {"messages": [], "more": False}
-    where, params = _inbox_where(agent, projects)
+    if addressed_only:
+        mark_read = False
+    where, params = _inbox_where(agent, projects, addressed_only)
     rows = conn.execute(_MESSAGE_SELECT + where + "ORDER BY m.id LIMIT ?", [*params, limit + 1]).fetchall()
     more = len(rows) > limit
     rows = rows[:limit]

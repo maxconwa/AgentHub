@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agenthub.config import HubConfig
-from agenthub.hub import db, store
+from agenthub.hub import approvals, db, store
 from agenthub.hub.app import HubState, create_app
 from agenthub.hub.store import Device
 from agenthub.hub.tailscale import IdentityError, WhoisResult
@@ -66,7 +66,7 @@ class Hub:
     def set_status(self, agent: AgentCreds, status: str) -> None:
         conn = self.conn()
         with db.transaction(conn):
-            store.set_agent_status(conn, agent.id, status, actor=OPERATOR)
+            approvals.set_agent_status(conn, agent.id, status, actor=OPERATOR)
 
     def new_ip(self) -> str:
         self._next_ip += 1

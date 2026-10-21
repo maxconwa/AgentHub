@@ -1,0 +1,118 @@
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from agenthub import security
+from agenthub.hub import bus, db, events, store
+
+from .conftest import OPERATOR
+
+
+def ws(hub, headers):
+    return hub.client.websocket_connect("/api/v1/ws", headers=headers)
+
+
+def test_websocket_requires_valid_token_and_device(hub):
+    a = hub.enroll("a")
+    b = hub.enroll("b")
+    for headers in [{"x-forwarded-for": a.ip},
+                    {"authorization": f"Bearer {security.new_token(a.id)}", "x-forwarded-for": a.ip},
+                    {"authorization": f"Bearer {a.token}", "x-forwarded-for": b.ip},
+                    {"authorization": f"Bearer {a.token}"}]:
+        with pytest.raises(WebSocketDisconnect), ws(hub, headers) as conn:
+            conn.receive_json()
+
+
+def test_pending_agent_cannot_open_websocket(hub):
+    a = hub.enroll("a", approve=False)
+    with pytest.raises(WebSocketDisconnect), ws(hub, a.headers) as conn:
+        conn.receive_json()
+
+
+def test_hello_and_heartbeat(hub):
+    a = hub.enroll("a")
+    with ws(hub, a.headers) as conn:
+        hello = conn.receive_json()
+        assert hello["type"] == "hello" and hello["agent"]["id"] == a.id
+        conn.send_json({"type": "heartbeat"})
+        assert conn.receive_json()["type"] == "heartbeat_ack"
+    row = hub.conn().execute("SELECT last_heartbeat, connected FROM agents WHERE id = ?", (a.id,)).fetchone()
+    assert row["last_heartbeat"] and row["connected"] == 0
+    types = [r["type"] for r in hub.conn().execute("SELECT type FROM events WHERE actor = ?", (a.id,))]
+    assert "agent.connected" in types and "agent.disconnected" in types
+
+
+def test_revoked_agent_heartbeat_closes_socket(hub):
+    a = hub.enroll("a")
+    with ws(hub, a.headers) as conn:
+        conn.receive_json()
+        hub.set_status(a, "revoked")
+        conn.send_json({"type": "heartbeat"})
+        with pytest.raises(WebSocketDisconnect) as info:
+            conn.receive_json()
+    assert info.value.code == bus.CLOSE_REVOKED
+
+
+def test_bus_pushes_events_and_closes_on_revoke(tmp_path):
+    from .conftest import make_hub
+
+    hub = make_hub(tmp_path)
+    a, b = hub.enroll("a"), hub.enroll("b")
+    hub.state.bus.poll_seconds = 0.02
+    with TestClient(hub.client.app, client=("127.0.0.1", 40000)) as live:  # runs lifespan: starts the bus
+        with live.websocket_connect("/api/v1/ws", headers=b.headers) as conn:
+            assert conn.receive_json()["type"] == "hello"
+            live.post("/api/v1/projects/proj/messages", json={"body": "hi b", "to": "b"}, headers=a.headers)
+            msg = conn.receive_json()
+            if msg["event"]["type"] == "channel.created":  # the first post also creates the channel
+                msg = conn.receive_json()
+            assert msg["event"]["type"] == "message.posted"
+            assert msg["event"]["data"]["addressed_to_me"] is True
+            assert "body" not in json.dumps(msg["event"]["data"])  # notifications carry no content
+            hub.set_status(b, "revoked")  # written straight to the DB, like the operator CLI
+            with pytest.raises(WebSocketDisconnect) as info:
+                conn.receive_json()
+            assert info.value.code == bus.CLOSE_REVOKED
+
+
+def _event(hub, etype, project, actor, payload):
+    conn = hub.conn()
+    with db.transaction(conn):
+        event_id = events.emit(conn, type=etype, project=project, actor=actor, payload=payload)
+    return events.row_to_event(conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone())
+
+
+def test_routing_is_scoped(hub):
+    a = hub.enroll("a", projects=("proj",))
+    b = hub.enroll("b", projects=("proj",))
+    c = hub.enroll("c", projects=("other",))
+    conn = hub.conn()
+    assert bus.recipients(_event(hub, "message.posted", "proj", a.id, {"to": None}), conn) == {b.id}
+    assert bus.recipients(_event(hub, "board.updated", "other", c.id, {}), conn) == set()
+    assert bus.recipients(_event(hub, "task.assigned", "proj", OPERATOR, {"assignee": b.id}), conn) == {b.id}
+    ap = hub.client.post("/api/v1/approvals/command", json={"command": "rm -rf x", "cwd": "/"},
+                         headers=a.headers).json()
+    decided = _event(hub, "approval.decided", None, OPERATOR, {"approval_id": ap["id"]})
+    assert bus.recipients(decided, conn) == {a.id}
+    assert bus.recipients(_event(hub, "agent.enrolled", None, a.id, {}), conn) == set()
+
+
+def test_connection_limit_per_agent(hub):
+    a = hub.enroll("a")
+    sockets = [ws(hub, a.headers) for _ in range(bus.MAX_SOCKETS_PER_AGENT)]
+    opened = [s.__enter__() for s in sockets]
+    for s in opened:
+        s.receive_json()
+    with pytest.raises(WebSocketDisconnect), ws(hub, a.headers) as extra:
+        extra.receive_json()
+    for s in sockets:
+        s.__exit__(None, None, None)
+
+
+def test_store_unchanged_by_revoked_reactivation(hub):
+    a = hub.enroll("a")
+    hub.set_status(a, "revoked")
+    with pytest.raises(store.Conflict):
+        hub.set_status(a, "active")

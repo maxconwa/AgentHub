@@ -18,6 +18,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
+from starlette.requests import HTTPConnection
 
 from agenthub import security
 from agenthub.hub import store
@@ -43,7 +44,7 @@ def get_conn(request: Request):
         conn.close()
 
 
-async def resolve_device(request: Request) -> Device:
+async def resolve_device(request: HTTPConnection) -> Device:
     """The caller's tailnet device (or a fixed placeholder in --insecure-dev)."""
     hub = request.app.state.hub
     if hub.insecure_dev:
@@ -56,7 +57,7 @@ async def resolve_device(request: Request) -> Device:
         raise HTTPException(403, f"tailnet identity check failed: {exc}") from exc
 
 
-def _bearer(request: Request) -> str:
+def _bearer(request: HTTPConnection) -> str:
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -64,7 +65,8 @@ def _bearer(request: Request) -> str:
     return token.strip()
 
 
-async def _authenticate(request: Request, conn: sqlite3.Connection, allow_pending: bool) -> AgentCaller:
+async def authenticate(request: HTTPConnection, conn: sqlite3.Connection, allow_pending: bool) -> AgentCaller:
+    """Shared by HTTP routes and the WebSocket endpoint."""
     token = _bearer(request)
     parsed = security.parse_token(token)
     agent = store.get_agent(conn, parsed[0]) if parsed else None
@@ -81,12 +83,12 @@ async def _authenticate(request: Request, conn: sqlite3.Connection, allow_pendin
 
 
 async def active_agent(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> AgentCaller:
-    return await _authenticate(request, conn, allow_pending=False)
+    return await authenticate(request, conn, allow_pending=False)
 
 
 async def any_agent(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> AgentCaller:
     """Pending agents may only learn their own status."""
-    return await _authenticate(request, conn, allow_pending=True)
+    return await authenticate(request, conn, allow_pending=True)
 
 
 def require_project(caller: AgentCaller, project: str) -> str:

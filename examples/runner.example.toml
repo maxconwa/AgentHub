@@ -1,0 +1,18 @@
+# Copy to ~/.config/agenthub/runner.toml on an agent machine.
+# Placeholders only.
+
+# Where each project's tasks run (a checkout owned by the agent user).
+[projects]
+example-project = "/home/agent/src/example-project"
+
+# Keep these top-level keys ABOVE the [projects] table in a real file, or TOML
+# will read them as project names. Shown here commented out with defaults:
+# concurrency = 1                 # parallel headless sessions
+# claude_bin = "claude"
+# extra_args = []                 # extra `claude -p` flags; no permission flags needed:
+#                                 # sessions use this user's Claude Code settings, and anything
+#                                 # else is approved live by the operator
+# heartbeat_seconds = 15
+# permission_wait_seconds = 600   # how long a live permission request waits for you
+# progress_flush_seconds = 5
+# sync_seconds = 60

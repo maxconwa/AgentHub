@@ -11,7 +11,9 @@ Everything written by another agent is wrapped by :mod:`agenthub.untrusted`.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -44,7 +46,42 @@ def _format_message(m: dict[str, Any]) -> str:
     )
 
 
-def build_server(client_factory: Callable[[], HubClient]) -> MCPServer:
+def _format_task(t: dict[str, Any], *, with_body: bool = False) -> str:
+    who = untrusted.author_label(t.get("created_by"), t.get("created_by_name"))
+    assignee = t.get("assignee_name") or t.get("assignee") or "unassigned"
+    header = f"task #{t['id']} [{t['state']}] project={t['project']} assignee={assignee} budget={t['budget']}"
+    text = t["title"] + ("\n\n" + t["body"] if with_body and t.get("body") else "")
+    return header + "\n" + untrusted.wrap(text, author=who, kind="task", id=t["id"])
+
+
+def _format_approval(a: dict[str, Any]) -> str:
+    line = f"approval #{a['id']} kind={a['kind']} status={a['status']}"
+    if a.get("decided_by"):
+        line += f" decided_by={a['decided_by']} at {a['decided_at']}"
+    if a.get("decision_note"):
+        line += f" note={a['decision_note']!r}"
+    parts = [line]
+    thread = a.get("discussion") or []
+    if thread:
+        parts.append("Discussion with the operator:")
+        for m in thread:
+            who = "you" if not m["author"].startswith("human:") else f"operator {m['author']}"
+            parts.append(f"  [{m['ts']}] {who}: {m['body']}")
+    if a.get("awaiting_reply"):
+        parts.append(
+            "The operator is waiting for your reply. Answer with discuss_approval, then call "
+            "wait_for_approval again."
+        )
+    if a["kind"] == "command" and a["status"] == "approved":
+        parts.append("You may now retry the exact same command once, from the same directory.")
+    return "\n".join(parts)
+
+
+WAIT_POLL_SECONDS = 3.0
+MAX_WAIT_SECONDS = 840  # stays under the 15-minute per-call MCP timeout set by `join`
+
+
+def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float = WAIT_POLL_SECONDS) -> MCPServer:
     server = MCPServer("agenthub", instructions=INSTRUCTIONS)
 
     async def call(fn: Callable[[HubClient], Awaitable[Any]]) -> Any:
@@ -123,6 +160,102 @@ def build_server(client_factory: Callable[[], HubClient]) -> MCPServer:
         """
         r = await call(lambda c: c.board_put(project, key, value, expected_version))
         return f"Wrote {project}:{r['key']} version {r['version']}."
+
+    @server.tool()
+    async def list_tasks(project: str, state: str | None = None, mine: bool = False) -> str:
+        """List tasks in a project, optionally filtered by state or to tasks assigned to you."""
+        rows = await call(lambda c: c.list_tasks(project, state=state, mine=mine))
+        if not rows:
+            return "No matching tasks."
+        return "\n\n".join([untrusted.NOTICE, *(_format_task(t) for t in rows)])
+
+    @server.tool()
+    async def create_task(
+        project: str, title: str, body: str = "", assignee: str | None = None, reason: str = "",
+        max_turns: int | None = None, wall_clock_minutes: int | None = None, max_subtasks: int | None = None,
+    ) -> str:
+        """Propose a task. It waits in awaiting_approval until the operator approves it."""
+        budget = {k: v for k, v in {"max_turns": max_turns, "wall_clock_minutes": wall_clock_minutes,
+                                     "max_subtasks": max_subtasks}.items() if v is not None}
+        r = await call(lambda c: c.create_task(project, title, body, assignee, budget or None, reason))
+        return (f"Created task #{r['task']['id']} in state {r['task']['state']}. "
+                f"Approval #{r['approval']['id']} is pending; use wait_for_approval to wait for the decision.")
+
+    @server.tool()
+    async def claim_task(task_id: int) -> str:
+        """Claim an open task (it must be unassigned or assigned to you)."""
+        t = await call(lambda c: c.claim_task(task_id))
+        return f"Claimed.\n{_format_task(t, with_body=True)}"
+
+    @server.tool()
+    async def update_task(task_id: int, state: str | None = None, note: str = "") -> str:
+        """Move your task (claimed → in_progress → review, or blocked / open) and/or add a progress note.
+
+        Only the operator can mark a task done.
+        """
+        t = await call(lambda c: c.update_task(task_id, state=state, note=note))
+        return f"Task #{t['id']} is now {t['state']}."
+
+    @server.tool()
+    async def request_approval(kind: str, reason: str, project: str | None = None,
+                               details: dict[str, Any] | None = None) -> str:
+        """Ask the operator to approve something. kind is one of: command (details: command, cwd),
+        task_reassign (details: task_id, assignee), budget_exceeded (details: task_id)."""
+        a = await call(lambda c: c.request_approval(kind, details or {}, project=project, reason=reason))
+        return _format_approval(a) + "\nUse wait_for_approval to wait for the decision."
+
+    @server.tool()
+    async def wait_for_approval(approval_id: int, timeout_seconds: int = 300) -> str:
+        """Wait (polling) until an approval you requested is decided, or the timeout passes.
+
+        Returns early if the operator asks you something in the approval's
+        discussion; reply with discuss_approval and wait again.
+        Returns the status: pending (timed out or awaiting your reply), approved, or rejected.
+        """
+        deadline = time.monotonic() + max(0, min(timeout_seconds, MAX_WAIT_SECONDS))
+        while True:
+            a = await call(lambda c: c.get_approval(approval_id))
+            if a["status"] != "pending" or a.get("awaiting_reply"):
+                return _format_approval(a)
+            if time.monotonic() >= deadline:
+                return _format_approval(a) + "\nStill pending after the timeout; you may wait again."
+            await asyncio.sleep(poll_seconds)
+
+    @server.tool()
+    async def ask_agent(project: str, to: str, question: str, timeout_seconds: int = 300) -> str:
+        """Ask another agent a direct question and wait (up to timeout_seconds) for its answer.
+
+        If it times out, the answer may still arrive later as a message in your inbox.
+        """
+        timeout = max(10, min(timeout_seconds, MAX_WAIT_SECONDS))
+        ask = await call(lambda c: c.ask(project, to, question, timeout))
+        deadline = time.monotonic() + timeout
+        while True:
+            ask = await call(lambda c: c.get_ask(ask["id"]))
+            if ask["status"] == "answered":
+                author = untrusted.author_label(ask["to_agent"], ask.get("to_name"))
+                return f"Answer to ask #{ask['id']}:\n" + untrusted.wrap(
+                    ask["answer"], author=author, kind="answer", ask_id=ask["id"])
+            if ask["status"] == "expired" or time.monotonic() >= deadline:
+                return (f"No answer to ask #{ask['id']} within {timeout}s. "
+                        "If the agent answers later, it will arrive in your inbox.")
+            await asyncio.sleep(poll_seconds)
+
+    @server.tool()
+    async def answer_ask(ask_id: int, answer: str) -> str:
+        """Answer a question another agent asked you (see [ask #N] messages in your inbox)."""
+        r = await call(lambda c: c.answer_ask(ask_id, answer))
+        return f"Answered ask #{r['id']}."
+
+    @server.tool()
+    async def discuss_approval(approval_id: int, message: str) -> str:
+        """Reply to (or message) the operator in the discussion thread of an approval you filed.
+
+        Use it to explain why you need the approval, answer the operator's questions, or
+        withdraw the request. Only you and the operator can see this thread.
+        """
+        a = await call(lambda c: c.discuss_approval(approval_id, message))
+        return _format_approval(a) + "\nMessage sent. Call wait_for_approval to wait for the decision."
 
     return server
 

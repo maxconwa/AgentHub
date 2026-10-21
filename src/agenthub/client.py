@@ -75,8 +75,10 @@ class HubClient:
         payload = {"channel": channel, "body": body, "to": to}
         return await self._request("POST", f"/projects/{quote(project)}/messages", json=payload)
 
-    async def inbox(self, project: str | None = None, limit: int = 50, peek: bool = False) -> dict[str, Any]:
-        params: dict[str, Any] = {"limit": limit, "peek": peek}
+    async def inbox(
+        self, project: str | None = None, limit: int = 50, peek: bool = False, addressed_only: bool = False
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit, "peek": peek, "addressed_only": addressed_only}
         if project:
             params["project"] = project
         return await self._request("GET", "/inbox", params=params)
@@ -95,6 +97,100 @@ class HubClient:
             f"/projects/{quote(project)}/board/{quote(key)}",
             json={"value": value, "expected_version": expected_version},
         )
+
+    # --- tasks -----------------------------------------------------------------
+
+    async def list_tasks(self, project: str, state: str | None = None, mine: bool = False) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"mine": mine}
+        if state:
+            params["state"] = state
+        return (await self._request("GET", f"/projects/{quote(project)}/tasks", params=params))["tasks"]
+
+    async def create_task(
+        self, project: str, title: str, body: str = "", assignee: str | None = None,
+        budget: dict[str, int] | None = None, reason: str = "",
+    ) -> dict[str, Any]:
+        payload = {"title": title, "body": body, "assignee": assignee, "budget": budget, "reason": reason}
+        return await self._request("POST", f"/projects/{quote(project)}/tasks", json=payload)
+
+    async def get_task(self, task_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/tasks/{task_id}")
+
+    async def claim_task(self, task_id: int) -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/claim")
+
+    async def update_task(self, task_id: int, state: str | None = None, note: str = "") -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/update", json={"state": state, "note": note})
+
+    async def task_runs(self, task_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/tasks/{task_id}/runs")
+
+    async def start_run(self, task_id: int) -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/runs")
+
+    async def set_run_session(self, task_id: int, run_id: int, session_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/runs/{run_id}/session", json={"session_id": session_id})
+
+    async def end_run(
+        self, task_id: int, run_id: int, *, outcome: str, session_id: str | None = None,
+        num_turns: int | None = None, cost_usd: float | None = None,
+    ) -> dict[str, Any]:
+        payload = {"outcome": outcome, "session_id": session_id, "num_turns": num_turns, "cost_usd": cost_usd}
+        return await self._request("POST", f"/tasks/{task_id}/runs/{run_id}/end", json=payload)
+
+    async def progress(self, task_id: int, items: list[dict[str, str]], run_id: int | None = None) -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/progress", json={"run_id": run_id, "items": items})
+
+    # --- approvals -------------------------------------------------------------
+
+    async def request_tool_permission(
+        self, task_id: int, tool_name: str, tool_input: Any, reason: str = ""
+    ) -> dict[str, Any]:
+        payload = {"task_id": task_id, "tool_name": tool_name, "tool_input": tool_input, "reason": reason}
+        return await self._request("POST", "/approvals/tool", json=payload)
+
+    async def consume_tool_permission(self, task_id: int, tool_name: str, tool_input: Any) -> dict[str, Any]:
+        payload = {"task_id": task_id, "tool_name": tool_name, "tool_input": tool_input}
+        return await self._request("POST", "/approvals/tool/consume", json=payload)
+
+    async def request_approval(
+        self, kind: str, details: dict[str, Any], project: str | None = None, reason: str = ""
+    ) -> dict[str, Any]:
+        payload = {"kind": kind, "details": details, "project": project, "reason": reason}
+        return await self._request("POST", "/approvals", json=payload)
+
+    async def get_approval(self, approval_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/approvals/{approval_id}")
+
+    async def my_approvals(self, awaiting_reply: bool = False) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/approvals", params={"awaiting_reply": awaiting_reply}))["approvals"]
+
+    async def discuss_approval(self, approval_id: int, body: str) -> dict[str, Any]:
+        return await self._request("POST", f"/approvals/{approval_id}/discussion", json={"body": body})
+
+    async def request_command(
+        self, command: str, cwd: str, project: str | None = None, reason: str = ""
+    ) -> dict[str, Any]:
+        payload = {"command": command, "cwd": cwd, "project": project, "reason": reason}
+        return await self._request("POST", "/approvals/command", json=payload)
+
+    async def consume_command(self, command: str, cwd: str) -> dict[str, Any]:
+        return await self._request("POST", "/approvals/command/consume", json={"command": command, "cwd": cwd})
+
+    # --- asks ------------------------------------------------------------------
+
+    async def ask(self, project: str, to: str, question: str, timeout_seconds: int) -> dict[str, Any]:
+        payload = {"to": to, "question": question, "timeout_seconds": timeout_seconds}
+        return await self._request("POST", f"/projects/{quote(project)}/asks", json=payload)
+
+    async def get_ask(self, ask_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/asks/{ask_id}")
+
+    async def answer_ask(self, ask_id: int, answer: str) -> dict[str, Any]:
+        return await self._request("POST", f"/asks/{ask_id}/answer", json={"answer": answer})
+
+    async def pending_asks(self) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/asks"))["asks"]
 
     # --- search ----------------------------------------------------------------
 
