@@ -220,13 +220,14 @@ def transition(
 
 
 def assign(
-    conn: sqlite3.Connection, task_id: int, agent: str | None, *, actor: str, role: str = ""
+    conn: sqlite3.Connection, task_id: int, agent: str | None, *, actor: str, role: str | None = None
 ) -> dict[str, Any]:
     """Operator (or approved reassignment) makes ``agent`` the only ``works`` agent.
 
     Other ``works`` agents are removed and reviewers stay. A task that was already
     claimed goes back to ``open`` for the new agent, so the runner's launch check
-    applies afresh. ``agent=None`` just clears the ``works`` agents.
+    applies afresh. ``agent=None`` just clears the ``works`` agents. ``role=None`` keeps an
+    existing member's role (a new member gets an empty one).
     """
     from agenthub.hub import task_agents
 
@@ -241,7 +242,7 @@ def assign(
         if task_agents.member(task, target.id):
             task_agents.update_agent(conn, task_id, target.id, actor=actor, role=role, stage="works")
         else:
-            task_agents.add_agent(conn, task_id, target.id, role=role, stage="works", actor=actor)
+            task_agents.add_agent(conn, task_id, target.id, role=role or "", stage="works", actor=actor)
     state = "open" if task["state"] in ("claimed", "in_progress", "blocked") else task["state"]
     conn.execute("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?", (state, now_iso(), task_id))
     events.emit(

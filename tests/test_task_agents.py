@@ -185,3 +185,15 @@ def test_assign_makes_agent_only_works_and_keeps_reviewers(hub):
     assert sorted((m["name"], m["stage"]) for m in got["agents"]) == [("b", "works"), ("c", "reviews")]
     assert task_agents.member(got, b.id)["role"] == "New"
     assert task_agents.member(got, a.id) is None
+
+
+def test_assign_same_agent_keeps_role(hub):
+    a = hub.enroll("a")
+    t = mk_task(hub)
+    add(hub, t["id"], a.id, "Implementer")
+    conn = hub.conn()
+    with db.transaction(conn):
+        got = tasks.assign(conn, t["id"], a.id, actor=OPERATOR)
+        assert task_agents.member(got, a.id)["role"] == "Implementer"
+        got = tasks.assign(conn, t["id"], a.id, actor=OPERATOR, role="Lead")
+        assert task_agents.member(got, a.id)["role"] == "Lead"
