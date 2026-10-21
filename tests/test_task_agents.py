@@ -151,9 +151,11 @@ def test_assignee_column_is_dead():
     ``create_task`` and ``assign``. Later tasks extend this to the remaining functions
     and modules.
     """
-    assert "assignee" not in _strip_comments((SRC / "task_agents.py").read_text())
+    for name in ("task_agents.py", "bus.py"):
+        assert "assignee" not in _strip_comments((SRC / name).read_text()), name
     tree = ast.parse((SRC / "tasks.py").read_text())
-    migrated = {"_row", "get_task", "list_tasks", "create_task", "assign"}
+    migrated = {"_row", "get_task", "list_tasks", "create_task", "assign", "transition", "add_note",
+                "_require_member", "start_run", "end_run", "record_progress"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in migrated]
     nodes += [n for n in tree.body if isinstance(n, ast.Assign)
               and any(getattr(t, "id", "") == "_SELECT" for t in n.targets)]
@@ -197,3 +199,143 @@ def test_assign_same_agent_keeps_role(hub):
         assert task_agents.member(got, a.id)["role"] == "Implementer"
         got = tasks.assign(conn, t["id"], a.id, actor=OPERATOR, role="Lead")
         assert task_agents.member(got, a.id)["role"] == "Lead"
+
+
+# --- finish, verdicts, send-back ---------------------------------------------------
+
+def _tx(hub, fn, *a, **kw):
+    conn = hub.conn()
+    with db.transaction(conn):
+        return fn(conn, *a, **kw)
+
+
+def _agent(hub, name):
+    return store.find_agent(hub.conn(), name)
+
+
+def _state(hub, task_id):
+    return tasks.get_task(hub.conn(), task_id)["state"]
+
+
+def running(hub, *works, reviews=()):
+    """A task in_progress with the given implementers and reviewers (agents enrolled here)."""
+    t = mk_task(hub)
+    for n in works:
+        hub.enroll(n)
+        add(hub, t["id"], n)
+    for n in reviews:
+        hub.enroll(n)
+        add(hub, t["id"], n, stage="reviews")
+    _tx(hub, tasks.transition, t["id"], "claimed", actor=OPERATOR, role="operator")
+    _tx(hub, tasks.transition, t["id"], "in_progress", actor=OPERATOR, role="operator")
+    return t
+
+
+def fin(hub, t, name):
+    return _tx(hub, task_agents.finish, t["id"], _agent(hub, name))
+
+
+def verdict(hub, t, name, v, notes=""):
+    return _tx(hub, task_agents.record_verdict, t["id"], _agent(hub, name), verdict=v, notes=notes)
+
+
+def test_revoked_implementer_does_not_block_review(hub):
+    t = running(hub, "a", "b")
+    b = _agent(hub, "b")
+    hub.set_status(type("C", (), {"id": b.id})(), "revoked")
+    fin(hub, t, "a")
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_removed_implementer_does_not_block_review(hub):
+    t = running(hub, "a", "b")
+    _tx(hub, task_agents.remove_agent, t["id"], "b", actor=OPERATOR)
+    assert _state(hub, t["id"]) == "in_progress"
+    fin(hub, t, "a")
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_finish_rules(hub):
+    t = running(hub, "a", reviews=("r",))
+    hub.enroll("x")
+    for who in ("r", "x"):
+        with pytest.raises(store.Forbidden):
+            fin(hub, t, who)
+    assert all(m["finished_at"] is None for m in tasks.get_task(hub.conn(), t["id"])["agents"])
+    fin(hub, t, "a")
+    with pytest.raises(store.Conflict):  # already in review
+        fin(hub, t, "a")
+    ev = hub.conn().execute("SELECT payload FROM events WHERE type = 'task.agent_finished'").fetchall()
+    assert len(ev) == 1 and json.loads(ev[0]["payload"])["agents"]
+
+
+def test_finish_requires_in_progress(hub):
+    t = mk_task(hub)
+    hub.enroll("a")
+    add(hub, t["id"], "a")
+    with pytest.raises(store.Conflict):
+        fin(hub, t, "a")
+
+
+def _verdicts(hub, t):
+    return {m["agent_id"]: (m["verdict"], m["verdict_notes"]) for m in tasks.get_task(hub.conn(), t["id"])["agents"]}
+
+
+def test_verdict_rules(hub):
+    t = running(hub, "a", reviews=("r",))
+    hub.enroll("x")
+    before = _verdicts(hub, t)
+    with pytest.raises(store.Conflict):  # still in_progress
+        verdict(hub, t, "r", "approve")
+    fin(hub, t, "a")
+    assert _state(hub, t["id"]) == "review"
+    with pytest.raises(store.Forbidden):
+        verdict(hub, t, "a", "approve")
+    with pytest.raises(store.Forbidden):
+        verdict(hub, t, "x", "approve")
+    with pytest.raises(store.Invalid):
+        verdict(hub, t, "r", "lgtm")
+    assert _verdicts(hub, t) == before
+
+
+def test_verdict_recorded_and_state_unchanged(hub):
+    t = running(hub, "a", reviews=("r",))
+    fin(hub, t, "a")
+    verdict(hub, t, "r", "approve", "looks good")
+    r = _agent(hub, "r")
+    assert _verdicts(hub, t)[r.id] == ("approve", "looks good")
+    assert _state(hub, t["id"]) == "review"
+    row = hub.conn().execute("SELECT payload FROM events WHERE type = 'task.verdict'").fetchone()
+    p = json.loads(row["payload"])
+    assert p["verdict"] == "approve" and p["notes"] == "looks good" and p["agent_id"] == r.id
+    assert r.id in p["agents"]
+
+
+def test_operator_send_back_resets_finish_and_verdicts(hub):
+    t = running(hub, "a", "b", reviews=("r",))
+    fin(hub, t, "a")
+    fin(hub, t, "b")
+    verdict(hub, t, "r", "changes", "fix it")
+    _tx(hub, tasks.transition, t["id"], "in_progress", actor=OPERATOR, role="operator")
+    for m in tasks.get_task(hub.conn(), t["id"])["agents"]:
+        assert m["finished_at"] is None and m["verdict"] is None and m["verdict_notes"] == ""
+
+
+def test_release_removes_member_and_reopens_when_last(hub):
+    t = running(hub, "a", "b")
+    a, b = _agent(hub, "a"), _agent(hub, "b")
+    _tx(hub, tasks.transition, t["id"], "open", actor=a.id, role="agent", agent=a)
+    assert _state(hub, t["id"]) == "in_progress"
+    assert [m["agent_id"] for m in tasks.get_task(hub.conn(), t["id"])["agents"]] == [b.id]
+    _tx(hub, tasks.transition, t["id"], "open", actor=b.id, role="agent", agent=b)
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert got["state"] == "open" and got["agents"] == []
+
+
+def test_task_events_carry_member_ids(hub):
+    t = running(hub, "a", reviews=("r",))
+    fin(hub, t, "a")
+    ids = {_agent(hub, "a").id, _agent(hub, "r").id}
+    for row in hub.conn().execute("SELECT type, payload FROM events WHERE type LIKE 'task.%' AND id > "
+                                  "(SELECT MAX(id) FROM events WHERE type = 'task.agent_added')"):
+        assert set(json.loads(row["payload"])["agents"]) == ids, row["type"]

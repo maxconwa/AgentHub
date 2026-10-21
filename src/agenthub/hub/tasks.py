@@ -11,7 +11,9 @@ knows the legal moves and who may make them:
   Any non-terminal state ──▶ cancelled (operator only).
 
 Roles:
-  agent     the task's assignee (claim sets it); may go no further than review
+  agent     a ``works`` member of the task (claiming an unstaffed task joins it); may not
+            move a task to review: agents finish, and the hub moves it
+  system    the hub itself: in_progress → review once every active implementer finished
   operator  a human; any legal move
   approval  the outcome of an approval decision (awaiting_approval → open / rejected)
 """
@@ -46,10 +48,11 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 AGENT_MOVES = frozenset({
     ("open", "claimed"),
     ("claimed", "in_progress"), ("claimed", "blocked"), ("claimed", "open"),
-    ("in_progress", "blocked"), ("in_progress", "review"), ("in_progress", "open"),
+    ("in_progress", "blocked"), ("in_progress", "open"),
     ("blocked", "in_progress"), ("blocked", "open"),
 })
 APPROVAL_MOVES = frozenset({("awaiting_approval", "open"), ("awaiting_approval", "rejected")})
+SYSTEM_MOVES = frozenset({("in_progress", "review")})
 
 BUDGET_LIMITS = {"max_turns": (1, 500), "wall_clock_minutes": (1, 24 * 60), "max_subtasks": (0, 50)}
 DEFAULT_BUDGET = {"max_turns": 50, "wall_clock_minutes": 60, "max_subtasks": 5}
@@ -62,7 +65,7 @@ def check_transition(current: str, new: str, role: str) -> None:
         raise Conflict(f"illegal task transition {current} → {new}")
     if role == "operator":
         return
-    allowed = {"agent": AGENT_MOVES, "approval": APPROVAL_MOVES}.get(role)
+    allowed = {"agent": AGENT_MOVES, "approval": APPROVAL_MOVES, "system": SYSTEM_MOVES}.get(role)
     if allowed is None:
         raise Invalid(f"unknown role {role!r}")
     if (current, new) not in allowed:
@@ -169,7 +172,7 @@ def create_task(
     task_id = cur.lastrowid
     events.emit(
         conn, type="task.created", actor=actor, project=project, device=device,
-        payload={"task_id": task_id, "title": title, "body": body, "state": state},
+        payload={"task_id": task_id, "title": title, "body": body, "state": state, "agents": []},
     )
     if assignee is not None:
         from agenthub.hub import task_agents
@@ -193,30 +196,45 @@ def transition(
     task = get_task(conn, task_id)
     current = task["state"]
     check_transition(current, new_state, role)
-    assignee = task["assignee"]
+    from agenthub.hub import task_agents
+
+    released = False
     if role == "agent":
         if agent is None:
             raise Invalid("agent role requires the acting agent")
-        if new_state == "claimed":
-            if assignee not in (None, agent.id):
-                raise Forbidden("task is assigned to another agent")
-            assignee = agent.id
-        elif assignee != agent.id:
-            raise Forbidden("only the task's assignee may change it")
-    if new_state == "open" and current in ("claimed", "in_progress", "blocked"):
-        assignee = None  # unclaimed: back in the pool
+        if new_state == "claimed" and not task["agents"]:
+            task_agents.add_agent(conn, task_id, agent.id, role="", stage="works", actor=actor)
+        else:
+            _require_member(task, agent, "works")
+        released = new_state == "open" and current in ("claimed", "in_progress", "blocked")
+    if released:
+        assert agent is not None
+        task_agents.remove_agent(conn, task_id, agent.id, actor=actor)
+        if task_agents.list_agents(conn, task_id):
+            return get_task(conn, task_id)  # others remain: only the membership changed
+    elif new_state == "open" and current in ("claimed", "in_progress", "blocked"):
+        for m in task["agents"]:  # operator unclaim: back in the pool
+            task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor)
     cur = conn.execute(
-        "UPDATE tasks SET state = ?, assignee = ?, updated_at = ?, last_note = ?, last_moved_by = ? "
+        "UPDATE tasks SET state = ?, updated_at = ?, last_note = ?, last_moved_by = ? "
         "WHERE id = ? AND state = ?",
-        (new_state, assignee, now_iso(), note, actor, task_id, current),
+        (new_state, now_iso(), note, actor, task_id, current),
     )
     if cur.rowcount == 0:
         raise Conflict(f"task {task_id} changed concurrently; re-read and retry")
+    if current == "review" and new_state == "in_progress":  # operator sent it back
+        conn.execute("UPDATE task_agents SET finished_at = NULL WHERE task_id = ? AND stage = 'works'", (task_id,))
+        conn.execute(
+            "UPDATE task_agents SET verdict = NULL, verdict_notes = '' WHERE task_id = ? AND stage = 'reviews'",
+            (task_id,),
+        )
+    fresh = get_task(conn, task_id)
     events.emit(
         conn, type="task.transitioned", actor=actor, project=task["project"], device=device,
-        payload={"task_id": task_id, "from": current, "to": new_state, "assignee": assignee, "note": note},
+        payload={"task_id": task_id, "from": current, "to": new_state, "note": note,
+                 "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
-    return get_task(conn, task_id)
+    return fresh
 
 
 def assign(
@@ -245,20 +263,20 @@ def assign(
             task_agents.add_agent(conn, task_id, target.id, role=role or "", stage="works", actor=actor)
     state = "open" if task["state"] in ("claimed", "in_progress", "blocked") else task["state"]
     conn.execute("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?", (state, now_iso(), task_id))
+    fresh = get_task(conn, task_id)
     events.emit(
         conn, type="task.assigned", actor=actor, project=task["project"],
         payload={"task_id": task_id, "agent_id": target.id if target else None,
-                 "from_state": task["state"], "state": state},
+                 "from_state": task["state"], "state": state, "agents": _member_ids(fresh)},
     )
-    return get_task(conn, task_id)
+    return fresh
 
 
 def add_note(conn: sqlite3.Connection, task_id: int, note: str, *, agent: Agent, device: str | None = None) -> None:
     task = get_task(conn, task_id)
-    if task["assignee"] != agent.id:
-        raise Forbidden("only the task's assignee may add progress notes")
+    _require_member(task, agent)
     events.emit(conn, type="task.note", actor=agent.id, project=task["project"], device=device,
-                payload={"task_id": task_id, "note": note})
+                payload={"task_id": task_id, "note": note, "agents": _member_ids(task)})
 
 
 # --- runs, progress, budgets (used by the runner) --------------------------------
@@ -269,9 +287,17 @@ MAX_PROGRESS_TEXT = 500
 EXTENSION_CAPS = {"max_turns": 5000, "wall_clock_minutes": 7 * 24 * 60, "max_subtasks": 200}
 
 
-def _require_assignee(task: dict[str, Any], agent: Agent) -> None:
-    if task["assignee"] != agent.id:
-        raise Forbidden("only the task's assignee may do this")
+def _member_ids(task: dict[str, Any]) -> list[str]:
+    return [m["agent_id"] for m in task["agents"]]
+
+
+def _require_member(task: dict[str, Any], agent: Agent, stage: str | None = None) -> dict[str, Any]:
+    from agenthub.hub import task_agents
+
+    m = task_agents.member(task, agent.id)
+    if m is None or (stage is not None and m["stage"] != stage):
+        raise Forbidden("only agents on this task may do this")
+    return m
 
 
 def list_runs(conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
@@ -298,7 +324,7 @@ def _ts(value: str) -> float:
 
 def start_run(conn: sqlite3.Connection, task_id: int, agent: Agent, *, device: str | None = None) -> dict[str, Any]:
     task = get_task(conn, task_id)
-    _require_assignee(task, agent)
+    _require_member(task, agent)
     if task["state"] != "in_progress":
         raise Conflict(f"task {task_id} must be in_progress to start a run (it is {task['state']})")
     if conn.execute("SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL", (task_id,)).fetchone():
@@ -308,7 +334,8 @@ def start_run(conn: sqlite3.Connection, task_id: int, agent: Agent, *, device: s
     )
     number = conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()[0]
     events.emit(conn, type="task.run_started", actor=agent.id, project=task["project"], device=device,
-                payload={"task_id": task_id, "run_id": cur.lastrowid, "number": number})
+                payload={"task_id": task_id, "run_id": cur.lastrowid, "number": number,
+                         "agents": _member_ids(task)})
     return {"id": cur.lastrowid, "number": number}
 
 
@@ -325,7 +352,7 @@ def end_run(
     device: str | None = None,
 ) -> dict[str, Any]:
     task = get_task(conn, task_id)
-    _require_assignee(task, agent)
+    _require_member(task, agent)
     cur = conn.execute(
         "UPDATE task_runs SET ended_at = ?, outcome = ?, session_id = COALESCE(?, session_id), "
         "num_turns = ?, cost_usd = ? WHERE id = ? AND task_id = ? AND agent_id = ? AND ended_at IS NULL",
@@ -335,7 +362,7 @@ def end_run(
         raise Conflict(f"run {run_id} is not an active run of task {task_id}")
     events.emit(conn, type="task.run_ended", actor=agent.id, project=task["project"], device=device,
                 payload={"task_id": task_id, "run_id": run_id, "outcome": outcome, "num_turns": num_turns,
-                         "cost_usd": cost_usd})
+                         "cost_usd": cost_usd, "agents": _member_ids(task)})
     return usage(conn, task_id)
 
 
@@ -351,13 +378,14 @@ def record_progress(
     *, run_id: int | None = None, device: str | None = None,
 ) -> int:
     task = get_task(conn, task_id)
-    _require_assignee(task, agent)
+    _require_member(task, agent)
     clean = [
         {"kind": str(i.get("kind", "note"))[:32], "text": str(i.get("text", ""))[:MAX_PROGRESS_TEXT]}
         for i in items[:MAX_PROGRESS_ITEMS]
     ]
     return events.emit(conn, type="task.progress", actor=agent.id, project=task["project"], device=device,
-                       payload={"task_id": task_id, "run_id": run_id, "items": clean})
+                       payload={"task_id": task_id, "run_id": run_id, "items": clean,
+                               "agents": _member_ids(task)})
 
 
 def budget_extension(task: dict[str, Any], limit: str) -> int:
@@ -372,5 +400,5 @@ def extend_budget(conn: sqlite3.Connection, task_id: int, limit: str, value: int
     budget = {**task["budget"], limit: value}
     conn.execute("UPDATE tasks SET budget = ?, updated_at = ? WHERE id = ?", (json.dumps(budget), now_iso(), task_id))
     events.emit(conn, type="task.budget_extended", actor=actor, project=task["project"],
-                payload={"task_id": task_id, "limit": limit, "value": value, "assignee": task["assignee"]})
+                payload={"task_id": task_id, "limit": limit, "value": value, "agents": _member_ids(task)})
     return get_task(conn, task_id)

@@ -14,7 +14,7 @@ from typing import Any
 
 from agenthub.hub import events, tasks
 from agenthub.hub.db import now_iso
-from agenthub.hub.store import Conflict, Invalid, NotFound, find_agent
+from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent
 
 STAGES = ("works", "reviews")
 VERDICTS = ("approve", "changes")
@@ -125,3 +125,65 @@ def update_agent(
          task_id, agent_id),
     )
     return _emit(conn, "updated", task, agent_id, actor)
+
+
+def _state_membership(
+    conn: sqlite3.Connection, task_id: int, agent: Agent, stage: str, state: str
+) -> dict[str, Any]:
+    task = tasks.get_task(conn, task_id)
+    m = member(task, agent.id)
+    if m is None or m["stage"] != stage:
+        raise Forbidden(f"only agents that {stage[:-1]} this task may do this")
+    if task["state"] != state:
+        raise Conflict(f"task {task_id} must be {state} (it is {task['state']})")
+    return task
+
+
+def finish(
+    conn: sqlite3.Connection, task_id: int, agent: Agent, *, note: str = "", device: str | None = None
+) -> dict[str, Any]:
+    """An implementer says its part is done. When every *active* implementer has,
+    the hub moves the task to ``review``; revoked or pending ones do not block it."""
+    task = _state_membership(conn, task_id, agent, "works", "in_progress")
+    conn.execute(
+        "UPDATE task_agents SET finished_at = COALESCE(finished_at, ?) WHERE task_id = ? AND agent_id = ?",
+        (now_iso(), task_id, agent.id),
+    )
+    fresh = tasks.get_task(conn, task_id)
+    events.emit(
+        conn, type="task.agent_finished", actor=agent.id, project=task["project"], device=device,
+        payload={"task_id": task_id, "agent_id": agent.id, "note": note,
+                 "agents": [m["agent_id"] for m in fresh["agents"]]},
+    )
+    if all(m["finished_at"] for m in fresh["agents"] if m["stage"] == "works" and m["status"] == "active"):
+        return tasks.transition(
+            conn, task_id, "review", actor="system:hub", role="system", note="all implementers finished",
+            device=device,
+        )
+    return fresh
+
+
+def record_verdict(
+    conn: sqlite3.Connection,
+    task_id: int,
+    agent: Agent,
+    *,
+    verdict: str,
+    notes: str = "",
+    device: str | None = None,
+) -> dict[str, Any]:
+    """A reviewer records its verdict. It never moves the task: only the operator does."""
+    if verdict not in VERDICTS:
+        raise Invalid(f"verdict must be one of {', '.join(VERDICTS)}")
+    task = _state_membership(conn, task_id, agent, "reviews", "review")
+    conn.execute(
+        "UPDATE task_agents SET verdict = ?, verdict_notes = ? WHERE task_id = ? AND agent_id = ?",
+        (verdict, notes, task_id, agent.id),
+    )
+    fresh = tasks.get_task(conn, task_id)
+    events.emit(
+        conn, type="task.verdict", actor=agent.id, project=task["project"], device=device,
+        payload={"task_id": task_id, "agent_id": agent.id, "verdict": verdict, "notes": notes,
+                 "agents": [m["agent_id"] for m in fresh["agents"]]},
+    )
+    return fresh

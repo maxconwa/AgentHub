@@ -41,7 +41,7 @@ class Socket(Protocol):
 def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     p = event["payload"]
     keep = ("message_id", "channel", "task_id", "approval_id", "ask_id", "kind", "status", "from", "to",
-            "state", "assignee", "expires_at", "key", "version", "conflict_id", "board_key")
+            "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key")
     data = {k: p[k] for k in keep if k in p}
     if event["type"] == "message.posted":
         data["addressed_to_me"] = p.get("to") == recipient
@@ -58,8 +58,8 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
     if etype in ("message.posted", "board.updated", "channel.created"):
         rows = conn.execute("SELECT id, allowed_projects FROM agents WHERE status = 'active'").fetchall()
         return {r["id"] for r in rows if project in json.loads(r["allowed_projects"])} - {event["actor"]}
-    if etype in ("task.created", "task.transitioned", "task.assigned"):
-        return {p["assignee"]} if p.get("assignee") else set()
+    if etype.startswith("task."):
+        return set(p.get("agents") or ())
     if etype in ("approval.decided", "approval.discussed", "approval.consumed"):
         if "requester" in p:
             return {p["requester"]} - {event["actor"]}

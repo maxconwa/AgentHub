@@ -125,9 +125,10 @@ async def test_task_tools_and_approval_wait(mcp_ops):
         claimed = text(await c.call_tool("claim_task", {"task_id": task_id}))
         assert "use redis" in claimed and "<untrusted-content" in claimed
         assert "in_progress" in text(await c.call_tool("update_task", {"task_id": task_id, "state": "in_progress"}))
-        assert "review" in text(await c.call_tool("update_task", {"task_id": task_id, "state": "review"}))
+        review = await c.call_tool("update_task", {"task_id": task_id, "state": "review"})
+        assert review.is_error and "403" in text(review)  # agents finish; the hub moves the task to review
         done = await c.call_tool("update_task", {"task_id": task_id, "state": "done"})
-        assert done.is_error and "403" in text(done)
+        assert done.is_error
 
 
 async def test_request_approval_tool(mcp_ops):

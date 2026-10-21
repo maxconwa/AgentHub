@@ -171,7 +171,7 @@ def request(
         details = {"task_id": task["id"], "assignee": str(details.get("assignee") or "") or None}
     if kind in ("budget_exceeded", "tool_permission") and "task_id" in details:
         task = tasks.get_task(conn, _int(details, "task_id"))
-        if task["assignee"] != agent.id:
+        if not any(m["agent_id"] == agent.id for m in task["agents"]):  # stage rules: Task 3
             raise Forbidden("only the task's assignee can file this approval for it")
         project = task["project"]
         if kind == "budget_exceeded":
@@ -250,7 +250,7 @@ def request_tool_permission(
 ) -> dict[str, Any]:
     """File (or reuse) a live permission request from a headless task session."""
     task = tasks.get_task(conn, task_id)
-    if task["assignee"] != agent.id:
+    if not any(m["agent_id"] == agent.id for m in task["agents"]):  # stage rules: Task 3
         raise Forbidden("only the task's assignee can request permissions for it")
     key = tool_key(agent.id, task_id, tool_name, tool_input)
     row = conn.execute(
@@ -349,7 +349,7 @@ def agent_create_task(
     )
     approval = create(
         conn, kind="task_create", requester=agent.id, project=project, reason=reason, device=device,
-        details={"task_id": task["id"], "title": title, "assignee": task["assignee"], "budget": task["budget"]},
+        details={"task_id": task["id"], "title": title, "assignee": next((m["agent_id"] for m in task["agents"]), None), "budget": task["budget"]},
     )
     conn.execute("UPDATE tasks SET approval_id = ? WHERE id = ?", (approval["id"], task["id"]))
     return tasks.get_task(conn, task["id"]), approval

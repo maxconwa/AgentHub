@@ -1,6 +1,6 @@
 import pytest
 
-from agenthub.hub import approvals, db, store, tasks
+from agenthub.hub import approvals, db, store, task_agents, tasks
 
 from .conftest import OPERATOR
 
@@ -20,6 +20,12 @@ def op_move(hub, task_id, state):
     conn = hub.conn()
     with db.transaction(conn):
         return tasks.transition(conn, task_id, state, actor=OPERATOR, role="operator")
+
+
+def finish(hub, task_id, agent):
+    conn = hub.conn()
+    with db.transaction(conn):
+        return task_agents.finish(conn, task_id, store.find_agent(conn, agent))
 
 
 def decide(hub, approval_id, approve=True):
@@ -95,16 +101,18 @@ def test_operator_created_task_skips_approval(hub):
 def test_full_agent_lifecycle_stops_at_review(hub):
     a = hub.enroll("a")
     t = op_task(hub)
-    assert hub.client.post(f"/api/v1/tasks/{t['id']}/claim", headers=a.headers).json()["assignee"] == a.id
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/claim", headers=a.headers).json()["agents"][0]["agent_id"] == a.id
     assert move(hub, a, t["id"], "in_progress").json()["state"] == "in_progress"
     assert move(hub, a, t["id"], "blocked").json()["state"] == "blocked"
     assert move(hub, a, t["id"], "in_progress").json()["state"] == "in_progress"
-    assert move(hub, a, t["id"], "review").json()["state"] == "review"
+    assert move(hub, a, t["id"], "review").status_code == 403  # agents finish; the hub moves to review
+    finish(hub, t["id"], "a")
+    assert tasks.get_task(hub.conn(), t["id"])["state"] == "review"
     assert move(hub, a, t["id"], "done").status_code == 403
     assert op_move(hub, t["id"], "done")["state"] == "done"
 
 
-def test_only_assignee_can_claim_or_move(hub):
+def test_non_member_cannot_claim_or_move(hub):
     a, b = hub.enroll("a"), hub.enroll("b")
     t = op_task(hub, assignee="a")
     assert hub.client.post(f"/api/v1/tasks/{t['id']}/claim", headers=b.headers).status_code == 403
@@ -118,7 +126,7 @@ def test_unclaim_returns_task_to_pool(hub):
     t = op_task(hub)
     hub.client.post(f"/api/v1/tasks/{t['id']}/claim", headers=a.headers)
     r = move(hub, a, t["id"], "open").json()
-    assert r["state"] == "open" and r["assignee"] is None
+    assert r["state"] == "open" and r["agents"] == []
 
 
 def test_reassign_puts_claimed_task_back_to_open(hub):
@@ -128,7 +136,7 @@ def test_reassign_puts_claimed_task_back_to_open(hub):
     conn = hub.conn()
     with db.transaction(conn):
         r = tasks.assign(conn, t["id"], "b", actor=OPERATOR)
-    assert r["state"] == "open" and r["assignee"] == b.id
+    assert r["state"] == "open" and [m["agent_id"] for m in r["agents"]] == [b.id]
 
 
 def test_agent_reassign_requires_approval(hub):
@@ -137,9 +145,9 @@ def test_agent_reassign_requires_approval(hub):
     r = hub.client.post("/api/v1/approvals", headers=a.headers, json={
         "kind": "task_reassign", "reason": "b knows this code", "details": {"task_id": t["id"], "assignee": "b"}})
     assert r.status_code == 201
-    assert hub.client.get(f"/api/v1/tasks/{t['id']}", headers=a.headers).json()["assignee"] == a.id
+    assert hub.client.get(f"/api/v1/tasks/{t['id']}", headers=a.headers).json()["agents"][0]["agent_id"] == a.id
     decide(hub, r.json()["id"])
-    assert hub.client.get(f"/api/v1/tasks/{t['id']}", headers=a.headers).json()["assignee"] == b.id
+    assert hub.client.get(f"/api/v1/tasks/{t['id']}", headers=a.headers).json()["agents"][0]["agent_id"] == b.id
 
 
 def test_tasks_in_other_projects_are_invisible(hub):
@@ -247,3 +255,90 @@ def test_budget_extension_is_decided_by_hub_not_agent(hub):
     bad = hub.client.post("/api/v1/approvals", headers=a.headers, json={
         "kind": "budget_exceeded", "details": {"task_id": t["id"], "limit": "infinite"}})
     assert bad.status_code == 422
+
+
+# --- membership-based state machine ----------------------------------------------
+
+def claim(hub, agent, task_id):
+    return hub.client.post(f"/api/v1/tasks/{task_id}/claim", headers=agent.headers)
+
+
+def members(hub, task_id):
+    return {m["agent_id"]: m for m in tasks.get_task(hub.conn(), task_id)["agents"]}
+
+
+def add_member(hub, task_id, agent, stage="works", role="r"):
+    conn = hub.conn()
+    with db.transaction(conn):
+        return task_agents.add_agent(conn, task_id, agent, role=role, stage=stage, actor=OPERATOR)
+
+
+def test_claim_unassigned_task_adds_claimant_as_implementer(hub):
+    a = hub.enroll("a")
+    t = op_task(hub)
+    r = claim(hub, a, t["id"])
+    assert r.status_code == 200 and r.json()["state"] == "claimed"
+    m = members(hub, t["id"])[a.id]
+    assert m["stage"] == "works" and m["role"] == ""
+
+
+def test_non_member_cannot_claim_or_move_403(hub):
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = op_task(hub, assignee="a")
+    assert claim(hub, b, t["id"]).status_code == 403
+    claim(hub, a, t["id"])
+    assert move(hub, b, t["id"], "in_progress").status_code == 403
+    assert set(members(hub, t["id"])) == {a.id}
+
+
+def test_reviewer_cannot_move_state(hub):
+    a, r = hub.enroll("a"), hub.enroll("r")
+    t = op_task(hub, assignee="a")
+    add_member(hub, t["id"], "r", stage="reviews")
+    claim(hub, a, t["id"])
+    move(hub, a, t["id"], "in_progress")
+    assert move(hub, r, t["id"], "blocked").status_code == 403
+    assert claim(hub, r, t["id"]).status_code in (403, 409)
+    assert tasks.get_task(hub.conn(), t["id"])["state"] == "in_progress"
+    add_note = hub.client.post(f"/api/v1/tasks/{t['id']}/update", json={"note": "x"}, headers=r.headers)
+    assert add_note.status_code == 200  # notes need membership only
+
+
+def test_agents_cannot_move_to_review_directly(hub):
+    a = hub.enroll("a")
+    t = op_task(hub, assignee="a")
+    claim(hub, a, t["id"])
+    move(hub, a, t["id"], "in_progress")
+    assert move(hub, a, t["id"], "review").status_code == 403
+    assert tasks.get_task(hub.conn(), t["id"])["state"] == "in_progress"
+
+
+def test_system_role_may_only_move_to_review():
+    tasks.check_transition("in_progress", "review", "system")
+    with pytest.raises(store.Forbidden):
+        tasks.check_transition("review", "done", "system")
+    with pytest.raises(store.Forbidden):
+        tasks.check_transition("open", "claimed", "system")
+
+
+def in_progress_task(hub, *names, project="proj"):
+    t = op_task(hub, project=project)
+    for n in names:
+        add_member(hub, t["id"], n)
+    conn = hub.conn()
+    with db.transaction(conn):
+        tasks.transition(conn, t["id"], "claimed", actor=OPERATOR, role="operator")
+        tasks.transition(conn, t["id"], "in_progress", actor=OPERATOR, role="operator")
+    return t
+
+
+def test_task_moves_to_review_when_all_implementers_finish(hub):
+    hub.enroll("a"), hub.enroll("b")
+    t = in_progress_task(hub, "a", "b")
+    finish(hub, t["id"], "a")
+    assert tasks.get_task(hub.conn(), t["id"])["state"] == "in_progress"
+    finish(hub, t["id"], "b")
+    assert tasks.get_task(hub.conn(), t["id"])["state"] == "review"
+    row = hub.conn().execute(
+        "SELECT actor, payload FROM events WHERE type = 'task.transitioned' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["actor"] == "system:hub"

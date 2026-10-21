@@ -91,7 +91,11 @@ def test_routing_is_scoped(hub):
     conn = hub.conn()
     assert bus.recipients(_event(hub, "message.posted", "proj", a.id, {"to": None}), conn) == {b.id}
     assert bus.recipients(_event(hub, "board.updated", "other", c.id, {}), conn) == set()
-    assert bus.recipients(_event(hub, "task.assigned", "proj", OPERATOR, {"assignee": b.id}), conn) == {b.id}
+    added = _event(hub, "task.agent_added", "proj", OPERATOR, {"task_id": 1, "agent_id": a.id, "agents": [a.id, b.id]})
+    assert bus.recipients(added, conn) == {a.id, b.id}
+    assert bus.recipients(_event(hub, "task.assigned", "proj", OPERATOR, {"agent_id": b.id, "agents": [b.id]}),
+                          conn) == {b.id}
+    assert bus.recipients(_event(hub, "task.transitioned", "proj", OPERATOR, {"agents": []}), conn) == set()
     ap = hub.client.post("/api/v1/approvals/command", json={"command": "rm -rf x", "cwd": "/"},
                          headers=a.headers).json()
     decided = _event(hub, "approval.decided", None, OPERATOR, {"approval_id": ap["id"]})

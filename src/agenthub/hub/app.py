@@ -330,7 +330,7 @@ def create_app(state: HubState) -> FastAPI:
     ) -> dict[str, Any]:
         require_project(caller, project)
         assignee = caller.agent.id if mine else None
-        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, assignee=assignee)}
+        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=assignee)}
 
     @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
     def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
