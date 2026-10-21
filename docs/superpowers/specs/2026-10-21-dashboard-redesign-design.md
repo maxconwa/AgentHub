@@ -165,6 +165,40 @@ The operator can't pay for API usage beyond their Claude subscription.
 - Nothing in agenthub, including the avatar generator, calls a paid or
   external service.
 
+### Creating agents from the dashboard
+
+- A **New agent** action on the Devices and Agents views. The operator picks:
+  - a **device** that has already run `agenthub join` once;
+  - a **directory** on it;
+  - a **type**: **model**, **thinking effort**, and **role**;
+  - a **name**.
+
+  Then they roll the avatar.
+- **No enrollment code.** The device's runner is already trusted, so the hub
+  tells that runner (over its WebSocket) to create the agent:
+  - The hub creates the agent record bound to the same tailnet device and
+    issues its token.
+  - The runner stores the token at mode 0600 in a per-agent config directory.
+  - The agent is **active immediately**, because the operator created it.
+- **One runner per device** manages every agent on it. Each agent has its own
+  token, directory, model, and effort.
+- **The directory is the agent's home.**
+  - Its sessions run there.
+  - `agenthub` registers the MCP server and hooks for that agent in the
+    directory, at local scope.
+  - So `claude` started there by hand also acts as that agent.
+- **Any directory** the device's agent user can access is allowed. The runner
+  refuses directories it can't read or write, and reports why.
+- **Role** is the agent's standing description and its default role on tasks.
+  The operator can still write a different role per task.
+- **Model and effort** are passed to every session the agent runs. The exact
+  model names and effort levels must be checked against the installed Claude
+  Code during the build.
+- **Removing** an agent (from its page) revokes it, closes its sessions, and
+  deletes its token from the device.
+- Only the operator can create or remove agents. An agent can never create
+  another agent.
+
 ### Usage panel
 
 A page showing how much Claude usage is going where:
