@@ -209,12 +209,14 @@ def transition(
         released = new_state == "open" and current in ("claimed", "in_progress", "blocked")
     if released:
         assert agent is not None
-        task_agents.remove_agent(conn, task_id, agent.id, actor=actor)
-        if task_agents.list_agents(conn, task_id):
-            return get_task(conn, task_id)  # others remain: only the membership changed
+        task_agents.remove_agent(conn, task_id, agent.id, actor=actor, advance=False)
+        if any(m["stage"] == "works" and m["agent_id"] != agent.id for m in task["agents"]):
+            # other implementers remain: only the membership changed (this may complete their part)
+            return task_agents.maybe_advance(conn, task_id, actor=actor)
     elif new_state == "open" and current in ("claimed", "in_progress", "blocked"):
-        for m in task["agents"]:  # operator unclaim: back in the pool
-            task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor)
+        for m in task["agents"]:  # operator unclaim: implementers leave, reviewers stay
+            if m["stage"] == "works":
+                task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor, advance=False)
     cur = conn.execute(
         "UPDATE tasks SET state = ?, updated_at = ?, last_note = ?, last_moved_by = ? "
         "WHERE id = ? AND state = ?",
@@ -255,7 +257,7 @@ def assign(
     target = find_agent(conn, agent) if agent is not None else None
     for m in task["agents"]:
         if m["stage"] == "works" and (target is None or m["agent_id"] != target.id):
-            task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor)
+            task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor, advance=False)
     if target is not None:
         if task_agents.member(task, target.id):
             task_agents.update_agent(conn, task_id, target.id, actor=actor, role=role, stage="works")

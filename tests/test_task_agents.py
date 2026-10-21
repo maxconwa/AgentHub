@@ -339,3 +339,52 @@ def test_task_events_carry_member_ids(hub):
     for row in hub.conn().execute("SELECT type, payload FROM events WHERE type LIKE 'task.%' AND id > "
                                   "(SELECT MAX(id) FROM events WHERE type = 'task.agent_added')"):
         assert set(json.loads(row["payload"])["agents"]) == ids, row["type"]
+
+
+# --- review round: advance on removal / revocation, release and unclaim with reviewers ---
+
+def test_finish_then_remove_moves_to_review(hub):
+    t = running(hub, "a", "b")
+    fin(hub, t, "a")
+    assert _state(hub, t["id"]) == "in_progress"
+    _tx(hub, task_agents.remove_agent, t["id"], "b", actor=OPERATOR)
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_finish_then_revoke_moves_to_review(hub):
+    t = running(hub, "a", "b")
+    fin(hub, t, "a")
+    b = _agent(hub, "b")
+    _tx(hub, store.set_agent_status, b.id, "revoked", actor=OPERATOR)
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_removing_last_implementer_does_not_advance(hub):
+    t = running(hub, "a", reviews=("r",))
+    _tx(hub, task_agents.remove_agent, t["id"], "a", actor=OPERATOR)
+    assert _state(hub, t["id"]) == "in_progress"
+
+
+def test_last_implementer_release_reopens_despite_reviewers(hub):
+    t = running(hub, "a", reviews=("r",))
+    a = _agent(hub, "a")
+    _tx(hub, tasks.transition, t["id"], "open", actor=a.id, role="agent", agent=a)
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert got["state"] == "open"
+    assert [(m["agent_id"], m["stage"]) for m in got["agents"]] == [(_agent(hub, "r").id, "reviews")]
+
+
+def test_release_by_unfinished_completes_others_part(hub):
+    t = running(hub, "a", "b")
+    fin(hub, t, "a")
+    b = _agent(hub, "b")
+    _tx(hub, tasks.transition, t["id"], "open", actor=b.id, role="agent", agent=b)
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_operator_unclaim_keeps_reviewers(hub):
+    t = running(hub, "a", "b", reviews=("r",))
+    _tx(hub, tasks.transition, t["id"], "open", actor=OPERATOR, role="operator")
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert got["state"] == "open"
+    assert [m["stage"] for m in got["agents"]] == ["reviews"]

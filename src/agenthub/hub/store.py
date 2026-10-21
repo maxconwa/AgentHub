@@ -241,6 +241,14 @@ def set_agent_status(conn: sqlite3.Connection, id_or_name: str, status: str, *, 
     conn.execute("UPDATE agents SET status = ? WHERE id = ?", (status, agent.id))
     events.emit(conn, type=f"agent.{'approved' if status == 'active' else 'revoked'}", actor=actor,
                 payload={"agent_id": agent.id, "name": agent.name})
+    if status == "revoked":  # a revoked implementer must not hold a task in in_progress
+        from agenthub.hub import task_agents
+
+        for r in conn.execute(
+            "SELECT ta.task_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
+            "WHERE ta.agent_id = ? AND ta.stage = 'works' AND t.state = 'in_progress'", (agent.id,)
+        ).fetchall():
+            task_agents.maybe_advance(conn, r["task_id"], actor=actor)
     return find_agent(conn, agent.id)
 
 

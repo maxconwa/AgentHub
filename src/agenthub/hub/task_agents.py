@@ -97,10 +97,29 @@ def _require_member(conn: sqlite3.Connection, task_id: int, agent: str) -> tuple
     return task, found.id
 
 
-def remove_agent(conn: sqlite3.Connection, task_id: int, agent: str, *, actor: str) -> dict[str, Any]:
+def remove_agent(
+    conn: sqlite3.Connection, task_id: int, agent: str, *, actor: str, advance: bool = True
+) -> dict[str, Any]:
+    """Remove a member. With ``advance`` (default) the removal may complete the implementers' part."""
     task, agent_id = _require_member(conn, task_id, agent)
     conn.execute("DELETE FROM task_agents WHERE task_id = ? AND agent_id = ?", (task_id, agent_id))
-    return _emit(conn, "removed", task, agent_id, actor)
+    fresh = _emit(conn, "removed", task, agent_id, actor)
+    return maybe_advance(conn, task_id, actor=actor) if advance else fresh
+
+
+def maybe_advance(conn: sqlite3.Connection, task_id: int, *, actor: str) -> dict[str, Any]:
+    """Move an ``in_progress`` task to ``review`` once every active implementer has finished.
+
+    Needs at least one active ``works`` member; revoked or pending ones never block it.
+    The move is always made by the hub (``system:hub``); ``actor`` is whoever triggered the check.
+    """
+    task = tasks.get_task(conn, task_id)
+    active = [m for m in task["agents"] if m["stage"] == "works" and m["status"] == "active"]
+    if task["state"] == "in_progress" and active and all(m["finished_at"] for m in active):
+        return tasks.transition(
+            conn, task_id, "review", actor="system:hub", role="system", note="all implementers finished",
+        )
+    return task
 
 
 def update_agent(
@@ -155,12 +174,7 @@ def finish(
         payload={"task_id": task_id, "agent_id": agent.id, "note": note,
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
-    if all(m["finished_at"] for m in fresh["agents"] if m["stage"] == "works" and m["status"] == "active"):
-        return tasks.transition(
-            conn, task_id, "review", actor="system:hub", role="system", note="all implementers finished",
-            device=device,
-        )
-    return fresh
+    return maybe_advance(conn, task_id, actor=agent.id)
 
 
 def record_verdict(
