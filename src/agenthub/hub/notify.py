@@ -56,6 +56,11 @@ def build_notification(event: dict[str, Any], names: dict[str, str], cfg: HubCon
         return {"title": f"Reply on approval #{p['approval_id']}", "message": f"{who} answered you.",
                 "priority": 3, "tags": ["speech_balloon"],
                 "click": f"{base}/ui/approvals/{p['approval_id']}" if base else None}
+    if etype == "intent.conflict":
+        agents = " and ".join(p.get("agents") or [])
+        return {"title": f"Work overlap in {event['project']}", "message": f"{agents} plan overlapping changes "
+                f"and are coordinating.", "priority": 3, "tags": ["handshake"],
+                "click": f"{base}/ui/feed?project={event['project']}" if base else None}
     if etype == "task.transitioned" and p.get("to") in ("review", "blocked"):
         return {"title": f"Task #{p['task_id']} is {p['to']}", "message": f"{who} moved it to {p['to']}.",
                 "priority": 3, "tags": ["white_check_mark" if p["to"] == "review" else "construction"],

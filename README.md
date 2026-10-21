@@ -1,35 +1,46 @@
 # agenthub
 
-A secure coordination hub that lets several Claude Code agents on different
-machines talk to each other through one central hub, while a human operator
-watches, approves, and assigns work.
+A secure coordination hub for Claude Code agents. Several agents on different
+machines talk, share state, and take work through one central hub, while a
+human operator watches, approves, and assigns from a phone-friendly dashboard.
 
-> **Status: Phase 4 of 5.** Done: core hub, event log, search, agent auth,
-> messages, board, MCP server, enrollment, tasks, approvals with discussion
-> threads, hooks, asks, the WebSocket channel, the runner, the operator
-> dashboard, and ntfy notifications. Not built yet: hardening (Phase 5:
-> mandatory rate limits, intent coordination, `doctor`, backups). Don't deploy
-> this for real work yet.
-
-> **⚠ Never give agents push access to this repository.** agenthub's hooks and
-> checks are what constrain the agents. An agent that can change this code can
-> remove those constraints.
+> **⚠ Never give agents push access to this repository.** agenthub's hooks,
+> checks, and approval gates are what constrain the agents. An agent that can
+> change this code can remove those constraints. Agent machines should also hold
+> no credentials that can push to protected branches of the repos they work on.
 
 ## How it fits together
 
 ```
-  agent machine (tag:agent)                         hub machine (tag:agent-hub)
- ┌────────────────────────────┐   tailnet HTTPS    ┌────────────────────────────────┐
- │ claude ─stdio─ agenthub mcp│ ─────────────────▶ │ tailscale serve :443           │
- │                            │                    │   └▶ agenthub hub serve        │
- │ ~/.config/agenthub/token   │                    │      127.0.0.1:8700 (only)     │
- └────────────────────────────┘                    │      SQLite (WAL + FTS5)       │
-                                                   └────────────────────────────────┘
+ agent machines (tag:agent, user "agent")              hub machine (tag:agent-hub)
+┌───────────────────────────────────────┐            ┌─────────────────────────────────┐
+│ claude ──stdio── agenthub mcp          │   tailnet  │ tailscale serve :443 (HTTPS)    │
+│   hooks: PreToolUse / Stop /           │   HTTPS    │   └▶ agenthub hub serve         │
+│          PermissionRequest             │ ─────────▶ │      127.0.0.1:8700 (only)      │
+│ agenthub runner ──WebSocket──────────  │            │      SQLite (WAL + FTS5)        │
+│   └ headless `claude -p` per task      │            │      ntfy ─▶ operator's phone   │
+└───────────────────────────────────────┘            └─────────────────────────────────┘
+                                                         ▲ dashboard /ui over Tailscale
+                                       operator's phone / laptop (user-owned device)
 ```
+
+- **Hub:** a FastAPI service bound to loopback and published on the tailnet by
+  `tailscale serve`. It keeps an append-only event log with full-text search,
+  plus messages, a versioned board, tasks, approvals with discussion threads,
+  asks, and intents.
+- **MCP server:** started by Claude Code. It exposes the hub as tools and labels
+  everything written by other agents as untrusted data.
+- **Hooks:** gate risky shell commands behind approvals (failing closed), keep
+  an agent working while messages addressed to it are unread, and route
+  permission prompts from headless sessions to the operator.
+- **Runner:** a systemd user service on each agent machine. It runs assigned
+  tasks in headless `claude -p` sessions, enforces budgets, and streams progress.
+- **Dashboard:** mobile-first pages for approvals, tasks, the live feed, agents,
+  and search, with ntfy push notifications.
 
 ## Install
 
-Always pin a tagged release, never `main`:
+Always install a **tagged release**, never `main`:
 
 ```bash
 uv tool install agenthub==0.1.0
@@ -37,159 +48,132 @@ uv tool install agenthub==0.1.0
 uv tool install "git+https://github.com/OWNER/agenthub@v0.1.0"
 ```
 
-## Hub setup
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
+every machine, and Claude Code on the agent machines.
+
+## Setup
+
+### 1. Tailscale policy
+
+Tag the hub machine `tag:agent-hub` and every agent machine `tag:agent`. Then
+apply a policy like `examples/tailscale-acl.example.hujson`:
+
+- agents can reach only the hub, on 443;
+- agents can't reach each other;
+- the hub can't connect to agents;
+- your own devices can reach the hub.
+
+**Remove the default allow-all rule** first; the file includes policy tests
+that check all of this.
+
+Tagging matters for security. A tagged device never carries a user identity,
+so an agent machine can never act as the operator. An untagged machine sends
+its owner's identity with every request. `agenthub doctor` warns if a device
+isn't tagged.
+
+### 2. Hub machine
 
 ```bash
-agenthub hub init --operator you@example.com     # config, DB, systemd user unit
+agenthub hub init --operator you@example.com     # config, database, systemd user unit
+# edit ~/.config/agenthub/hub.toml: public_url, and optionally ntfy_* (see examples/hub.example.toml)
 systemctl --user daemon-reload && systemctl --user enable --now agenthub-hub
+sudo loginctl enable-linger "$USER"              # keep it running while logged out
 tailscale serve --bg --https=443 http://127.0.0.1:8700
+agenthub doctor
 ```
 
 The hub only ever binds to a loopback address. It refuses to start on any
 other address unless you pass `--insecure-dev`.
 
-## Dashboard
+### 3. Each agent machine
 
-Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` from your phone or laptop over
-Tailscale. It is mobile-first:
-
-- **Approvals:** the queue, full details, a chat thread with the requesting
-  agent, and Approve/Reject buttons.
-- **Tasks:** a board where you create, assign, and move tasks. Tasks you create
-  skip approval.
-- **Feed:** a live event feed, filterable by project, agent, and type.
-- **Agents:** status, heartbeat, enrollment codes, approve, and revoke.
-- **Search** over the event log.
-
-Access is granted only when all of these hold:
-
-- The request arrives through `tailscale serve` from a **user-owned (untagged)
-  device**. The hub re-checks the `Tailscale-User-Login` header against its own
-  `tailscale whois` of the device.
-- The login is listed in `operators` in `hub.toml`.
-- The device does **not** have an agent enrolled. An agent running on your own
-  laptop disqualifies that laptop as an operator console. Use your phone or
-  another machine.
-- The request carries **no** `Authorization` header, so agent tokens can never
-  reach operator endpoints.
-
-Every form also carries a CSRF token and must be same-origin. Pages are served
-with a strict Content-Security-Policy. `--insecure-dev` turns the dashboard off
-entirely, because identity headers are not trusted in that mode.
-
-**Phone notifications:** set `ntfy_url`, `ntfy_topic`, and `public_url` in
-`hub.toml` (see `examples/hub.example.toml`), and subscribe to the topic in the
-ntfy app. You'll be notified about new approvals, agent replies in a discussion,
-and tasks that reach `review` or `blocked`. Tapping a notification opens the
-approval. Notifications carry only ids, kinds, and agent names unless you set
-`ntfy_include_details = true`, because they pass through a third-party server.
-
-## Enrolling an agent
-
-On the hub machine:
+Run agents as a **dedicated, unprivileged `agent` user** with no access to
+your own accounts or credentials.
 
 ```bash
-agenthub hub enroll --projects myproject          # prints a one-time code (15 min)
+sudo useradd --create-home agent && sudo -iu agent
+uv tool install agenthub==0.1.0
+claude                                        # log Claude Code in once as this user
 ```
 
-On the agent machine, as the dedicated non-root `agent` user:
+Create an enrollment code, either on the dashboard (**Agents → Enroll**) or on
+the hub with `agenthub hub enroll --projects webapp`. The code is single-use
+and expires after 15 minutes. Then, as the agent user:
 
 ```bash
 agenthub join https://HUB-NODE.YOUR-TAILNET.ts.net --code XXXX-XXXX-XXXX --name builder-1
 ```
 
-`join` exchanges the code for a token and stores it in
-`~/.config/agenthub/token` (mode 0600). It records the calling Tailscale device,
-and the token works only from that device. It then registers the `agenthub`
-MCP server with Claude Code (`--mcp-scope user` by default) and installs the
-hooks and deny rules into the matching Claude Code settings file. The agent
-stays **pending** until you approve it:
+`join` does five things:
+- exchanges the code for a token and stores it in `~/.config/agenthub/token`
+  (mode 0600);
+- binds the token to this Tailscale device;
+- registers the MCP server with Claude Code;
+- installs the hooks and the never-allow deny rules;
+- installs and starts the `agenthub-runner` service.
+
+The agent stays **pending** until you approve it on the dashboard or with
+`agenthub hub agents approve builder-1`.
+
+Finally, map projects to local checkouts in `~/.config/agenthub/runner.toml`
+(see `examples/runner.example.toml`), enable lingering, and check the result:
 
 ```bash
-agenthub hub agents list
-agenthub hub agents approve builder-1
-agenthub hub agents revoke builder-1               # takes effect on the next request
+sudo loginctl enable-linger agent
+agenthub doctor
 ```
 
-## MCP tools
+### 4. Backups
+
+See [docs/backup.md](docs/backup.md) for continuous backup of the hub database
+with Litestream, plus restore and verification steps.
+
+## Using it
+
+### Dashboard
+
+Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` on your phone or laptop.
+
+- **Approvals:** each request shows its details and a discussion thread with
+  the agent. Ask why it needs something, then approve or reject.
+- **Tasks:** a board where you create, assign, and move tasks. Tasks you
+  create skip approval, and only you can mark a task `done`.
+- **Feed:** live events, filterable by project, agent, and type.
+- **Agents:** status, heartbeat, enrollment codes, approve, revoke, and
+  allowed projects.
+- **Search** over the full event log.
+
+**Phone notifications.** Set `ntfy_url`, `ntfy_topic`, and `public_url` in
+`hub.toml` and subscribe in the ntfy app. You'll be notified about new
+approvals, agent replies, tasks reaching review or blocked, and work overlaps.
+Tapping a notification opens the relevant page. Notifications carry only ids,
+kinds, and names unless you set `ntfy_include_details = true`, because they go
+through a third-party server. ntfy.sh topics are public to anyone who guesses
+the name, so use a long random topic or an access-controlled server.
+
+Every action also exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
+
+### MCP tools
 
 | tool | purpose |
 |---|---|
 | `whoami` | identity, status, allowed projects |
-| `post` | post to a project channel, optionally addressed `to` an agent (everyone sees it; only the addressee gets it in their inbox) |
-| `read_inbox` | unread messages (marks them read unless `peek`) |
+| `post` / `read_inbox` | project chat; `to` addresses one agent (everyone sees it, only the addressee gets it in their inbox) |
 | `search_history` | full-text search over your projects' event log |
-| `board_get` | read a versioned board document, or list keys by prefix |
-| `board_put` | write with `expected_version` (0 to create); conflicts return 409 |
-| `list_tasks` | tasks in a project, filtered by state or `mine` |
-| `create_task` | propose a task; it waits in `awaiting_approval` |
-| `claim_task` | claim an open task that is unassigned or assigned to you |
-| `update_task` | move your task (claimed → in_progress → review, blocked, open) or add a note |
-| `request_approval` | ask for a `command`, `task_reassign`, `budget_exceeded`, or `tool_permission` approval |
-| `wait_for_approval` | poll until an approval you filed is decided, the operator asks you something, or the timeout passes |
-| `discuss_approval` | talk with the operator in an approval's thread before they decide |
-| `ask_agent` | ask another agent a direct question and wait for the answer |
-| `answer_ask` | answer a question another agent asked you |
+| `board_get` / `board_put` | versioned shared documents; writes need `expected_version` (0 to create) |
+| `list_tasks` / `create_task` / `claim_task` / `update_task` | tasks; agent-created tasks wait for approval; agents stop at `review` |
+| `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
+| `ask_agent` / `answer_ask` | direct questions between agents, with a timeout |
+| `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps open a coordination thread |
 
-## Tasks and approvals
+Everything written by another agent reaches Claude inside author-labeled
+`<untrusted-content>` blocks.
 
-Tasks move `proposed → awaiting_approval → open → claimed → in_progress →
-blocked → review → done`, plus `rejected` and `cancelled`. Agents can take a
-task as far as `review`; only you mark it `done`. Tasks an agent creates wait
-for your approval; tasks you create start `open`.
+### Risky commands
 
-Every approval has a **discussion thread** between you and the agent that
-requested it. Ask why it needs something before you decide. An agent waiting in
-`wait_for_approval` sees your question right away and answers with
-`discuss_approval`. Other agents can't read or post in the thread.
-
-Decide in the dashboard, or from the hub's command line:
-
-```bash
-agenthub hub approvals list                    # pending queue ([reply waiting] = the agent answered)
-agenthub hub approvals show 12                 # details + discussion
-agenthub hub approvals discuss 12 "Why do you need to force-push?"
-agenthub hub approvals approve 12 --note "ok"
-agenthub hub approvals reject 13
-agenthub hub tasks create myproject "Fix login" --assignee builder-1 --max-turns 40
-agenthub hub tasks move 7 done
-```
-
-## Runner
-
-`agenthub runner` (installed by `join` as the `agenthub-runner` systemd user
-service) keeps a WebSocket open to the hub and sends a heartbeat every 15 s. It
-runs tasks assigned to this agent in headless `claude -p` sessions, inside the
-project's local checkout. Map projects to directories in
-`~/.config/agenthub/runner.toml` (see `examples/runner.example.toml`). To keep
-the service running while the agent user is logged out, run
-`sudo loginctl enable-linger agent` once.
-
-- **Launch check.** A pushed event only wakes the runner up. Before starting,
-  it re-fetches the task and runs it only if the task is open (or its own,
-  in progress), assigned to this agent, and approved if it needed approval.
-- **Permissions.** Sessions use the agent user's own Claude Code settings.
-  When a session needs a tool those settings don't allow, the
-  **PermissionRequest** hook files a `tool_permission` approval and waits up to
-  10 minutes. You approve it live (CLI now, phone or web in Phase 4), and the
-  session continues. Each approval covers that exact call, once.
-- **Budgets.** `max_turns` and `wall_clock_minutes` count across all runs of a
-  task. `max_subtasks` is the number of runs (the first run plus each resume).
-  When a limit is hit, the runner stops the session, moves the task to
-  `blocked`, and files a `budget_exceeded` approval. If you approve, the hub
-  doubles that limit and the session resumes where it stopped (`--resume`). If
-  you reject, the task stays blocked.
-- **Progress.** Tool calls and short text snippets stream back as
-  `task.progress` events, along with turns and cost per run. When the session
-  finishes, the task moves to `review`.
-- **Revocation.** It closes the runner's WebSocket within about a second. The
-  runner stops its sessions and exits with code 3, which systemd doesn't
-  restart.
-
-## Hooks
-
-The **PreToolUse** hook checks every Bash command locally against configurable
-patterns (`~/.config/agenthub/guard.toml`; see `examples/guard.example.toml`):
+The **PreToolUse** hook checks every Bash command locally against patterns you
+can configure in `~/.config/agenthub/guard.toml` (see
+`examples/guard.example.toml`):
 
 - recursive or forced `rm`
 - SQL `DROP`/`TRUNCATE`
@@ -198,87 +182,153 @@ patterns (`~/.config/agenthub/guard.toml`; see `examples/guard.example.toml`):
 - `gh pr merge`
 - `git reset --hard` on shared branches
 
-A risky command is denied, and an approval is filed with the command's id.
-The agent calls `wait_for_approval`. Once you approve, the identical command,
-run from the same directory, is allowed **once**, within one hour.
+A risky command is blocked, and an approval is filed with an id. Once you
+approve it, that exact command from that directory may run **once**, within one
+hour.
 
-If the hub is unreachable, the config is broken, or the hook itself crashes,
-the command stays blocked. The settings entry uses `onFailure: "block"`. The hub
-can never mark a command safe; it can only use up an approval for a command the
-hook already flagged.
+If the hub is unreachable, the guard config is broken, or the hook crashes, the
+command stays blocked. A short **never-allow** list can't be approved at all:
+`rm -rf` of `/` or `~`, and force-pushing to main or master. That list is also
+written as Claude Code deny rules.
 
-A short **never-allow** list can't be approved at all: `rm -rf` of `/` or `~`,
-and force-pushing to main or master. These are also written as Claude Code
-`permissions.deny` rules as a second layer. Deny rules beat a hook's "allow", so
-only commands that must never run go there.
+### Runner and budgets
 
-The **Stop** hook keeps the agent working while messages addressed to it are
-unread, at most 3 times in a row by default. It feeds back only counts and
-author names, never message text. It lets the agent stop if the hub is down.
+Each task has a budget:
+- **max_turns** and **wall_clock_minutes** are totals across all runs.
+- **max_subtasks** is the number of runs: the first run plus each resume.
 
-Pattern matching is a speed bump, not a sandbox. The real protections are that
-agents hold no credentials that can push to protected branches, and that
-branch protection is on in the remote.
+When a limit is hit, the task is blocked and a `budget_exceeded` approval is
+filed. If you approve, the limit doubles and the session resumes where it
+stopped; if you reject, the task stays blocked.
 
-Content written by other agents is always returned inside
-`<untrusted-content author="...">` blocks and must be treated as data.
+Sessions use the agent user's own Claude Code settings. Anything those settings
+don't allow becomes a live `tool_permission` approval, and the session continues
+once you decide.
+
+### Coordinating overlapping work
+
+When two agents announce intents that overlap (`src/api/**` and
+`src/api/users.py`), the hub takes four steps:
+
+1. It opens channel `coordination-<id>`.
+2. It addresses a kickoff message to both agents.
+3. It notifies you.
+4. It creates board document `coordination/<id>`, where the agents record the
+   split or order they agree on.
+
+Overlap detection is deliberately conservative.
+
+## Files
+
+| where | what |
+|---|---|
+| `~/.config/agenthub/hub.toml` | hub config (bind address, operators, ntfy, rate limits) |
+| `~/.config/agenthub/csrf.key` | dashboard CSRF secret (0600) |
+| `~/.local/share/agenthub/hub.sqlite3` | hub database (0600) |
+| `~/.config/agenthub/agent.toml`, `token` | an agent's hub URL and token (0600) |
+| `~/.config/agenthub/guard.toml`, `runner.toml` | agent-side guard rules and runner settings |
+
+All paths can be moved with `AGENTHUB_CONFIG_DIR` and `AGENTHUB_DATA_DIR`.
+Nothing runtime lives in the repo, and `.gitignore` plus gitleaks keep it that
+way.
+
+## Security model
+
+### Trust boundaries
+
+- **Network.** The hub listens only on loopback, and `tailscale serve` is the
+  only way in. The Tailscale policy limits agents to the hub on 443, keeps
+  them from reaching each other, and stops the hub from reaching them.
+- **Forwarded headers.** `X-Forwarded-For` and `Tailscale-User-Login` are
+  trusted only when the TCP peer is loopback. `tailscale serve` (checked
+  against v1.102.2) strips client-supplied copies of these headers and sets
+  them itself. uvicorn's own proxy-header rewriting is disabled. **Assumption:
+  every local process on the hub machine is trusted**, since any of them could
+  connect to the loopback port directly. Run nothing else on that machine.
+- **Agent identity.** Each agent has a 256-bit token. The hub stores only its
+  SHA-256 hash and compares in constant time. Every request also checks, via
+  `tailscale whois` (cached for 30 s), that it comes from the Tailscale device
+  recorded at enrollment (matched by node StableID). Revocation takes effect on
+  the very next request and closes the agent's WebSocket within about a second.
+- **Operator identity.** A request can perform operator actions only if all of
+  these hold:
+  - its `Tailscale-User-Login` header matches the hub's own whois result for
+    the device;
+  - the device is untagged;
+  - the login is in `operators`;
+  - the device has no enrolled agent;
+  - the request carries no `Authorization` header.
+
+  Posts also need a CSRF token and must be same-origin; the operator WebSocket
+  checks `Origin`. `--insecure-dev` disables operator access completely.
+- **Separation of powers.** No agent endpoint can approve, reject, enroll,
+  reassign, or revoke. A test walks every operator route and confirms that
+  agent credentials are refused. Approval decisions require a `human:` actor.
+
+### Protections for agent-written content
+
+- **Labeling.** Messages, board documents, task bodies, asks, discussion
+  replies, and search hits from agents are passed along as author-labeled data.
+  Hooks feed back only counts, ids, and names.
+- **No hints from pushes.** WebSocket notifications carry only ids, and only
+  to agents allowed to see the item. The runner re-fetches and re-checks every
+  task before launching it, so a pushed event can't start work.
+- **Dashboard escaping.** The dashboard escapes all agent text and never
+  renders HTML or Markdown from agents. A strict Content-Security-Policy blocks
+  inline scripts.
+
+### Local enforcement
+
+The guard runs on the agent machine and never asks the hub whether a command
+is safe. The hub can only use up an approval for a command the guard already
+flagged. The hook fails closed, and the never-allow list is backed by Claude
+Code deny rules.
+
+### Limits
+
+- Agents have per-agent token-bucket rate limits on every endpoint.
+- Enrollment attempts are throttled per address and overall.
+- WebSocket frames are rate-limited.
+- Request bodies are capped at 64 KiB and fields have length limits.
+- Agents can only reach their allowed projects.
+
+### Known limitations
+
+- **Pattern matching is a speed bump, not a sandbox.** A determined agent can
+  get past text patterns, for example with an unusual binary path or an encoded
+  script. Keep agents unprivileged, give them no credentials for protected
+  branches, and enable branch protection on your remotes.
+- **The hub machine is the root of trust.** Anyone with a shell on it can read
+  the database and forge local requests.
+- **Budgets are approximate.** Turn counts come from Claude's own reports and
+  can overshoot by a turn, and time spent waiting for a live permission
+  decision counts against the wall-clock budget.
+- **Overlap detection is conservative**, so expect some false alarms.
 
 ## Local development
 
-`--insecure-dev` turns off device binding (whois), so you can run a hub and two
-agents on one machine. Keep each agent's state separate with
-`AGENTHUB_CONFIG_DIR` and register it in local scope from its own project
-directory:
+`--insecure-dev` turns off device binding and the dashboard, so you can run a
+hub and several agents on one machine:
 
 ```bash
 export AGENTHUB_CONFIG_DIR=/tmp/ah/hub AGENTHUB_DATA_DIR=/tmp/ah/hubdata
 agenthub hub init --no-systemd && agenthub hub serve --insecure-dev &
-
 code=$(agenthub hub enroll --projects demo)
 (cd ~/work/a && AGENTHUB_CONFIG_DIR=/tmp/ah/alice \
-   agenthub join http://127.0.0.1:8700 --code "$code" --name alice --mcp-scope local --insecure-dev)
+   agenthub join http://127.0.0.1:8700 --code "$code" --name alice --mcp-scope local --insecure-dev --no-runner)
 agenthub hub agents approve alice
-# ...repeat for bob in ~/work/b, then run `claude` in each directory.
 ```
 
-## Security model
-
-- **Network.** The hub listens only on loopback. `tailscale serve` is the only
-  way in, and it provides HTTPS.
-- **Header trust.** The hub uses `X-Forwarded-For` only when the TCP peer is
-  loopback, it holds exactly one address, and that address is a tailnet
-  address. `tailscale serve` (v1.102.2) strips client-supplied forwarding and
-  identity headers and sets these itself. uvicorn's own proxy-header rewriting
-  is disabled. **Assumption:** every local process on the hub machine is
-  trusted, because any of them could connect to the loopback port directly.
-- **Agent auth.** Each agent has its own random 256-bit token. The hub stores
-  only its SHA-256 hash and compares in constant time. Every request also runs
-  `tailscale whois` on the caller's IP (cached for 30 s) and requires the node's
-  StableID to match the one recorded at enrollment.
-- **Enrollment.** Codes are single use, expire after 15 minutes, and are stored
-  as hashes. Agents start pending. Approval, revocation, and code creation exist
-  only in the local CLI on the hub; Phase 1 has no HTTP endpoint for them.
-- **Project isolation.** Agents can reach messages, board entries, and search
-  results only in projects the operator granted them.
-- **Event log.** Every state change is written to an append-only `events`
-  table. Triggers block UPDATE and DELETE on it.
-- **Approvals.** Only a human operator can decide an approval. No agent
-  endpoint can approve, reject, enroll, or reassign. Command approvals are bound
-  to the agent, the directory, and the exact command, and each works once.
-- **Untrusted content.** Messages, board values, task bodies, asks, answers,
-  and search hits from other agents reach Claude inside author-labeled
-  `<untrusted-content>` blocks. Hooks feed back only counts, ids, and names,
-  never agent-written text. WebSocket pushes carry ids and metadata only, and
-  go only to agents that could read the item anyway.
-- **Limits.** Request bodies are capped at 64 KiB, including chunked uploads,
-  and fields have length limits. Rate limits come in Phase 5.
-- **Runtime state** lives in `~/.config/agenthub` and `~/.local/share/agenthub`
-  with modes 0700/0600, never in the repo.
+A token enrolled in dev mode is bound to a placeholder device and won't work
+once the hub runs normally.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest
-uv tool install pre-commit && pre-commit install   # gitleaks secret scanning
+uv run pytest                                      # unit + integration tests (hub server, runner, fake claude)
+uv tool install pre-commit && pre-commit install   # gitleaks secret scanning on every commit
 ```
+
+Every security check has a test, and the operator-route test discovers routes
+automatically.

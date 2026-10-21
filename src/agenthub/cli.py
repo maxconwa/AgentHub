@@ -521,6 +521,28 @@ def runner(verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False) ->
 
 
 @app.command()
+def doctor(as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
+    """Check Tailscale, hub reachability, token, hooks, runner, and file permissions."""
+    from dataclasses import asdict
+
+    from agenthub.doctor import FAIL, OK, run_doctor
+
+    sections, ok = run_doctor()
+    if not sections:
+        _fail(f"nothing to check: no agent.toml or hub.toml in {paths.config_dir()}")
+    if as_json:
+        typer.echo(json.dumps({name: [asdict(c) for c in checks] for name, checks in sections}, indent=2))
+    else:
+        colors = {OK: "green", FAIL: "red"}
+        for name, checks in sections:
+            typer.secho(f"{name}:", bold=True)
+            for c in checks:
+                typer.echo("  " + typer.style(f"{c.status:<4}", fg=colors.get(c.status, "yellow")) + f" {c.name}: {c.detail}")
+    if not ok:
+        raise typer.Exit(1)
+
+
+@app.command()
 def mcp() -> None:
     """Run the stdio MCP server (launched by Claude Code)."""
     from agenthub.mcp_server import run_stdio

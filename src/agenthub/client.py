@@ -177,6 +177,20 @@ class HubClient:
     async def consume_command(self, command: str, cwd: str) -> dict[str, Any]:
         return await self._request("POST", "/approvals/command/consume", json={"command": command, "cwd": cwd})
 
+    # --- intents ---------------------------------------------------------------
+
+    async def announce_intent(
+        self, project: str, patterns: list[str], description: str = "", ttl_minutes: int = 60
+    ) -> dict[str, Any]:
+        payload = {"patterns": patterns, "description": description, "ttl_minutes": ttl_minutes}
+        return await self._request("POST", f"/projects/{quote(project)}/intents", json=payload)
+
+    async def list_intents(self, project: str) -> list[dict[str, Any]]:
+        return (await self._request("GET", f"/projects/{quote(project)}/intents"))["intents"]
+
+    async def clear_intent(self, intent_id: int) -> dict[str, Any]:
+        return await self._request("POST", f"/intents/{intent_id}/clear")
+
     # --- asks ------------------------------------------------------------------
 
     async def ask(self, project: str, to: str, question: str, timeout_seconds: int) -> dict[str, Any]:

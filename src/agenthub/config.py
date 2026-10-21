@@ -55,6 +55,10 @@ class HubConfig:
     whois_cache_seconds: int = 30
     tailscale_bin: str = "tailscale"
     max_body_bytes: int = 64 * 1024
+    # Rate limits: per agent (all agent endpoints), and per caller address for enrollment.
+    agent_rate_per_second: float = 10.0
+    agent_rate_burst: int = 100
+    enroll_rate_per_minute: float = 5.0
     # The hub's tailnet URL (e.g. https://hub.example.ts.net), used for links in notifications.
     public_url: str = ""
     # ntfy push notifications for new approvals. Empty ntfy_url disables them.

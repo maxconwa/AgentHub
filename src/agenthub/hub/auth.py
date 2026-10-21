@@ -74,6 +74,7 @@ async def authenticate(request: HTTPConnection, conn: sqlite3.Connection, allow_
         raise _UNAUTHORIZED
     if agent.status == "revoked":
         raise _UNAUTHORIZED
+    request.app.state.hub.agent_limiter.check(agent.id)
     if agent.status != "active" and not allow_pending:
         raise HTTPException(403, f"agent is {agent.status}; an operator must approve it first")
     device = await resolve_device(request)

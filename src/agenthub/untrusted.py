@@ -29,7 +29,7 @@ def _attr(value: object) -> str:
 
 
 def author_label(author_id: str | None, author_name: str | None) -> str:
-    if author_id and author_id.startswith("human:"):
+    if author_id and author_id.startswith(("human:", "system:")):
         return author_id
     if author_name:
         return f"agent:{author_name} ({author_id})"

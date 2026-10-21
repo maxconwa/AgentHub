@@ -1,0 +1,35 @@
+// Example Tailscale policy for agenthub (HuJSON). Placeholders only.
+// Syntax per tailscale.com/kb/1324/grants and kb/1337/policy-syntax (checked 2026-10-21).
+//
+// Policy is deny-by-default and one-directional:
+//   * agents (tag:agent) can reach ONLY the hub, and only on 443 (tailscale serve)
+//   * agents cannot reach each other, the operator's devices, or anything else
+//   * the hub cannot initiate connections to agents (nothing grants it)
+//   * operators' own devices (autogroup:member) can reach the hub on 443
+// IMPORTANT: remove the default allow-all rule from your policy, or none of
+// this isolation applies.
+{
+  "tagOwners": {
+    "tag:agent":     ["autogroup:admin"],
+    "tag:agent-hub": ["autogroup:admin"],
+  },
+
+  "grants": [
+    // Agent machines -> hub HTTPS only.
+    {"src": ["tag:agent"], "dst": ["tag:agent-hub"], "ip": ["tcp:443"]},
+    // People in the tailnet -> hub dashboard. Narrow this to a group if you like,
+    // e.g. "group:agenthub-operators": ["operator@example.com"] in "groups".
+    {"src": ["autogroup:member"], "dst": ["tag:agent-hub"], "ip": ["tcp:443"]},
+  ],
+
+  // Policy tests run on every save; a failing test rejects the change.
+  "tests": [
+    {
+      "src": "tag:agent",
+      "accept": ["tag:agent-hub:443"],
+      "deny": ["tag:agent-hub:22", "tag:agent:443", "tag:agent:22"],
+    },
+    {"src": "tag:agent-hub", "deny": ["tag:agent:443", "tag:agent:22"]},
+    {"src": "operator@example.com", "accept": ["tag:agent-hub:443"]},
+  ],
+}

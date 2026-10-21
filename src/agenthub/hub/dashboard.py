@@ -106,6 +106,11 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
         return f"approval #{p.get('approval_id')} {p.get('kind') or ''} {p.get('status') or ''} {snippet(p.get('body'))}"
     if t.startswith("ask."):
         return f"ask #{p.get('ask_id')} {snippet(p.get('question') or p.get('answer'))}"
+    if t == "intent.announced":
+        return f"intends to change {', '.join(p.get('patterns') or [])}"
+    if t == "intent.conflict":
+        pairs = ", ".join(f"{a} ~ {b}" for a, b in (p.get("overlap") or [])[:5])
+        return f"overlap between {' and '.join(p.get('agents') or [])}: {pairs} → {p.get('channel')}"
     if t == "agent.enrolled":
         return f"{p.get('name')} enrolled from {(p.get('device') or {}).get('name')} (pending approval)"
     if t in ("agent.approved", "agent.revoked"):

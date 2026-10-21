@@ -14,12 +14,13 @@ from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, asks, db, events, store, tasks
+from agenthub.hub import approvals, asks, db, events, intents, store, tasks
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
 from agenthub.hub.bus import CLOSE_FORBIDDEN, CLOSE_REVOKED, EventBus
 from agenthub.hub.limits import BodySizeLimit
+from agenthub.hub.ratelimit import RateLimiter
 from agenthub.hub.tailscale import TailscaleWhois, Whois
 
 MAX_MESSAGE_CHARS = 16_000
@@ -63,8 +64,19 @@ class HubState:
     bus_poll_seconds: float = 0.5
     csrf_secret: bytes = b""
     bus: EventBus = field(init=False)
+    agent_limiter: RateLimiter = field(init=False)
+    enroll_limiter: RateLimiter = field(init=False)
+    enroll_global_limiter: RateLimiter = field(init=False)
+    frame_limiter: RateLimiter = field(init=False)
 
     def __post_init__(self) -> None:
+        cfg = self.config
+        self.agent_limiter = RateLimiter(cfg.agent_rate_per_second, cfg.agent_rate_burst)
+        per_minute = cfg.enroll_rate_per_minute
+        self.enroll_limiter = RateLimiter(per_minute / 60, max(1, int(per_minute)))
+        self.enroll_global_limiter = RateLimiter(4 * per_minute / 60, max(1, int(4 * per_minute)))
+        # Agents send one heartbeat every 15 s; anything much faster is misbehaving.
+        self.frame_limiter = RateLimiter(2.0, 20)
         if not self.csrf_secret:
             from agenthub.hub.operator import load_csrf_secret
 
@@ -125,6 +137,12 @@ class AskRequest(BaseModel):
     to: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     timeout_seconds: int = Field(default=300, ge=asks.MIN_TIMEOUT, le=asks.MAX_TIMEOUT)
+
+
+class IntentRequest(BaseModel):
+    patterns: list[str] = Field(min_length=1, max_length=intents.MAX_PATTERNS)
+    description: str = Field(default="", max_length=2000)
+    ttl_minutes: int = Field(default=60, ge=1, le=intents.MAX_TTL_MINUTES)
 
 
 class AnswerRequest(BaseModel):
@@ -223,6 +241,10 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/enroll", status_code=201)
     async def enroll(body: EnrollRequest, request: Request, conn: Conn) -> dict[str, Any]:
+        # Throttle code guessing per caller address and overall.
+        caller = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")
+        state.enroll_limiter.check(f"ip:{caller}", "enrollment attempts")
+        state.enroll_global_limiter.check("all", "enrollment attempts")
         device = await resolve_device(request)
         with db.transaction(conn):
             agent, token = store.redeem_enrollment(conn, code=body.code, name=body.name, device=device)
@@ -433,6 +455,26 @@ def create_app(state: HubState) -> FastAPI:
             approval = approvals.consume_command(conn, caller.agent, command=body.command, cwd=body.cwd)
         return {"allowed": approval is not None, "approval_id": approval["id"] if approval else None}
 
+    # --- intents ---------------------------------------------------------------
+
+    @app.post(f"{api}/projects/{{project}}/intents", status_code=201)
+    def announce_intent(project: str, body: IntentRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        require_project(caller, project)
+        with db.transaction(conn):
+            return intents.announce(conn, caller.agent, project=project, patterns=body.patterns,
+                                    description=body.description, ttl_minutes=body.ttl_minutes,
+                                    device=caller.device.name)
+
+    @app.get(f"{api}/projects/{{project}}/intents")
+    def list_intents(project: str, caller: Caller, conn: Conn) -> dict[str, Any]:
+        require_project(caller, project)
+        return {"intents": intents.active(conn, project)}
+
+    @app.post(f"{api}/intents/{{intent_id}}/clear")
+    def clear_intent(intent_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return intents.clear(conn, caller.agent, intent_id, device=caller.device.name)
+
     # --- asks ----------------------------------------------------------------
 
     @app.post(f"{api}/projects/{{project}}/asks", status_code=201)
@@ -502,6 +544,9 @@ def create_app(state: HubState) -> FastAPI:
                 message = await websocket.receive_json()
             except ValueError:
                 await websocket.close(code=CLOSE_FORBIDDEN, reason="invalid frame")
+                return
+            if state.frame_limiter.try_acquire(agent_id):
+                await websocket.close(code=CLOSE_FORBIDDEN, reason="too many frames")
                 return
             if not isinstance(message, dict) or message.get("type") != "heartbeat":
                 continue

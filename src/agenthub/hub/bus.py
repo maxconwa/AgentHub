@@ -41,7 +41,7 @@ class Socket(Protocol):
 def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     p = event["payload"]
     keep = ("message_id", "channel", "task_id", "approval_id", "ask_id", "kind", "status", "from", "to",
-            "state", "assignee", "expires_at", "key", "version")
+            "state", "assignee", "expires_at", "key", "version", "conflict_id", "board_key")
     data = {k: p[k] for k in keep if k in p}
     if event["type"] == "message.posted":
         data["addressed_to_me"] = p.get("to") == recipient
@@ -67,6 +67,9 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
         return {row["requester"]} if row else set()
     if etype in ("ask.created", "ask.answered"):
         return {p["to"]}
+    if etype == "intent.conflict":
+        rows = conn.execute("SELECT agent_id FROM intents WHERE id IN (?, ?)", tuple(p["intents"])).fetchall()
+        return {r["agent_id"] for r in rows}
     return set()
 
 

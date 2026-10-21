@@ -1,0 +1,23 @@
+# Litestream config for continuous backup of the agenthub database.
+# Format per litestream.io/reference/config (Litestream v0.5.x: one `replica:`
+# per db; the older `replicas:` list is deprecated). Placeholders only.
+# Install as /etc/litestream.yml (mode 0600); keep credentials in the
+# environment (see docs/backup.md), never in this file or the repo.
+dbs:
+  - path: /home/HUB_USER/.local/share/agenthub/hub.sqlite3
+    replica:
+      type: s3
+      bucket: REPLACE-WITH-PRIVATE-BUCKET
+      path: agenthub/hub.sqlite3
+      region: us-east-1
+      # For an S3-compatible service (MinIO, R2, B2, ...):
+      # endpoint: https://s3.example.com
+      # force-path-style: true
+
+# Alternative: replicate to another machine over SFTP.
+#    replica:
+#      type: sftp
+#      host: backup.example.ts.net:22
+#      user: backup
+#      key-path: /etc/litestream/sftp_key
+#      path: /backups/agenthub/hub.sqlite3

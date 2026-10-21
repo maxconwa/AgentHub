@@ -148,3 +148,24 @@ def test_no_operator_endpoints_exist_for_agents(hub):
     agent = hub.enroll("a")
     for path in ["/api/v1/enrollments", "/api/v1/agents/a/approve", "/api/v1/agents/a/revoke"]:
         assert hub.client.post(path, headers=agent.headers).status_code in (404, 405)
+
+
+def test_dev_enrolled_token_is_useless_outside_dev_mode(tmp_path):
+    """An agent enrolled under --insecure-dev is bound to the 'insecure-dev' placeholder device,
+    which no real tailnet node matches once the hub runs normally."""
+    from fastapi.testclient import TestClient
+
+    from agenthub.hub.app import HubState, create_app
+
+    from .conftest import AgentCreds, make_hub
+
+    dev = make_hub(tmp_path, insecure_dev=True)
+    resp = dev.client.post("/api/v1/enroll", json={"code": dev.code(), "name": "devagent"}).json()
+    dev.set_status(AgentCreds(resp["agent"]["id"], "devagent", resp["token"], ""), "active")
+    assert dev.client.get(ME, headers={"authorization": f"Bearer {resp['token']}"}).status_code == 200
+
+    prod = HubState(dev.state.config, insecure_dev=False, whois=dev.whois)
+    dev.whois.add("100.64.0.77", "nreal", "real.example.ts.net")
+    client = TestClient(create_app(prod), client=("127.0.0.1", 40000))
+    r = client.get(ME, headers={"authorization": f"Bearer {resp['token']}", "x-forwarded-for": "100.64.0.77"})
+    assert r.status_code == 403 and "different tailnet device" in r.json()["detail"]

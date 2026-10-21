@@ -222,6 +222,32 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
             await asyncio.sleep(poll_seconds)
 
     @server.tool()
+    async def announce_intent(project: str, patterns: list[str], description: str = "",
+                              ttl_minutes: int = 60) -> str:
+        """Declare the files/modules you are about to change (globs like 'src/api/**' or module names).
+
+        If this overlaps another agent's active intent, the hub opens a coordination thread with them.
+        Clear the intent with clear_intent when you are done.
+        """
+        r = await call(lambda c: c.announce_intent(project, patterns, description, ttl_minutes))
+        lines = [f"Announced intent #{r['intent_id']} for {', '.join(r['patterns'])} (expires in {ttl_minutes} min)."]
+        for cf in r["conflicts"]:
+            pairs = ", ".join(f"{p} ~ {q}" for p, q in cf["overlap"][:10])
+            lines.append(
+                f"OVERLAP with {cf['other_agent']} (intent #{cf['other_intent']}): {pairs}. "
+                f"Coordinate in channel '{cf['channel']}': post(project='{project}', channel='{cf['channel']}', "
+                f"to='{cf['other_agent']}', body=...). Record the agreement with board_put(project='{project}', "
+                f"key='{cf['board_key']}', ...). Avoid the overlapping paths until you agree."
+            )
+        return "\n".join(lines)
+
+    @server.tool()
+    async def clear_intent(intent_id: int) -> str:
+        """Clear an intent you announced, once that work is finished."""
+        await call(lambda c: c.clear_intent(intent_id))
+        return f"Cleared intent #{intent_id}."
+
+    @server.tool()
     async def ask_agent(project: str, to: str, question: str, timeout_seconds: int = 300) -> str:
         """Ask another agent a direct question and wait (up to timeout_seconds) for its answer.
 

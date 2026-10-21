@@ -215,6 +215,32 @@ MIGRATIONS: list[str] = [
     ALTER TABLE tasks ADD COLUMN last_moved_by TEXT;
     ALTER TABLE agents ADD COLUMN connected INTEGER NOT NULL DEFAULT 0;
     """,
+    # 4: phase 5: work intents and overlap coordination
+    """
+    CREATE TABLE intents (
+        id          INTEGER PRIMARY KEY,
+        project     TEXT NOT NULL REFERENCES projects(name),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        patterns    TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL,
+        expires_at  TEXT NOT NULL,
+        cleared_at  TEXT
+    );
+    CREATE INDEX intents_project_active ON intents(project, cleared_at, expires_at);
+
+    CREATE TABLE intent_conflicts (
+        id         INTEGER PRIMARY KEY,
+        project    TEXT NOT NULL REFERENCES projects(name),
+        intent_a   INTEGER NOT NULL REFERENCES intents(id),
+        intent_b   INTEGER NOT NULL REFERENCES intents(id),
+        channel    TEXT NOT NULL,
+        board_key  TEXT NOT NULL,
+        overlap    TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (intent_a, intent_b)
+    );
+    """,
 ]
 
 
