@@ -169,3 +169,6 @@ header.top nav::-webkit-scrollbar { display: none; }
 .task-title { overflow-wrap: anywhere; }
 .board-thread .agent-text { margin: 0; }
 .note-form textarea { width: 100%; }
+.member-budget { margin: 4px 0; font-size: 0.85rem; }
+.member-budget dd { margin: 0; }
+.task-title { overflow-wrap: anywhere; }

@@ -121,6 +121,7 @@ def list_tasks(
     state: str | None = None,
     agent: str | None = None,
     limit: int = 100,
+    newest_first: bool = False,
 ) -> list[dict[str, Any]]:
     sql = _SELECT + "WHERE 1 = 1 "
     params: list[Any] = []
@@ -137,7 +138,7 @@ def list_tasks(
     if agent is not None:
         sql += "AND EXISTS (SELECT 1 FROM task_agents ta WHERE ta.task_id = t.id AND ta.agent_id = ?) "
         params.append(agent)
-    sql += "ORDER BY t.id LIMIT ?"
+    sql += "ORDER BY t.id DESC LIMIT ?" if newest_first else "ORDER BY t.id LIMIT ?"
     params.append(limit)
     return [_row(conn, r) for r in conn.execute(sql, params)]
 
@@ -178,6 +179,25 @@ def create_task(
         from agenthub.hub import task_agents
 
         task_agents.add_agent(conn, task_id, assignee, role=role, stage="works", actor=actor)
+    return get_task(conn, task_id)
+
+
+MAX_TITLE_CHARS = 200
+MAX_BODY_CHARS = 16000
+
+
+def set_description(conn: sqlite3.Connection, task_id: int, title: str, body: str, *, actor: str) -> dict[str, Any]:
+    """Edit a task's title and description. Operator only (the route enforces it); the event names
+    the changed fields but carries no text."""
+    title = title.strip()
+    if not title or len(title) > MAX_TITLE_CHARS:
+        raise Invalid(f"title must be 1 to {MAX_TITLE_CHARS} characters")
+    if len(body) > MAX_BODY_CHARS:
+        raise Invalid(f"description must be at most {MAX_BODY_CHARS} characters")
+    task = get_task(conn, task_id)
+    conn.execute("UPDATE tasks SET title = ?, body = ?, updated_at = ? WHERE id = ?", (title, body, now_iso(), task_id))
+    events.emit(conn, type="task.updated", actor=actor, project=task["project"],
+                payload={"task_id": task_id, "fields": ["title", "body"]})
     return get_task(conn, task_id)
 
 

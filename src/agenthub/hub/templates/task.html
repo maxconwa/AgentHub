@@ -1,13 +1,24 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, agent_text, avatar %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title %}
+{% from "_board.html" import board %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
-<h1>#{{ t.id }} {{ t.title }} {{ chip(t.state) }}</h1>
+<h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
 <p class="muted">{{ t.project }} · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
 {% if t.last_note %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}
+
+<details class="panel">
+  <summary>Edit title and description</summary>
+  <form class="stack" method="post" action="/ui/tasks/{{ t.id }}/description">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Title <input name="title" required maxlength="200" value="{{ t.title }}"></label>
+    <label>Description <textarea name="body" rows="5" maxlength="16000">{{ t.body }}</textarea></label>
+    <button type="submit">Save</button>
+  </form>
+</details>
 
 <section class="panel">
   <h3>Budget</h3>
@@ -35,6 +46,12 @@
   {% for m in t.agents %}
   <div class="member">
     <p>{{ avatar(avatars.get(m.agent_id), 32) }} <strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %}</p>
+    {% set u = member_usage[m.agent_id] %}
+    <dl class="grid3 member-budget">
+      <div><dt>Turns</dt><dd>{{ u.turns }} / {{ m.budget.max_turns }}</dd></div>
+      <div><dt>Minutes</dt><dd>{{ '%g'|format(u.wall_clock_minutes|round(1)) }} / {{ m.budget.wall_clock_minutes }}</dd></div>
+      <div><dt>Runs</dt><dd>{{ u.runs }} / {{ m.budget.max_subtasks }}</dd></div>
+    </dl>
     {% if m.verdict_notes %}{{ agent_text(m.verdict_notes, m.agent_id, names) }}{% endif %}
     {% if not terminal %}
     <form method="post" action="/ui/tasks/{{ t.id }}/agents/{{ m.agent_id }}/update" class="inline">
@@ -68,6 +85,13 @@
 </tbody></table>
 {% endif %}
 
-<h2>Activity</h2>
-<ul class="events">{% for e in history %}{% include "_event_row.html" %}{% endfor %}</ul>
+<h2>Task board</h2>
+<form class="stack note-form" method="post" action="/ui/tasks/{{ t.id }}/notes">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Note <textarea name="body" rows="3" maxlength="4000" required placeholder="Post a note to the agents on this task"></textarea></label>
+  <button type="submit">Post note</button>
+</form>
+{% endblock %}
+{% block live %}
+{{ board(messages, names) }}
 {% endblock %}

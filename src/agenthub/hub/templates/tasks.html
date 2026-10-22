@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip %}
+{% from "_macros.html" import chip, avatar, task_title %}
 {% block title %}Tasks{% endblock %}
 {% block content %}
 <h1>Tasks</h1>
@@ -7,6 +7,10 @@
   <select name="project" aria-label="Project">
     <option value="">All projects</option>
     {% for p in projects %}<option value="{{ p.name }}" {{ 'selected' if p.name == project else '' }}>{{ p.name }}</option>{% endfor %}
+  </select>
+  <select name="state" aria-label="State">
+    <option value="">All states</option>
+    {% for s in states %}<option value="{{ s }}" {{ 'selected' if s == state else '' }}>{{ s.replace('_', ' ') }}</option>{% endfor %}
   </select>
   <button type="submit">Filter</button>
 </form>
@@ -19,6 +23,7 @@
     <label>Title <input name="title" required maxlength="200"></label>
     <label>Description <textarea name="body" rows="4" maxlength="16000"></textarea></label>
     <label>Assignee <select name="assignee"><option value="">Unassigned</option>{% for ag in agents %}<option value="{{ ag.name }}">{{ ag.name }}</option>{% endfor %}</select></label>
+    <label>Role <input name="role" maxlength="200" placeholder="Role for the assignee (e.g. Implementer)"></label>
     <div class="grid3">
       <label>Max turns <input type="number" name="max_turns" min="1" max="500" placeholder="{{ default_budget.max_turns }}"></label>
       <label>Minutes <input type="number" name="wall_clock_minutes" min="1" max="1440" placeholder="{{ default_budget.wall_clock_minutes }}"></label>
@@ -29,21 +34,15 @@
   </form>
 </details>
 
-<div class="board">
-  {% for state, items in columns %}
-  {% if items or state in ('open', 'in_progress', 'review') %}
-  <section class="column">
-    <h2>{{ chip(state) }} <span class="muted">{{ items|length }}</span></h2>
-    <ul class="cards">
-      {% for t in items %}
-      <li class="card"><a class="card-link" href="/ui/tasks/{{ t.id }}">
-        <div class="row"><strong>#{{ t.id }} {{ t.title }}</strong></div>
-        <div class="row muted"><span>{{ t.project }} · {% for m in t.agents %}{{ m.name }}{% if not loop.last %}, {% endif %}{% else %}unassigned{% endfor %}</span><span>{{ ago(t.updated_at) }}</span></div>
-      </a></li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
+{% if not rows %}<p class="empty">No tasks{{ ' match' if project or state }}.</p>{% endif %}
+{% for t in rows %}
+<div class="task-row">
+  <div class="row"><span><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+  <div class="small-line">{{ t.project }} · {{ ago(t.updated_at) }}</div>
+  {% for m in t.agents %}
+  <div class="member">{{ avatar(avatars.get(m.agent_id), 24) }}<div class="who"><strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %}</div></div>
+  {% else %}<div class="member small-line">Nobody yet</div>
   {% endfor %}
 </div>
+{% endfor %}
 {% endblock %}

@@ -283,12 +283,14 @@ def build_router() -> APIRouter:
     # tasks ------------------------------------------------------------------------------
 
     @router.get("/tasks", response_class=HTMLResponse)
-    def tasks_page(request: Request, operator: Op, conn: Conn, project: str | None = None) -> HTMLResponse:
-        rows = tasks.list_tasks(conn, projects=[project] if project else None, limit=500)
-        columns = [(s, [t for t in rows if t["state"] == s]) for s in tasks.STATES]
+    def tasks_page(request: Request, operator: Op, conn: Conn, project: str = "", state: str = "") -> HTMLResponse:
+        state = state if state in tasks.STATES else ""
+        rows = tasks.list_tasks(conn, projects=[project] if project else None, state=state or None, limit=500,
+                                newest_first=True)
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
-        return render(request, operator, "tasks.html", conn, nav="tasks", columns=columns, project=project,
-                      projects=store.list_projects(conn), agents=agents, default_budget=tasks.DEFAULT_BUDGET)
+        return render(request, operator, "tasks.html", conn, nav="tasks", rows=rows, project=project, state=state,
+                      states=tasks.STATES, projects=store.list_projects(conn), agents=agents,
+                      default_budget=tasks.DEFAULT_BUDGET)
 
     @router.post("/tasks")
     def task_create(request: Request, operator: PostOp, conn: Conn,
@@ -296,6 +298,7 @@ def build_router() -> APIRouter:
                     title: Annotated[str, Form(min_length=1, max_length=200)],
                     body: Annotated[str, Form(max_length=16000)] = "",
                     assignee: Annotated[str, Form(max_length=64)] = "",
+                    role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)] = "",
                     max_turns: Annotated[int | None, Form()] = None,
                     wall_clock_minutes: Annotated[int | None, Form()] = None,
                     max_subtasks: Annotated[int | None, Form()] = None) -> Response:
@@ -303,7 +306,8 @@ def build_router() -> APIRouter:
                                      "max_subtasks": max_subtasks}.items() if v is not None}
         with db.transaction(conn):
             t = tasks.create_task(conn, actor=operator.actor, project=project, title=title, body=body,
-                                  assignee=assignee or None, budget=budget, state="open")
+                                  assignee=assignee or None, role=role, budget=budget,
+                                  state="open")
         return done(request, f"/ui/tasks/{t['id']}")
 
     @router.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -314,9 +318,28 @@ def build_router() -> APIRouter:
             "ORDER BY id DESC LIMIT 100", (task_id,)).fetchall()
         history = [events.row_to_event(r) for r in rows]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active" and t["project"] in a["allowed_projects"]]
+        member_usage = {m["agent_id"]: tasks.usage(conn, task_id, m["agent_id"]) for m in t["agents"]}
         return render(request, operator, "task.html", conn, nav="tasks", t=t, history=history, runs=tasks.list_runs(conn, task_id),
-                      usage=tasks.usage(conn, task_id), moves=operator_moves(t["state"]), agents=agents,
+                      usage=tasks.usage(conn, task_id), member_usage=member_usage,
+                      messages=store.recent_messages(conn, project=t["project"], channel=f"task-{task_id}", limit=50),
+                      moves=operator_moves(t["state"]), agents=agents,
                       terminal=t["state"] in tasks.TERMINAL)
+
+    @router.post("/tasks/{task_id}/description")
+    def task_description(task_id: int, request: Request, operator: PostOp, conn: Conn,
+                         title: Annotated[str, Form(min_length=1, max_length=tasks.MAX_TITLE_CHARS)],
+                         body: Annotated[str, Form(max_length=tasks.MAX_BODY_CHARS)] = "") -> Response:
+        with db.transaction(conn):
+            tasks.set_description(conn, task_id, title, body, actor=operator.actor)
+        return done(request, f"/ui/tasks/{task_id}")
+
+    @router.post("/tasks/{task_id}/notes")
+    def task_note(task_id: int, request: Request, operator: PostOp, conn: Conn,
+                  body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+        with db.transaction(conn):
+            t = tasks.get_task(conn, task_id)
+            store.post_message(conn, author=operator.actor, project=t["project"], channel=f"task-{task_id}", body=body)
+        return done(request, f"/ui/tasks/{task_id}")
 
     @router.post("/tasks/{task_id}/assign")
     def task_assign(task_id: int, request: Request, operator: PostOp, conn: Conn,

@@ -204,3 +204,86 @@ def test_board_shows_agent_message_as_agent_text(tree):
 
 def test_empty_hub_projects(hub):
     assert "No projects" in get(hub, "/ui/projects").text
+
+
+# --- Tasks page and task page ---------------------------------------------------------
+
+def test_task_list_shows_roles_newest_first_and_filters(busy):
+    hub, a, b, ap, t = busy
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("INSERT INTO projects VALUES ('other', '', 'x')")
+        t2 = tasks.create_task(conn, actor=OPERATOR, project="other", title="Second", state="open")
+        tasks.transition(conn, t2["id"], "cancelled", actor=OPERATOR, role="operator", note="")
+    html = get(hub, "/ui/tasks").text
+    assert "tester" in html and "chip-cancelled" in html
+    assert html.index("Second") < html.index("Fix login")
+    r = get(hub, "/ui/tasks?project=other").text
+    assert "Second" in r and "Fix login" not in r
+    r = get(hub, "/ui/tasks?state=cancelled").text
+    assert "Second" in r and "Fix login" not in r
+    r = get(hub, f"/ui/tasks?state={t['state']}").text
+    assert "Fix login" in r and "Second" not in r
+    assert get(hub, "/ui/tasks?state=bogus").status_code in (200, 422)
+
+
+def test_create_task_with_role_stores_membership_role(busy):
+    hub, a, *_ = busy
+    r = hub.client.post("/ui/tasks", headers=hub.op_headers(), follow_redirects=False,
+                        data={"csrf": hub.csrf(), "project": "proj", "title": "New", "assignee": "worker",
+                              "role": "Reviewer: rate limiter"})
+    assert r.status_code == 303
+    tid = int(r.headers["location"].rsplit("/", 1)[1])
+    assert [m["role"] for m in tasks.get_task(hub.conn(), tid)["agents"]] == ["Reviewer: rate limiter"]
+    assert 'name="role"' in get(hub, "/ui/tasks").text
+
+
+def test_task_description_edit_is_escaped_and_emits_event(busy):
+    hub, a, b, ap, t = busy
+    url = f"/ui/tasks/{t['id']}/description"
+    assert hub.client.post(url, headers=hub.op_headers(), data={"title": "x"}).status_code == 403
+    for bad in ({"title": ""}, {"title": "x" * 201}, {"title": "x", "body": "y" * 16001}):
+        assert hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), **bad}).status_code == 422
+    r = hub.client.post(url, headers=hub.op_headers(), follow_redirects=False,
+                        data={"csrf": hub.csrf(), "title": "<b>T</b>", "body": "<i>B</i>"})
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/tasks/{t['id']}"
+    html = get(hub, f"/ui/tasks/{t['id']}").text
+    assert "&lt;b&gt;T&lt;/b&gt;" in html and "&lt;i&gt;B&lt;/i&gt;" in html and "<b>T</b>" not in html
+    ev = hub.conn().execute("SELECT payload FROM events WHERE type = 'task.updated'").fetchone()
+    assert ev["payload"] == f'{{"task_id":{t["id"]},"fields":["title","body"]}}'
+    assert get(hub, "/ui/tasks/9999").status_code == 404
+    assert hub.client.post("/ui/tasks/9999/description", headers=hub.op_headers(),
+                           data={"csrf": hub.csrf(), "title": "x"}).status_code == 404
+
+
+def test_task_note_lands_in_task_channel_as_operator(busy):
+    hub, a, b, ap, t = busy
+    url = f"/ui/tasks/{t['id']}/notes"
+    assert hub.client.post(url, headers=hub.op_headers(), data={"body": "hi"}).status_code == 403
+    assert hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": ""}).status_code == 422
+    r = hub.client.post(url, headers=hub.op_headers(), follow_redirects=False,
+                        data={"csrf": hub.csrf(), "body": "try <u>this</u>"})
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/tasks/{t['id']}"
+    msgs = store.recent_messages(hub.conn(), project="proj", channel=f"task-{t['id']}")
+    assert msgs[-1]["body"] == "try <u>this</u>" and msgs[-1]["author"].startswith("human:")
+    page = get(hub, f"/ui/tasks/{t['id']}").text
+    assert "try &lt;u&gt;this&lt;/u&gt;" in page.split('id="live"')[1]
+    form = page.split('id="live"')[0]
+    assert f"/ui/tasks/{t['id']}/notes" in form and f"/ui/tasks/{t['id']}/description" in form
+    assert hub.client.post("/ui/tasks/9999/notes", headers=hub.op_headers(),
+                           data={"csrf": hub.csrf(), "body": "x"}).status_code == 404
+
+
+def test_task_page_shows_each_agents_own_budget_and_use(busy):
+    hub, a, b, ap, t = busy
+    c = hub.enroll("second")
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.add_agent(conn, t["id"], c.id, role="", stage="works", actor=OPERATOR,
+                              budget={"max_turns": 7, "wall_clock_minutes": 9, "max_subtasks": 2})
+        conn.execute("INSERT INTO task_runs (task_id, agent_id, started_at, ended_at, num_turns, outcome) "
+                     "VALUES (?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:03:00.000Z', 4, 'done')",
+                     (t["id"], c.id))
+    html = get(hub, f"/ui/tasks/{t['id']}").text
+    assert "4 / 7" in html and "3 / 9" in html and "1 / 2" in html
+    assert "0 / 50" in html  # worker: default budget, no runs
