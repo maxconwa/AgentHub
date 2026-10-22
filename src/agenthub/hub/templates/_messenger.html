@@ -1,4 +1,4 @@
-{% from "_macros.html" import open_attrs, chip %}
+{% from "_macros.html" import open_attrs, chip, task_title %}
 {% from "_board.html" import board %}
 {#- The chat window (GET /ui/messenger, GET /ui/messenger/<key>), loaded into <section id="messenger"> by app.js.
     Every row keeps its full page as href (a new tab, or no JavaScript); a tap opens the conversation here.
@@ -13,9 +13,6 @@
 {% macro status(ag) -%}
 {%- if ag.avatar %}<span class="avatar-status status-{{ ag.avatar.pose }}">{{ ag.avatar.label }}</span>{% endif %}
 {%- if ag.status != 'active' %} {{ chip(ag.status) }}{% endif -%}
-{%- endmacro %}
-{% macro by(created_by) -%}
-{%- if created_by and not created_by.startswith(('human:', 'system:')) %} <span class="by-label">by {{ who(created_by, names) }}</span>{% endif -%}
 {%- endmacro %}
 {% macro close_button() -%}
 <button type="button" class="icon-btn" data-messenger-close aria-label="Close chats">✕</button>
@@ -54,7 +51,7 @@
   <ul class="clist">
     {% for g in groups %}
     <li><a class="crow" href="{{ g.href }}" data-chat="{{ g.key }}">{{ group_icon(g.kind, g.members) }}
-      <span class="ctext"><span class="cline"><strong><span class="task-title">{{ g.title }}</span>{{ by(g.created_by) }}</strong><span class="cago">{{ ago(g.last_ts) if g.last_ts else '' }}</span></span>
+      <span class="ctext"><span class="cline"><strong>{{ task_title({'title': g.title, 'created_by': g.created_by}, names) }}</strong><span class="cago">{{ ago(g.last_ts) if g.last_ts else '' }}</span></span>
         <span class="clast">{{ g.kind | capitalize }} board{% if not g.last_ts %} · nothing posted yet{% endif %}</span></span></a></li>
     {% endfor %}
   </ul>
@@ -76,7 +73,7 @@
 <div class="mhead"><a class="icon-btn" href="/ui/chats" data-chat-list aria-label="Back to chats">‹</a>
   <a class="mtitle" {% if item %}{{ open_attrs(item, href) }}{% else %}href="{{ href }}"{% endif %}>
     {%- if kind == 'agent' %}{{ face(ag.avatar, 36) }}{% elif kind == 'pair' %}{{ group_icon('pair', members) }}{% elif kind == 'device' %}{{ group_icon('device', members) }}{% else %}{{ group_icon(item.split(':')[0] if item else 'thread', []) }}{% endif %}
-    <span><strong id="messenger-title"><span class="task-title">{{ title }}</span>{{ by(created_by) }}</strong>
+    <span><strong id="messenger-title">{{ task_title({'title': title, 'created_by': created_by}, names) }}</strong>
       <span class="small-line">{% if kind == 'agent' %}{{ status(ag) }} · private chat{% elif kind == 'pair' %}Between agents · read-only{% elif kind == 'device' %}Device board · {{ d.agents | length }} agent{{ '' if d.agents | length == 1 else 's' }}{% else %}Group chat · the project's agents can read it{% endif %}</span></span></a>
   {{ close_button() }}</div>
 <div class="mthread" hx-get="/ui/messenger/{{ key | urlencode }}" hx-select=".board-thread" hx-trigger="every 10s" hx-swap="innerHTML">

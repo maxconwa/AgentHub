@@ -171,7 +171,7 @@ BOARD_LIMIT = 200
 ACTIVITY_LINK = "/ui/feed"  # Task 11 moves "All activity"
 _TASK_CHANNEL = re.compile(r"task-(\d+)")
 _PAIR_KEY = re.compile(r"pair-(ag[0-9a-f]+)-(ag[0-9a-f]+)")
-_TASK_BOARD = re.compile(r"task-([0-9]{1,18})")  # a task board's channel, with an id SQLite can hold
+_TASK_BOARD = re.compile(r"task-([1-9][0-9]{0,17})")  # a task board's channel as tasks name it (no leading zeros)
 # The messages an ask and its answer post into the ``asks`` channel; a pair thread shows the ask itself.
 _ASK_ECHO = "NOT (c.name = 'asks' AND (m.body LIKE '[ask #%' OR m.body LIKE '[answer to ask #%'))"
 

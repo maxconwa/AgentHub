@@ -118,6 +118,17 @@
     } catch (e) { return ""; }
   }
 
+  // While a tap-to-message sheet fills #compose (bottom of the screen), the buttons step aside so they
+  // don't cover it (app.css hides .fabs under body.compose-open).
+  var compose = document.getElementById("compose");
+  function syncCompose() {
+    document.body.classList.toggle("compose-open", !!compose && compose.childElementCount > 0);
+  }
+  if (compose) {
+    syncCompose();
+    document.addEventListener("htmx:afterSwap", function (evt) { if (evt.detail.target === compose) syncCompose(); });
+  }
+
   if (panel && scrim && messenger && fabChat && fabPlus && plusMenu) {
     document.addEventListener("click", function (evt) {
       if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;  // new tab: follow href
@@ -163,10 +174,13 @@
       openPanel(item, link && link.href);
     });
 
-    // Escape closes the innermost thing: the + menu, then the panel, then the chat window.
+    // Escape closes the innermost thing: the + menu, then the panel, then the chat window. In a textarea
+    // holding a half-typed message it only leaves the textarea, so the text isn't thrown away.
     document.addEventListener("keydown", function (evt) {
       if (evt.key === "Escape") {
-        if (menuOpen()) closeMenu(true);
+        var typing = document.activeElement;
+        if (typing && typing.tagName === "TEXTAREA" && typing.value.trim()) typing.blur();
+        else if (menuOpen()) closeMenu(true);
         else if (panelOpen()) closePanel();
         else if (messengerOpen()) closeMessenger();
         else return;

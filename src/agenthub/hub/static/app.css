@@ -312,6 +312,8 @@ main { padding-bottom: calc(144px + env(safe-area-inset-bottom, 0px)); }
 .plus-menu button:hover { background: var(--chip); }
 /* On a phone the open panel or chat window covers the page; the buttons go under it, not over its Send button. */
 @media (max-width: 699px) { body.overlay-open .fabs { z-index: 40; } }
+/* A tap-to-message sheet sits where the buttons are: hide them while it is open (app.js sets compose-open). */
+body.compose-open .fabs, body:has(> main > #compose > .compose-panel) .fabs { display: none; }
 .group-icon.g-new { color: var(--accent); font-size: 1.6rem; }
 
 .messenger { position: fixed; z-index: 55; background: var(--surface); display: flex; flex-direction: column;

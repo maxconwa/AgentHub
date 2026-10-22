@@ -1476,3 +1476,35 @@ def test_empty_hub_pages_have_the_buttons(hub):
     for p in FAB_PAGES:
         r = get(hub, p)
         assert r.status_code == 200 and 'id="fab-chat"' in r.text and "fab-badge" not in r.text, p
+
+
+# --- Floating buttons and the chat window, fix round 1 -------------------------------------------------------
+
+def test_task_board_key_with_leading_zeros_is_404(window):
+    hub, a, c, r, t, ap, q = window
+    key = f"ch-proj~task-0{t['id']}"
+    assert get(hub, f"/ui/board/{key}").status_code == 404
+    assert messenger(hub, f"board:{key}").status_code == 404
+    r = hub.client.post(f"/ui/board/{key}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "stray"})
+    assert r.status_code == 404
+    assert not hub.conn().execute("SELECT 1 FROM channels WHERE name = ?", (f"task-0{t['id']}",)).fetchone()
+
+
+def test_messenger_titles_use_the_shared_by_label(window):
+    hub, a, c, r, t, ap, q = window
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.post_message(conn, author="system:hub", project="proj", channel="overlap-1", body="hub note")
+    html = messenger(hub, "board:ch-proj~overlap-1").text
+    assert "hub note" in html and "by-label" not in html  # the hub's own thread, not agent text
+    html = messenger(hub, f"board:ch-proj~task-{t['id']}").text
+    assert 'id="messenger-title"><span class="task-title">#' in html and 'class="by-label">by worker' in html
+
+
+def test_buttons_step_aside_for_the_compose_sheet(hub):
+    css = hub.client.get("/ui/static/app.css").text
+    js = hub.client.get("/ui/static/app.js").text
+    assert re.search(r"body\.compose-open \.fabs[^{]*\{ display: none; \}", css)
+    assert 'classList.toggle("compose-open"' in js and 'getElementById("compose")' in js
+    html = get(hub, "/ui/dashboard").text
+    assert '<div id="compose"></div>' in html.split("</main>")[0]  # the region app.js watches
