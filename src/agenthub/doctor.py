@@ -356,6 +356,9 @@ def hub_checks(run: Runner = run_cmd) -> list[Check]:
                      f"{cfg.bind_host}:{cfg.port}" + ("" if loopback else " is not loopback; the hub will refuse")))
     out.append(Check("operators", OK if cfg.operators else WARN,
                      ", ".join(cfg.operators) or "none: nobody can use the dashboard"))
+    if cfg.tailnet_operators:
+        out.append(Check("tailnet operators", WARN, "on: every device that reaches the hub over the tailnet, agent "
+                         "machines included, is the operator; only the Tailscale policy limits who"))
     db_path = Path(cfg.db_path)
     if db_path.exists():
         out.append(check_private(db_path, "database", 0o600))

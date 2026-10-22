@@ -472,3 +472,46 @@ def test_operator_device_with_several_agents_keeps_the_dashboard_and_their_own_s
         ws.receive_json()
         poses = avatars.poses(hub.conn())
         assert [poses[a.id] for a in agents] == ["offline", "idle", "offline"]
+
+
+def test_tailnet_operators_lets_every_tailnet_device_operate(world):
+    """tailnet_operators: no device is refused (tagged, running agents, other logins); agent tokens and CSRF still are."""
+    hub, agent, ids = world
+    hub.whois.add_user("100.100.0.9", "nvisitor", "visitor@example.com")
+    hub.whois.add("100.64.9.9", node_id="nother", name="other-agent-box.example.ts.net")
+    devices = {
+        "tagged agent machine": {"x-forwarded-for": agent.ip},
+        "untagged, another login": {"x-forwarded-for": "100.100.0.9", "tailscale-user-login": "visitor@example.com"},
+        "tagged, no agents": {"x-forwarded-for": "100.64.9.9"},
+    }
+    for headers in devices.values():
+        assert hub.client.get("/ui/approvals", headers=headers).status_code == 403
+    hub.state.config.tailnet_operators = True
+    for name, headers in devices.items():
+        assert hub.client.get("/ui/approvals", headers=headers).status_code == 200, name
+    # Not on the tailnet, a forged login header, an agent token, or no CSRF token: still refused.
+    assert hub.client.get("/ui/approvals", headers={"x-forwarded-for": "100.100.9.9"}).status_code == 403
+    forged = {"x-forwarded-for": "100.100.0.9", "tailscale-user-login": OP_LOGIN}
+    assert hub.client.get("/ui/approvals", headers=forged).status_code == 403
+    assert hub.client.get("/ui/approvals", headers=agent.headers).status_code == 403
+    url = f"/ui/approvals/{ids['approval_id']}/decide"
+    tagged = {**devices["tagged agent machine"], "sec-fetch-site": "same-origin"}
+    assert hub.client.post(url, headers=tagged, data={"decision": "approve"}, follow_redirects=False).status_code == 403
+    # A tagged device acts as the first operator; an untagged one as its own login.
+    r = hub.client.post(url, headers=tagged, data={"csrf": hub.csrf(), "decision": "approve"}, follow_redirects=False)
+    assert r.status_code == 303 and approvals.get(hub.conn(), ids["approval_id"])["decided_by"] == f"human:{OP_LOGIN}"
+
+
+def test_tailnet_operators_needs_an_operator(tmp_path):
+    from agenthub.config import HubConfig
+
+    path = HubConfig(tailnet_operators=True).save(tmp_path / "hub.toml")
+    with pytest.raises(ValueError, match="tailnet_operators"):
+        HubConfig.load(path)
+    path = HubConfig(tailnet_operators=True, operators=["op@example.com"]).save(tmp_path / "hub.toml")
+    assert HubConfig.load(path).tailnet_operators is True
+
+
+def test_tailnet_operators_stays_off_in_insecure_dev(dev_hub):
+    dev_hub.state.config.tailnet_operators = True
+    assert dev_hub.client.get("/ui/approvals", headers=dev_hub.op_headers()).status_code == 403

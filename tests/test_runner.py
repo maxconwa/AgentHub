@@ -836,10 +836,13 @@ def test_result_from_detects_usage_limit():
     def res(msg):
         return result_from(msg, returncode=1, timed_out=False, stopped=False, session_id="s")
 
+    # A reset two hours ahead: a fixed time would fail daily just after it, when it has "just reset" (now).
+    at = datetime.now() + timedelta(hours=2)
+    clock = f"{at.hour % 12 or 12}:{at.minute:02d}{'pm' if at.hour >= 12 else 'am'}"
     limited = res({"type": "result", "subtype": "success", "is_error": True,
-                   "result": "You've hit your session limit · resets 3:45pm"})
+                   "result": f"You've hit your session limit · resets {clock}"})
     assert limited.outcome == "usage_limit" and limited.resets_at is not None
-    assert (limited.resets_at.hour, limited.resets_at.minute) == (15, 45) and limited.resets_at.tzinfo
+    assert (limited.resets_at.hour, limited.resets_at.minute) == (at.hour, at.minute) and limited.resets_at.tzinfo
     from_errors = res({"type": "result", "subtype": "error_during_execution", "is_error": True,
                        "errors": ["API Error: You've hit your weekly limit · resets soon"]})
     assert from_errors.outcome == "usage_limit" and from_errors.resets_at is None

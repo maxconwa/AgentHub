@@ -285,7 +285,16 @@ agents included. What's left are speed bumps:
   enrolled before 0.3.0, run `agenthub hook install` to add it.
 
 An agent that's been prompt-injected, or simply confused, can still approve
-its own requests from such a machine. Run agents there under a separate
+its own requests from such a machine.
+
+To go all the way and let **every** device that reaches the hub over the
+tailnet operate it (no device is ever refused), set `tailnet_operators = true`
+in `hub.toml` and restart the hub. Your Tailscale policy is then the only
+thing deciding who operates the hub. A tagged device acts as its
+`operator_devices` login, else the first login in `operators`; an untagged
+one as its own login. Agent tokens are still refused on dashboard pages, CSRF
+still applies, and `--insecure-dev` still turns operator access off.
+`agenthub doctor` warns while it's on. Run agents there under a separate
 account if you can, and keep their credentials narrow.
 
 ### 4. Backups
@@ -555,7 +564,9 @@ way.
   `tailscale whois` (cached for 30 s), that it comes from the Tailscale device
   recorded at enrollment (matched by node StableID). Revocation takes effect on
   the very next request and closes the agent's WebSocket within about a second.
-- **Operator identity.** Unless its device is in `operator_devices` (see
+- **Operator identity.** With `tailnet_operators = true`, any tailnet device
+  is the operator (see [Operating from agent machines](#operating-from-agent-machines-opt-in)).
+  Otherwise, unless its device is in `operator_devices` (see
   [Operating from agent machines](#operating-from-agent-machines-opt-in)), a
   request can perform operator actions only if all of these hold:
   - its `Tailscale-User-Login` header matches the hub's own whois result for

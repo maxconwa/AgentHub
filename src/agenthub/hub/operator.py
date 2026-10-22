@@ -24,6 +24,12 @@ header, so the mapping is the identity, and every local process on such a
 machine without an agent token, agents included, can act as the operator.
 Step 2 and the CSRF and same-origin checks still apply.
 
+``tailnet_operators`` (opt-in) goes further and replaces 3-5 for every node:
+any device the tailnet lets reach the hub is the operator, as its own login if
+it has one, else its ``operator_devices`` login, else the first operator. Only
+the Tailscale policy then limits who operates the hub. Steps 1-2, the whois
+lookup (the request must come from a tailnet node) and CSRF still apply.
+
 State-changing requests also need a CSRF token (HMAC of the login with a
 per-hub secret) and must not be cross-site (Sec-Fetch-Site / Origin), because
 identity headers are ambient like cookies: any page the operator's browser
@@ -86,7 +92,7 @@ async def authenticate_operator(conn: HTTPConnection, db: sqlite3.Connection) ->
     if "authorization" in conn.headers:
         raise _forbidden("agent credentials are not accepted on operator endpoints")
     login = conn.headers.get(LOGIN_HEADER, "").strip()
-    if not login and not hub.config.operator_devices:
+    if not login and not hub.config.operator_devices and not hub.config.tailnet_operators:
         raise _forbidden("no Tailscale user identity: open the dashboard from a user-owned device over the tailnet")
     peer = conn.client.host if conn.client else None
     try:
@@ -95,6 +101,10 @@ async def authenticate_operator(conn: HTTPConnection, db: sqlite3.Connection) ->
     except IdentityError as exc:
         raise _forbidden(f"tailnet identity check failed: {exc}") from exc
     device_login = hub.config.operator_devices.get(who.device.node_id)
+    if hub.config.tailnet_operators:
+        if who.login and login and who.login != login:
+            raise _forbidden("identity header does not match the device's Tailscale user")
+        return Operator(login=who.login or device_login or hub.config.operators[0], device=who.device)
     if device_login is not None:
         if device_login not in hub.config.operators:
             raise _forbidden(f"{device_login} is not an operator of this hub")

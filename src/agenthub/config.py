@@ -81,6 +81,10 @@ class HubConfig:
     # operator, as {Tailscale node StableID: operator login}. Any process on such a machine that sends no
     # agent token is the operator there, agents included. Manage with `agenthub hub operator-devices`.
     operator_devices: dict[str, str] = field(default_factory=dict)
+    # Opt-in, and it drops the hub's own operator checks: every device that reaches the hub over the tailnet is the
+    # operator (the Tailscale policy alone decides who can), agents on those devices included. The actor is the
+    # device's own login, else its operator_devices login, else the first operator.
+    tailnet_operators: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:
@@ -93,6 +97,8 @@ class HubConfig:
                              f"not {minutes!r}")
         if not isinstance(cfg.operator_devices, dict):
             raise ValueError("operator_devices must be a table of node StableID = operator login")
+        if cfg.tailnet_operators is not False and (cfg.tailnet_operators is not True or not cfg.operators):
+            raise ValueError("tailnet_operators must be true or false, and needs at least one login in operators")
         for node, login in cfg.operator_devices.items():
             if login not in cfg.operators:
                 raise ValueError(f"operator_devices: {node} maps to {login!r}, which is not in operators")
