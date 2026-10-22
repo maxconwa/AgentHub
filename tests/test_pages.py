@@ -382,6 +382,79 @@ def test_agent_page_shows_device_directory_checkouts_escaped(busy):
     assert f'href="/ui/chats/{a.id}"' in html and 'href="/ui/board"' in html
 
 
+def agent_facts(html):
+    """Each agent-facts list in ``html`` as its (label, value text, value attributes) rows."""
+    return [[(dt, " ".join(re.sub(r"<[^>]+>", "", dd).split()), attrs)
+             for dt, attrs, dd in re.findall(r"<dt>(.*?)</dt>\s*<dd([^>]*)>(.*?)</dd>", dl, re.S)]
+            for dl in re.findall(r'<dl class="agent-facts">(.*?)</dl>', html, re.S)]
+
+
+def agent_card(html, agent):
+    return re.search(rf'<li class="card agent-card[^"]*"[^>]*data-panel="agent:{agent.id}">.*?</li>', html, re.S)[0]
+
+
+@pytest.fixture
+def two_tasks(busy):
+    hub, a, b, ap, t = busy
+    conn = hub.conn()
+    with db.transaction(conn):
+        t2 = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Review login", assignee=None)
+        task_agents.add_agent(conn, t2["id"], a.id, role="", stage="reviews", actor=OPERATOR)
+    report(hub, a, {"proj": "/srv/proj"}, "/srv/proj/.worktrees/x")
+    return hub, a, t, t2
+
+
+@pytest.mark.parametrize("path", ["/ui/agents", "/ui/dashboard"])
+def test_agent_card_puts_each_fact_on_its_own_line(two_tasks, path):
+    hub, a, t, t2 = two_tasks
+    card = agent_card(get(hub, path).text, a)
+    lists = agent_facts(card)
+    # Task, Project and Role (Stage without a role) per task, oldest task first, then Device and Folder once
+    assert [[(dt, text) for dt, text, _ in dl] for dl in lists] == [
+        [("Task", f"#{t['id']} Fix login"), ("Project", "proj"), ("Role", "tester")],
+        [("Task", f"#{t2['id']} Review login"), ("Project", "proj"), ("Stage", "reviews")],
+        [("Device", "worker-host"), ("Folder", "/srv/proj/.worktrees/x")],
+    ]
+    device, folder = lists[-1]
+    assert device[2] == ' title="worker-host.example.ts.net"'
+    assert folder[2] == ' class="folder" title="/srv/proj/.worktrees/x"'
+    assert "msg-btn" not in card and " · " not in card and "Role: " not in card  # no buttons: links open panels
+
+
+def test_agent_card_without_task_has_only_device_and_folder(hub):
+    a = hub.enroll("idle")
+    html = get(hub, "/ui/agents").text
+    card = agent_card(html, a)
+    assert [[(dt, text) for dt, text, _ in dl] for dl in agent_facts(card)] == [
+        [("Device", "idle-host"), ("Folder", "No checkouts reported")]]
+    assert "No current task" not in card
+    assert agent_facts(agent_card(get(hub, "/ui/dashboard").text, a))[0][0][0] == "Device"
+
+
+def test_agent_card_folder_and_device_are_escaped(busy):
+    hub, a, b, ap, t = busy
+    report(hub, a, {"proj": f"/srv/{EVIL}"}, None)
+    card = agent_card(get(hub, "/ui/agents").text, a)
+    assert "<script>alert" not in card and 'title="/srv/&lt;script&gt;alert(1)&lt;/script&gt;"' in card
+
+
+@pytest.mark.parametrize("name, short", [("white5070.tail1234.ts.net", "white5070"), ("box", "box"),
+                                         ("100.64.0.7", "100.64.0.7"), ("fd7a:115c::1", "fd7a:115c::1"),
+                                         ("", ""), (None, "")])
+def test_short_host(name, short):
+    from agenthub.hub import dashboard
+    assert dashboard.short_host(name) == short
+
+
+def test_agent_page_and_panel_task_rows_put_each_fact_on_its_own_line(two_tasks):
+    hub, a, t, t2 = two_tasks
+    expected = [[("Project", "proj"), ("Role", "tester"), ("Stage", "works")],
+                [("Project", "proj"), ("Stage", "reviews")]]
+    for html in (get(hub, f"/ui/agents/{a.id}").text, panel(hub, f"agent:{a.id}").text):
+        assert [[(dt, text) for dt, text, _ in dl] for dl in agent_facts(html)] == expected
+        assert "Role: " not in html and "Fix login" in html and "Review login" in html
+
+
 def test_agent_page_unknown_is_404(hub):
     assert get(hub, "/ui/agents/nope").status_code == 404
 

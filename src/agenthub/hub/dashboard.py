@@ -11,6 +11,7 @@ Markdown with raw HTML off and only http(s)/mailto links); everything else is au
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import sqlite3
@@ -106,6 +107,17 @@ def agent_names(conn: sqlite3.Connection) -> dict[str, str]:
     return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")} | device_board.device_labels(conn)
 
 
+def short_host(name: str | None) -> str:
+    """A device name's first label (``white5070`` for ``white5070.tail1234.ts.net``); an IP address stays whole."""
+    if not name:
+        return ""
+    try:
+        ipaddress.ip_address(name)
+        return name
+    except ValueError:
+        return name.split(".", 1)[0] or name
+
+
 def who(actor: str | None, names: dict[str, str]) -> str:
     if not actor:
         return "?"
@@ -180,6 +192,7 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
 
 templates.globals.update(ago=ago, who=who, event_summary=event_summary)
 templates.filters["md"] = markdown.render
+templates.filters["short_host"] = short_host
 
 
 def pending_total(conn: sqlite3.Connection) -> int:

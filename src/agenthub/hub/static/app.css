@@ -189,6 +189,15 @@ header.top nav::-webkit-scrollbar { display: none; }
 .plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
 .agent-head .info { min-width: 0; }
 .agent-head h1 { overflow-wrap: anywhere; }
+/* An agent's facts one per line (agent cards, the agent page's and panel's task rows): a muted fixed-width label
+   and the value beside it. The folder stays on one line, cut with an ellipsis (its full path is in title). */
+.agent-card .info { flex: 1; grid-template-columns: minmax(0, 1fr); }
+.agent-facts { display: grid; grid-template-columns: 3.9rem minmax(0, 1fr); gap: 2px 8px; margin: 2px 0; min-width: 0;
+  font-size: 0.85rem; }
+.agent-facts dt { color: var(--muted); }
+.agent-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.agent-facts dd.folder { font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; overflow-wrap: normal; }
 
 /* Devices */
 .device-grid { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px;
