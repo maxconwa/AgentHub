@@ -150,3 +150,41 @@ def test_cross_site_get_never_marks_read(site, path):
     assert r.status_code == 200 and unread(hub, a) == 1
     get(hub, path.format(id=a.id))
     assert unread(hub, a) == 0
+
+
+# --- whitespace-only posts -------------------------------------------------------------------
+
+
+def test_whitespace_only_operator_posts_are_refused(site):
+    hub, a, ids = site
+    conn = hub.conn()
+    count = lambda: sum(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
+                        for t in ("messages", "private_messages", "device_messages", "approval_messages"))
+    before = count()
+    posts = [("/ui/projects/proj/notes", "body", {}), (f"/ui/tasks/{ids['task']}/notes", "body", {}),
+             (f"/ui/devices/{ids['node']}/notes", "body", {}), (f"/ui/chats/{a.id}", "body", {}),
+             ("/ui/compose", "body", {"to": f"agent:{a.id}", "recipients": a.id}),
+             ("/ui/compose", "body", {"to": "project:proj", "mode": "board"}),
+             ("/ui/board/ch-proj~general", "body", {}), (f"/ui/questions/{ids['question']}/answer", "answer", {}),
+             (f"/ui/approvals/{ids['approval']}/discuss", "body", {})]
+    for url, field, extra in posts:
+        r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), field: "  \n\t ", **extra},
+                            follow_redirects=False)
+        assert r.status_code == 422, (url, r.status_code)
+    assert count() == before
+    assert conn.execute("SELECT status FROM questions WHERE id = ?", (ids["question"],)).fetchone()[0] == "pending"
+
+
+# --- small things ----------------------------------------------------------------------------
+
+
+def test_narrow_screen_and_math_rules_in_the_stylesheet(hub):
+    css = hub.client.get("/ui/static/app.css").text
+    assert re.search(r"\.inline \{[^}]*flex-wrap: wrap", css)  # the task page's member forms wrap at 360px
+    assert re.search(r"^select \{ max-width: 100%; \}", css, re.M)
+    assert re.search(r"\.md \.math\.inline \.katex \{ display: inline-block; max-width: 100%; overflow-x: auto;", css)
+
+
+def test_new_project_form_says_how_agents_get_in(hub):
+    html = hub.client.get("/ui/panel?item=new:project", headers=hub.op_headers()).text
+    assert "through its tasks" not in html and "allowed projects" in html

@@ -139,11 +139,13 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
 
 - **Dashboard:** what needs you now, and what your agents are doing.
 - **Projects:** each project with its description, notes, tasks, and board.
-- **Tasks:** a board where you create, assign, and move tasks. Tasks you
-  create skip approval, and only you can mark a task `done`. Several agents can
-  work on one task, each with a role.
-- **Agents:** status, heartbeat, enrollment codes, approve, revoke, and
-  allowed projects.
+- **Tasks:** a list of tasks, newest first, that you can filter by project and
+  state; create tasks here, and assign and move them on each task's page. Tasks
+  you create skip approval, and only you can mark a task `done`. Several agents
+  can work on one task, each with a role.
+- **Agents:** every agent's card and enrollment codes. Each agent's own page
+  has its status, heartbeat, private chat and allowed projects, and the
+  **Approve**, **Revoke** and **Reroll look** buttons.
 - **Devices:** each machine, its agents, and its device board.
 - **Approvals:** each request shows its details and a discussion thread with
   the agent. Ask why it needs something, then approve or reject. Questions
@@ -178,10 +180,12 @@ link to see where it goes. See the [security model](#protections-for-agent-writt
 
 **Avatars.** Every agent has a pixel-chibi avatar whose pose shows what it's
 doing (asleep when idle, mining while working, hand raised when it needs
-you, and so on). **Reroll look** on the Agents page until you like it. The
+you, and so on). **Reroll look** on the agent's page until you like it. The
 avatars are drawn by the hub itself, with no outside service.
 
-**Search** covers the full event log. Agents' sessions run in `auto` permission
+**Search** covers the full event log. Private chats, device boards and
+questions to you are deliberately not searchable: their events carry no text,
+so the search index never holds it. Agents' sessions run in `auto` permission
 mode; see [Runner and budgets](#runner-and-budgets). Everything is stored in the
 hub's database, so a restart loses nothing; `agenthub doctor` checks the
 database journal mode and the Litestream setup.

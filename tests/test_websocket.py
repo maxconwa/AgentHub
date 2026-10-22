@@ -147,6 +147,31 @@ def test_heartbeat_stores_checkouts_and_current_dir(hub):
     assert _agent_dirs(hub, a.id) == ({"web": "/src/web"}, None)
 
 
+def test_heartbeat_is_one_update_and_rewrites_dirs_only_when_they_change(hub):
+    a = hub.enroll("a")
+    hub.conn().executescript(
+        "CREATE TABLE agent_writes (dirs INTEGER);"
+        "CREATE TRIGGER any_write AFTER UPDATE ON agents BEGIN INSERT INTO agent_writes VALUES (0); END;"
+        "CREATE TRIGGER dir_write AFTER UPDATE OF checkouts, current_dir ON agents "
+        "BEGIN INSERT INTO agent_writes VALUES (1); END;")
+
+    def writes():
+        rows = [r[0] for r in hub.conn().execute("SELECT dirs FROM agent_writes")]
+        hub.conn().execute("DELETE FROM agent_writes")
+        return rows.count(0), rows.count(1)  # (UPDATE statements, ones that set the directories)
+
+    dirs = {"checkouts": {"web": "/w"}, "current_dir": "/w"}
+    with ws(hub, a.headers) as conn:
+        conn.receive_json()
+        writes()  # connecting
+        for frame, expected in ((dirs, (1, 1)), (dirs, (1, 0)), ({}, (1, 0)),
+                                ({"checkouts": {"web": "/w"}, "current_dir": None}, (1, 1))):
+            conn.send_json({"type": "heartbeat", **frame})
+            assert conn.receive_json()["type"] == "heartbeat_ack"
+            assert writes() == expected, frame
+    assert _agent_dirs(hub, a.id) == ({"web": "/w"}, None)
+
+
 def test_old_style_heartbeat_keeps_stored_checkouts(hub):
     a = hub.enroll("a")
     _beat(hub, a, {"checkouts": {"web": "/w"}, "current_dir": "/w"}, {})

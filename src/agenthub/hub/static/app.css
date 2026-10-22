@@ -81,6 +81,7 @@ dd { margin: 0 0 6px; overflow-wrap: anywhere; }
 form { margin: 0; }
 input, select, textarea, button { font: inherit; color: inherit; }
 input, select, textarea { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+select { max-width: 100%; }  /* a long agent or project name must not widen the page */
 textarea { resize: vertical; }
 button { min-height: 44px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip);
   cursor: pointer; font-weight: 600; }
@@ -95,8 +96,8 @@ button.reject { background: var(--bad); border-color: var(--bad); color: #fff; }
 .stack label { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .grid3 label { font-size: 0.8rem; }
-.inline { display: flex; gap: 8px; margin-top: 8px; }
-.inline input, .inline select { flex: 1; min-width: 0; }
+.inline { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.inline input, .inline select { flex: 1 1 8em; min-width: 0; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .filters select, .filters input { flex: 1 1 140px; width: auto; }
 .chat { display: flex; gap: 8px; align-items: flex-end; }
@@ -385,5 +386,7 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .math.display { display: block; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 .math.katex-error { color: var(--bad); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
 .math .katex { overflow-wrap: normal; }
+/* A wide inline formula that can't break scrolls inside itself (.md still clips anything painted outside). */
+.md .math.inline .katex { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; }
 .math .katex-display { margin: 0.3em 0; }
 .decision-note { margin: 4px 0 8px; padding-left: 10px; border-left: 3px solid var(--line); }

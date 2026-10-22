@@ -297,6 +297,13 @@ def error_page(status: int, detail: str) -> HTMLResponse:
     return HTMLResponse(html, status_code=status, headers=SECURITY_HEADERS)
 
 
+def written(text: str) -> str:
+    """An operator's note, message or answer: refused (422) if it is only whitespace."""
+    if not text.strip():
+        raise HTTPException(422, "write something first: the text is empty")
+    return text
+
+
 def operator_moves(state: str) -> list[str]:
     return sorted(tasks.TRANSITIONS.get(state, ()))
 
@@ -361,6 +368,7 @@ def build_router() -> APIRouter:
     def project_note(name: str, request: Request, operator: PostOp, conn: Conn,
                      body: Annotated[str, Form(min_length=1, max_length=4000)],
                      panel: PanelField = "", next: NextField = "") -> Response:
+        written(body)
         with db.transaction(conn):
             if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
                 raise store.NotFound(f"no project {name!r}")
@@ -419,6 +427,7 @@ def build_router() -> APIRouter:
     def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
                   body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
                   panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
+        written(body)
         with db.transaction(conn):
             private.send(conn, agent_id, author=operator.actor, body=body)
         return finish(request, operator, conn, panel, next, f"/ui/chats/{agent_id}", messenger)
@@ -460,6 +469,7 @@ def build_router() -> APIRouter:
                      mode: Annotated[str, Form(pattern="^(send|board)$")] = "send",
                      recipients: Annotated[list[str], Form()] = [],  # noqa: B006 (never mutated)
                      next: Annotated[str, Form(max_length=500)] = "") -> Response:
+        written(body)
         reach = views.recipients(conn, to)
         with db.transaction(conn):
             if mode == "board":
@@ -495,6 +505,7 @@ def build_router() -> APIRouter:
     def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
                    body: Annotated[str, Form(min_length=1, max_length=4000)],
                    messenger: MessengerField = "") -> Response:
+        written(body)
         thread = views.board_thread(conn, key)
         if not thread["can_post"]:
             raise HTTPException(405, "this thread is read-only")
@@ -522,6 +533,7 @@ def build_router() -> APIRouter:
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
                         answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)],
                         panel: PanelField = "", next: NextField = "") -> Response:
+        written(answer)
         with db.transaction(conn):
             questions.answer(conn, qid, answer=answer, actor=operator.actor)
         return finish(request, operator, conn, panel, next, f"/ui/questions/{qid}")
@@ -549,6 +561,7 @@ def build_router() -> APIRouter:
     def approval_discuss(approval_id: int, request: Request, operator: PostOp, conn: Conn,
                          body: Annotated[str, Form(min_length=1, max_length=4000)],
                          panel: PanelField = "", next: NextField = "") -> Response:
+        written(body)
         with db.transaction(conn):
             a = approvals.post_discussion(conn, approval_id, author=operator.actor, body=body)
         if request.headers.get("hx-request") and not panel:  # the approval page's own thread
@@ -625,6 +638,7 @@ def build_router() -> APIRouter:
     def task_note(task_id: int, request: Request, operator: PostOp, conn: Conn,
                   body: Annotated[str, Form(min_length=1, max_length=4000)],
                   panel: PanelField = "", next: NextField = "") -> Response:
+        written(body)
         with db.transaction(conn):
             t = tasks.get_task(conn, task_id)
             store.post_message(conn, author=operator.actor, project=t["project"], channel=f"task-{task_id}", body=body)
@@ -714,6 +728,7 @@ def build_router() -> APIRouter:
     def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
                     body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)],
                     panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
+        written(body)
         with db.transaction(conn):
             device_board.post(conn, node_id, author=operator.actor, body=body)
         return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}", messenger)

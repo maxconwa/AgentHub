@@ -647,10 +647,11 @@ def create_app(state: HubState) -> FastAPI:
             events.emit(conn, type="agent.connected" if delta > 0 else "agent.disconnected",
                         actor=agent_id, device=device)
 
-    def _store_checkouts(conn: sqlite3.Connection, agent_id: str, message: dict[str, Any]) -> None:
-        """Keep the runner's reported checkouts and current directory; a frame with anything invalid changes neither."""
+    def _reported_dirs(message: dict[str, Any]) -> tuple[str, str | None] | None:
+        """The runner's reported checkouts (compact JSON) and current directory, or None if the frame has none
+        (an older runner's plain heartbeat) or anything invalid (then neither changes)."""
         if "checkouts" not in message and "current_dir" not in message:
-            return  # an older runner's plain heartbeat
+            return None
         checkouts, current = message.get("checkouts", {}), message.get("current_dir")
         valid = (
             isinstance(checkouts, dict) and len(checkouts) <= 50
@@ -658,11 +659,10 @@ def create_app(state: HubState) -> FastAPI:
                     for k, v in checkouts.items())
             and (current is None or (isinstance(current, str) and len(current) <= 500))
         )
-        if valid:
-            conn.execute("UPDATE agents SET checkouts = ?, current_dir = ? WHERE id = ?",
-                         (json.dumps(checkouts, separators=(",", ":")), current, agent_id))
+        return (json.dumps(checkouts, separators=(",", ":")), current) if valid else None
 
     async def _agent_socket_loop(websocket: WebSocket, conn: sqlite3.Connection, agent_id: str) -> None:
+        stored_dirs: tuple[str, str | None] | None = None  # what this socket last wrote
         while True:
             try:
                 message = await websocket.receive_json()
@@ -679,8 +679,14 @@ def create_app(state: HubState) -> FastAPI:
             if agent is None or agent.status != "active":
                 await websocket.close(code=CLOSE_REVOKED, reason="agent is no longer active")
                 return
-            conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
-            _store_checkouts(conn, agent_id, message)
+            # One write per heartbeat; the directories ride along only when they changed.
+            dirs = _reported_dirs(message)
+            if dirs is not None and dirs != stored_dirs:
+                conn.execute("UPDATE agents SET last_heartbeat = ?, checkouts = ?, current_dir = ? WHERE id = ?",
+                             (db.now_iso(), *dirs, agent_id))
+                stored_dirs = dirs
+            else:
+                conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 
     # --- search --------------------------------------------------------------

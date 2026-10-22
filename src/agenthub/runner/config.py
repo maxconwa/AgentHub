@@ -62,8 +62,10 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
     if cfg.permission_mode not in PERMISSION_MODES:
         raise RunnerConfigError(f"permission_mode must be one of {', '.join(PERMISSION_MODES)} "
                                 f"(got {cfg.permission_mode!r}; bypassPermissions is not allowed)")
+    if not isinstance(cfg.extra_args, list) or not all(isinstance(arg, str) for arg in cfg.extra_args):
+        raise RunnerConfigError("extra_args must be a list of strings, e.g. [\"--model\", \"sonnet\"]")
     for arg in cfg.extra_args:
-        if isinstance(arg, str) and arg.startswith(FORBIDDEN_EXTRA_ARGS):
+        if arg.startswith(FORBIDDEN_EXTRA_ARGS):
             raise RunnerConfigError(f"extra_args may not contain {arg!r}: set permission_mode instead "
                                     "(permission-bypass and permission-prompt flags are not allowed)")
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):

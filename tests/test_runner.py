@@ -773,6 +773,15 @@ def test_extra_args_cannot_change_permissions(tmp_path, arg):
     assert load_runner_config(path).extra_args == ["--model", "x"]
 
 
+@pytest.mark.parametrize("value", ['"--model x"', '["--model", 5]', '[["--dangerously-skip-permissions"]]',
+                                   '{ a = "b" }'])
+def test_extra_args_must_be_a_list_of_strings(tmp_path, value):
+    path = tmp_path / "runner.toml"
+    path.write_text(f"extra_args = {value}\n")
+    with pytest.raises(RunnerConfigError, match="extra_args must be a list of strings"):
+        load_runner_config(path)
+
+
 def test_parse_limit():
     now = datetime(2026, 10, 21, 14, 0)  # a Wednesday, local time
     assert parse_limit("You've hit your session limit · resets 3:45pm", now) == (True, datetime(2026, 10, 21, 15, 45))
