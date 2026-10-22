@@ -10,7 +10,7 @@ working on which tasks, for which projects, on which devices, and in what
 state**. The current dashboard (Phase 4) is organized around approvals and a
 raw event feed, and it can't answer that question without digging.
 
-The redesign makes that question the home page. It gives every project, task
+The redesign makes that question the first page you land on. It gives every project, task
 and agent its own page with a description and conversation. It lets the
 operator talk to agents from wherever they are looking. And it gives agents a
 face: a pixel chibi whose pose shows its state.
@@ -42,24 +42,36 @@ agenthub is built through Phase 5. Relevant pieces:
 
 ## Goals (all decided by the operator)
 
-### Home page: four views of the same information
+### Pages across the top
 
-Tabs, with the approval queue and its red badge kept alongside.
+The dashboard has **seven separate pages**, linked from a bar across the top
+(operator decision 2026-10-21: separate pages, not one page with tabs or
+menus). The approvals red badge stays on its link.
 
 1. **Projects.** Each project being worked on has a collapsible list of its
    tasks. Under each task: its agent(s), each with its **role on that task**,
    **device**, and **status**. The hierarchy is
-   project → task → agent(s) → device and status.
+   project → task → agent(s) → device and status. Projects open their
+   project page.
 2. **Tasks.** A flat list. Each row shows the task, its project, and its
-   agents (with roles).
+   agents (with roles). Tasks open their task page.
 3. **Agents.** Each agent, the device it runs on, the **directory it is
    working in**, its current task and project, its role there, and its
-   status.
+   status. Agents open their agent page.
 4. **Devices.** Each machine, the agents on it with their status, and the
-   machine's live **CPU and GPU utilization**. (Devices as a fourth tab, plus
-   memory and online/offline, were proposed and accepted.)
+   machine's live **CPU and GPU utilization** and memory, online/offline.
+5. **Approvals.** The approval queue (including questions agents ask the
+   operator) and each approval's discussion, as today.
+6. **Chats.** Every conversation in one place, like a messenger: the
+   operator's dialogue with each agent, agents' conversations with each
+   other, and project and task message boards. Each chat opens full-page.
+   The agent page still shows that agent's chats, with the operator dialogue
+   pinned.
+7. **Artifacts.** Every report and page agents have made (see *Artifacts*),
+   filterable by project, task, and agent, newest first. It opens each one
+   in its sandboxed viewer.
 
-All views update live, the way the feed does now.
+All pages update live, the way the feed does now.
 
 ### Several agents per task, with roles you write
 
@@ -76,7 +88,7 @@ All views update live, the way the feed does now.
   agenthub**, with no external service.
 - The operator can **reroll** an agent's look as often as they like until
   they like it. The kept look is stored, and the agent looks the same
-  everywhere: home views, detail pages, approval threads, chats, the feed.
+  everywhere: the top-level pages, detail pages, approval threads, chats, the feed.
 - The avatar's pose shows the agent's state, animated:
 
   | state | pose | when |
@@ -136,7 +148,7 @@ Behaviour:
      machine has (a GPU, or a repo already checked out).
   2. They agree on a split, and **each agent's share becomes a task**. These
      tasks are already approved, because the request came from the operator.
-     Each appears on the home views and gets a budget.
+     Each appears on the Projects and Tasks pages and gets a budget.
   3. The agreement is recorded where the operator can see it.
   4. If a recipient is offline or revoked, the others go ahead without it and
      tell the operator.
@@ -245,7 +257,11 @@ What Claude Code exposes (docs read 2026-10-21, CLI 2.1.306):
   - whether the OTLP exporter appends `/v1/metrics`;
   - the `SessionEnd` input schema.
 
-### Reports and pages
+### Artifacts (reports and pages)
+
+The **Artifacts** page lists these; "artifact" is the dashboard's name for a
+report or page.
+
 
 - Agents can freely create **reports and pages**: **full interactive pages**
   (HTML, CSS, JavaScript) for other agents and the operator to read.
@@ -303,7 +319,7 @@ is the janitor's job, below.
 - The janitor deleting anything without the operator approving the list, or
   touching the event log.
 - Anything lost when the hub or a runner restarts.
-- A home page that's slow or janky on a phone. Sixty-plus animated avatars
+- A page that's slow or janky on a phone. Sixty-plus animated avatars
   must stay smooth.
 - Device metrics or any dashboard data reaching anything outside the tailnet.
 - Several agents silently doing the same work because one message reached
@@ -396,6 +412,13 @@ is the janitor's job, below.
     arrives by `postMessage` from the dashboard. Pages get size limits, and
     the existing operator-route security test must cover the page routes.
 
+14. **Where the rest goes, now that there are seven pages.** Search is a
+    search field in the top bar. The raw event feed stays, as an
+    **All activity** view reached from the Chats page. The usage panel lives
+    on the **Devices** page: subscription accounts at the top, then each
+    device with its agents and its CPU/GPU/memory history. Each agent's own
+    token usage is on its agent page.
+
 ## Left to the builder
 
 - Page layouts and visual details within the approved pixel style and the
@@ -406,7 +429,7 @@ is the janitor's job, below.
   runs in (the task's project checkout for task and project prompts; for an
   agent-page prompt, the agent's most recent checkout), and whether it resumes
   the agent's last session or starts a fresh one.
-- How live updates reach the four views: HTMX polling, or extending the
+- How live updates reach the top-level pages: HTMX polling, or extending the
   operator WebSocket.
 - Accessibility details (avatar `alt` text, reduced motion), within the
   current standards.
