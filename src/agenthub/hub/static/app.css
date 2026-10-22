@@ -175,3 +175,12 @@ header.top nav::-webkit-scrollbar { display: none; }
 .task-row:first-of-type { border-top: 0; }
 .member { display: flex; gap: 10px; align-items: center; padding: 4px 0 4px 8px; }
 .member .who { min-width: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
+
+/* Agents and agent page */
+.dir { overflow-wrap: anywhere; word-break: break-word; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.facts { margin: 0 0 8px; display: grid; gap: 6px; }
+.facts dt { font-size: 0.75rem; color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.agent-head .info { min-width: 0; }
+.agent-head h1 { overflow-wrap: anywhere; }

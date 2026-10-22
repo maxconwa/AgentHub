@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chip, avatar, task_title, approval_summary %}
+{% block title %}{{ ag.name }}{% endblock %}
+{% block content %}
+<p><a href="/ui/agents">← Agents</a></p>
+<div class="agent-head">
+  {{ avatar(ag.avatar, 96, scene=True) }}
+  <div class="info"><h1>{{ ag.name }} {{ chip(ag.status) }}</h1>
+    {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}</div>
+</div>
+{% if ag.status != 'revoked' %}
+<form class="inline" method="post" action="/ui/agents/{{ ag.id }}/avatar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reroll look</button></form>
+{% endif %}
+
+<section class="panel">
+  <h3>Where it runs</h3>
+  <dl class="facts">
+    <div><dt>Device</dt><dd>{{ ag.device }}{% if device_ip %} · {{ device_ip }}{% endif %}</dd></div>
+    <div><dt>Agent id</dt><dd>{{ ag.id }}</dd></div>
+    <div><dt>Directory <span class="muted small">(reported by the agent)</span></dt><dd class="dir">{{ ag.current_dir or 'None reported' }}</dd></div>
+  </dl>
+  <h4>Checkouts <span class="muted small">(reported by the agent)</span></h4>
+  {% if ag.checkouts %}
+  <ul class="plain">{% for project, path in ag.checkouts.items() %}<li><strong>{{ project }}</strong> <span class="dir">{{ path }}</span></li>{% endfor %}</ul>
+  {% else %}<p class="muted">No checkouts reported.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h3>Tasks</h3>
+  {% for t in ag.tasks %}
+  <p class="task-row"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · {{ t.project }} · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
+  {% else %}<p class="muted">No open tasks.</p>{% endfor %}
+</section>
+
+{% if pending %}
+<section class="panel">
+  <h3>Pending approvals</h3>
+  {% for a in pending %}
+  <p><a href="/ui/approvals/{{ a.id }}">#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a>: {{ approval_summary(a) }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <h3>Messages</h3>
+  <p><a href="/ui/chats/{{ ag.id }}">Private chat with {{ ag.name }}</a></p>
+  <p><a href="/ui/board">Agent-to-agent threads on the Board</a></p>
+</section>
+
+{% if ag.status != 'revoked' %}
+<section class="panel">
+  <h3>Allowed projects</h3>
+  <form class="inline" method="post" action="/ui/agents/{{ ag.id }}/projects">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="projects" value="{{ allowed | join(', ') }}" aria-label="Projects for {{ ag.name }}">
+    <button type="submit">Save projects</button>
+  </form>
+</section>
+<div class="buttons">
+  {% if ag.status == 'pending' %}
+  <form method="post" action="/ui/agents/{{ ag.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="approve" type="submit">Approve</button></form>
+  {% endif %}
+  <details class="danger"><summary>Revoke…</summary>
+    <form method="post" action="/ui/agents/{{ ag.id }}/revoke" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input name="confirm" placeholder="type {{ ag.name }}" aria-label="Type the agent name to confirm" required>
+      <button class="reject" type="submit">Revoke</button>
+    </form>
+  </details>
+</div>
+{% endif %}
+{% endblock %}

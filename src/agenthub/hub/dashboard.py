@@ -407,12 +407,13 @@ def build_router() -> APIRouter:
 
     # agents -------------------------------------------------------------------------
 
+    def render_agents(request: Request, operator: Operator, conn: sqlite3.Connection, new_code: dict | None) -> HTMLResponse:
+        return render(request, operator, "agents.html", conn, nav="agents", agents=views.agent_rows(conn),
+                      projects=store.list_projects(conn), new_code=new_code)
+
     @router.get("/agents", response_class=HTMLResponse)
     def agents_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        rows = conn.execute("SELECT id, connected FROM agents").fetchall()
-        connected = {r["id"]: r["connected"] for r in rows}
-        return render(request, operator, "agents.html", conn, nav="agents", agents=store.list_agents(conn), connected=connected,
-                      projects=store.list_projects(conn), new_code=None)
+        return render_agents(request, operator, conn, None)
 
     @router.post("/agents/enroll", response_class=HTMLResponse)
     def agents_enroll(request: Request, operator: PostOp, conn: Conn,
@@ -420,17 +421,23 @@ def build_router() -> APIRouter:
         names = [p.strip() for p in projects.split(",") if p.strip()]
         with db.transaction(conn):
             code = store.create_enrollment(conn, created_by=operator.actor, projects=names)
-        rows = conn.execute("SELECT id, connected FROM agents").fetchall()
         # Shown once, never stored in plain text.
-        return render(request, operator, "agents.html", conn, nav="agents", agents=store.list_agents(conn),
-                      connected={r["id"]: r["connected"] for r in rows}, projects=store.list_projects(conn),
-                      new_code={"code": code, "projects": names})
+        return render_agents(request, operator, conn, {"code": code, "projects": names})
+
+    @router.get("/agents/{agent_id}", response_class=HTMLResponse)
+    def agent_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        rows = views.agent_rows(conn, agent_id=agent_id)
+        agent = store.get_agent(conn, agent_id)
+        if not rows or agent is None:
+            raise HTTPException(404, "no such agent")
+        return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
+                      device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id))
 
     @router.post("/agents/{agent_id}/approve")
     def agent_approve(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:
         with db.transaction(conn):
             approvals.set_agent_status(conn, agent_id, "active", actor=operator.actor)
-        return done(request, "/ui/agents")
+        return done(request, f"/ui/agents/{agent_id}")
 
     @router.post("/agents/{agent_id}/revoke")
     def agent_revoke(agent_id: str, request: Request, operator: PostOp, conn: Conn,
@@ -440,7 +447,7 @@ def build_router() -> APIRouter:
             raise HTTPException(422, "type the agent's name to confirm revocation")
         with db.transaction(conn):
             approvals.set_agent_status(conn, agent_id, "revoked", actor=operator.actor, note="revoked")
-        return done(request, "/ui/agents")
+        return done(request, f"/ui/agents/{agent_id}")
 
     @router.post("/agents/{agent_id}/projects")
     def agent_projects(agent_id: str, request: Request, operator: PostOp, conn: Conn,
@@ -448,13 +455,13 @@ def build_router() -> APIRouter:
         with db.transaction(conn):
             store.set_agent_projects(conn, agent_id, [p.strip() for p in projects.split(",") if p.strip()],
                                      actor=operator.actor)
-        return done(request, "/ui/agents")
+        return done(request, f"/ui/agents/{agent_id}")
 
     @router.post("/agents/{agent_id}/avatar")
     def agent_avatar_reroll(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:
         with db.transaction(conn):
             avatars.reroll(conn, agent_id, actor=operator.actor)
-        return done(request, f"/ui/agents#agent-{agent_id}")
+        return done(request, f"/ui/agents/{agent_id}")
 
     @router.get("/avatars/{version}/{seed}/{kind}/{pose}.svg")
     def avatar_image(version: str, seed: str, kind: str, pose: str, request: Request, operator: Op) -> Response:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -10,11 +11,13 @@ from agenthub.hub import avatars
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
 
-def agent_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list[dict[str, Any]]:
     """Every non-revoked agent with its device, liveness and open tasks, ordered by name.
 
     Shared by the Dashboard, Agents and Devices pages. ``avatar`` is the agent's
-    :func:`avatars.board` entry.
+    :func:`avatars.board` entry. ``checkouts`` (project -> path) and ``current_dir`` are
+    agent-written text the runner reported. With ``agent_id`` the result is that one agent
+    (revoked or not), or empty if there is none.
     """
     board = avatars.board(conn)
     open_tasks: dict[str, list[dict[str, Any]]] = {}
@@ -25,11 +28,12 @@ def agent_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         open_tasks.setdefault(r["agent_id"], []).append(
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
              "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
-    rows = conn.execute(
-        "SELECT id, name, status, device_name, connected, last_heartbeat FROM agents "
-        "WHERE status != 'revoked' ORDER BY name").fetchall()
+    cols = "id, name, status, device_name, connected, last_heartbeat, checkouts, current_dir FROM agents "
+    rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
+            else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
     return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"],
              "connected": bool(r["connected"]), "last_heartbeat": r["last_heartbeat"],
+             "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
              "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
 
 

@@ -1,5 +1,6 @@
 """Page shell, Dashboard and Reports placeholder."""
 
+import json
 import re
 
 import pytest
@@ -295,3 +296,84 @@ def test_task_page_keeps_activity_outside_live(busy):
     before, live = html.split('id="live"')
     assert "<h2>Activity</h2>" in before and "Activity" not in live
     assert f"task #{t['id']}" in before.split("<h2>Activity</h2>")[1]
+
+
+# --- Agents page and agent page ---------------------------------------------------
+
+EVIL = "<script>alert(1)</script>"
+
+
+def report(hub, agent, checkouts, current_dir):
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET checkouts = ?, current_dir = ? WHERE id = ?",
+                     (json.dumps(checkouts), current_dir, agent.id))
+
+
+def test_agents_grid_cards_link_to_pages_and_show_directory(busy):
+    hub, a, b, ap, t = busy
+    report(hub, a, {"proj": "/srv/proj", "other": "/srv/other"}, None)
+    html = get(hub, "/ui/agents").text
+    assert f'href="/ui/agents/{a.id}"' in html and "worker" in html
+    assert "/srv/proj, /srv/other" in html and "Fix login" in html and "tester" in html
+    assert "gone" not in html and "Enroll a new agent" in html
+    assert 'width="96"' in html
+    report(hub, a, {"proj": "/srv/proj"}, "/srv/proj/.worktrees/x")
+    html = get(hub, "/ui/agents").text
+    assert "/srv/proj/.worktrees/x" in html and "/srv/proj, " not in html
+    report(hub, a, {}, None)
+    assert "No checkouts reported" in get(hub, "/ui/agents").text
+
+
+def test_agents_grid_shows_pending_agents(hub):
+    p = hub.enroll("newbie", approve=False)
+    html = get(hub, "/ui/agents").text
+    assert "newbie" in html and "chip-pending" in html and f'href="/ui/agents/{p.id}"' in html
+
+
+def test_agent_page_shows_device_directory_checkouts_escaped(busy):
+    hub, a, b, ap, t = busy
+    report(hub, a, {"proj": f"/srv/{EVIL}"}, f"/w/{EVIL}")
+    r = get(hub, f"/ui/agents/{a.id}")
+    assert r.status_code == 200
+    html = r.text
+    assert "worker-host.example.ts.net" in html and "<script>alert" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html and "reported by the agent" in html
+    assert "Fix login" in html and "tester" in html and f"/ui/tasks/{t['id']}" in html
+    assert f"/ui/approvals/{ap['id']}" in html and "git push -f origin x" in html
+    assert f'action="/ui/agents/{a.id}/projects"' in html and f'action="/ui/agents/{a.id}/avatar"' in html
+    assert f'action="/ui/agents/{a.id}/revoke"' in html
+    assert f'href="/ui/chats/{a.id}"' in html and 'href="/ui/board"' in html
+
+
+def test_agent_page_unknown_is_404(hub):
+    assert get(hub, "/ui/agents/nope").status_code == 404
+
+
+def test_agent_page_forms_redirect_back_to_it(busy):
+    hub, a, b, ap, t = busy
+    h, c = hub.op_headers(), hub.csrf()
+    page = f"/ui/agents/{a.id}"
+    r = hub.client.post(f"{page}/projects", headers=h, data={"csrf": c, "projects": "proj, more"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == page
+    assert set(store.get_agent(hub.conn(), a.id).allowed_projects) == {"proj", "more"}
+    r = hub.client.post(f"{page}/revoke", headers=h, data={"csrf": c, "confirm": "worker"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == page
+    assert store.get_agent(hub.conn(), a.id).status == "revoked"
+    p = hub.enroll("newbie", approve=False)
+    r = hub.client.post(f"/ui/agents/{p.id}/approve", headers=h, data={"csrf": c}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/agents/{p.id}"
+    assert f'action="/ui/agents/{p.id}/approve"' not in get(hub, f"/ui/agents/{p.id}").text
+
+
+def test_pending_agent_page_has_approve_form(hub):
+    p = hub.enroll("newbie", approve=False)
+    assert f'action="/ui/agents/{p.id}/approve"' in get(hub, f"/ui/agents/{p.id}").text
+
+
+def test_revoked_agent_page_renders_read_only(busy):
+    hub, a, b, ap, t = busy
+    html = get(hub, f"/ui/agents/{b.id}").text
+    assert "chip-revoked" in html and "gone" in html
+    assert "/ui/avatars/" not in html and "<form" not in html.split("<h1>", 1)[1]  # read-only
+    assert "gone" not in get(hub, "/ui/agents").text

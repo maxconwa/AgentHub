@@ -123,7 +123,7 @@ def test_insecure_dev_disables_operator_access(dev_hub):
 def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
-                 "/ui/feed", "/ui/feed?type=task", "/ui/agents", "/ui/search?q=push", "/ui/badge",
+                 "/ui/feed", "/ui/feed?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
@@ -380,7 +380,7 @@ def test_reroll_needs_csrf_and_changes_the_look(world):
     assert r.status_code == 403 and seed() == before
     r = hub.client.post(f"/ui/agents/{agent.id}/avatar", headers=hub.op_headers(), data={"csrf": hub.csrf()},
                         follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == f"/ui/agents#agent-{agent.id}" and seed() != before
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/agents/{agent.id}" and seed() != before
 
 
 def test_pages_show_each_agents_avatar_in_its_pose(world):
