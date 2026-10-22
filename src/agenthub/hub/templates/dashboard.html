@@ -25,12 +25,6 @@
       <div class="muted small">from {{ q.agent_name or q.agent_id }} · {{ q.project }} · agent text</div></div></a></li>
   {% endfor %}
 </ul>
-{% set shown = prompts.open + prompts.recent %}
-<div class="section-head"><h2>Prompts{% if prompts.open %} <span class="count">{{ prompts.open|length }} in progress</span>{% endif %}</h2></div>
-{% if not shown %}<p class="empty">No prompts yet. Prompt, next to Send, wakes the agents now.</p>{% endif %}
-<ul class="cards prompts">
-  {% for p in shown %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}
-</ul>
 <div class="section-head"><h2>Agents <span class="count">{{ agents|length }}</span></h2><a href="/ui/agents">All agents</a></div>
 {% if not agents %}<p class="empty">No agents yet. Enroll one from the Agents page.</p>{% endif %}
 <div class="tally">{% for t in tally %}<span class="chip">{{ t.count }} {{ t.label }}</span>{% endfor %}</div>
@@ -42,5 +36,11 @@
       <div class="small-line">on {{ ag.device }}</div>
       </div></li>
   {% endfor %}
+</ul>
+{% set shown = prompts.open + prompts.recent %}
+<div class="section-head"><h2>Prompts{% if prompts.open %} <span class="count">{{ prompts.open|length }} in progress</span>{% endif %}</h2></div>
+{% if not shown %}<p class="empty">No prompts yet. Prompt, next to Send, wakes the agents now.</p>{% endif %}
+<ul class="cards prompts">
+  {% for p in shown %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}
 </ul>
 {% endblock %}

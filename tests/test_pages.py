@@ -98,6 +98,13 @@ def test_dashboard_has_live_region(busy):
     assert 'id="live"' in html and 'hx-get="/ui/dashboard"' in html and 'hx-trigger="every 10s"' in html
 
 
+def test_dashboard_sections_in_order(busy):
+    live = get(busy[0], "/ui/dashboard").text.split('id="live"')[1]
+    heads = [live.index(h) for h in ("<h2>Waiting on you", "<h2>Agents", "<h2>Prompts")]
+    assert heads == sorted(heads)
+    assert heads[1] < live.index('class="tally"') < live.index('class="agent-grid"') < heads[2]
+
+
 def test_agent_rows_show_role(busy):
     hub, a, b, ap, t = busy
     rows = views.agent_rows(hub.conn())
