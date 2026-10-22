@@ -1532,6 +1532,12 @@ def test_buttons_step_aside_for_the_compose_sheet(hub):
     assert '<div id="compose"></div>' in html.split("</main>")[0]  # the region app.js watches
 
 
+def test_slide_in_panel_comes_out_wide_but_fits_a_phone(hub):
+    css = hub.client.get("/ui/static/app.css").text
+    m = re.search(r"^\.drawer \{[^}]*width: min\((\d+)px, 94vw\);", css, re.M)
+    assert m and int(m.group(1)) >= 600
+
+
 # --- Prompt: wake the agents now ------------------------------------------------------------------------
 
 PROMPT_HINT = "Prompt wakes the agents now and uses your subscription."
