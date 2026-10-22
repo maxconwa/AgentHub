@@ -33,7 +33,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 - **Hooks:** gate risky shell commands behind approvals (failing closed), keep
   an agent working while messages addressed to it are unread, and route
   permission prompts from headless sessions to the operator.
-- **Runner:** a systemd user service on each agent machine. It runs assigned
+- **Runner:** a systemd user service (a launchd agent on macOS) on each agent machine. It runs assigned
   tasks in headless `claude -p` sessions, enforces budgets, and streams progress.
 - **Dashboard:** mobile-first pages for projects, tasks, agents, devices,
   approvals, chats, and a public board, with search and ntfy push notifications.
@@ -142,6 +142,27 @@ Finally, map projects to local checkouts in `~/.config/agenthub/runner.toml`
 sudo loginctl enable-linger agent
 agenthub doctor
 ```
+
+#### macOS agent machines
+
+The steps are the same, with three differences:
+
+- **The agent user.** Create a standard (not administrator) user named `agent`
+  in System Settings → Users & Groups, and sign in to it once on the desktop.
+  Claude Code keeps its login in that user's keychain, which is only unlocked
+  in a desktop session.
+- **The runner.** `join` installs a launchd agent,
+  `~/Library/LaunchAgents/com.agenthub.runner.plist`, and starts it in the
+  user's `gui/<uid>` domain. It logs to `~/Library/Logs/agenthub-runner.log`.
+  There is no lingering on macOS: the runner runs while the `agent` user is
+  signed in, so leave that session open with fast user switching. If you
+  run `join` over `sudo -iu agent` or SSH, there is no desktop session to
+  start the runner in; `join` says so and prints the `launchctl bootstrap`
+  command to run once you sign in.
+- **Tailscale.** The macOS app keeps its CLI inside the app bundle;
+  `agenthub doctor` finds it there. Tag the Mac `tag:agent` like any other
+  agent machine. The Mac then can no longer act as the operator, so don't
+  use it for the dashboard.
 
 ### 4. Backups
 

@@ -157,3 +157,30 @@ def test_migration_from_schema_2_preserves_data(tmp_path):
     assert tuple(new.execute("SELECT approval_id, last_note FROM tasks").fetchone()) == (1, "")
     assert new.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert new.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_runner_launchd_plist(tmp_path, monkeypatch):
+    import plistlib
+
+    from agenthub.runner import service
+
+    monkeypatch.setattr(service.shutil, "which", lambda name: "/Users/agent/.local/bin/claude")
+    path = service.write_plist("/opt/agenthub/bin/agenthub", tmp_path / "cfg", directory=tmp_path)
+    assert path.name == f"{service.LAUNCHD_LABEL}.plist"
+    data = plistlib.loads(path.read_bytes())
+    assert data["Label"] == service.LAUNCHD_LABEL
+    assert data["ProgramArguments"] == ["/opt/agenthub/bin/agenthub", "runner"]
+    env = data["EnvironmentVariables"]
+    assert env["AGENTHUB_CONFIG_DIR"] == str((tmp_path / "cfg").resolve())
+    # launchd's own PATH lacks both executables' directories
+    assert env["PATH"].split(":")[:2] == ["/opt/agenthub/bin", "/Users/agent/.local/bin"]
+    assert data["KeepAlive"] == {"SuccessfulExit": False} and data["RunAtLoad"] is True
+
+
+def test_revoked_runner_exits_cleanly_only_under_launchd(monkeypatch):
+    from agenthub.runner import service
+
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+    assert service.revoked_exit_code() == service.EXIT_REVOKED
+    monkeypatch.setenv("XPC_SERVICE_NAME", service.LAUNCHD_LABEL)
+    assert service.revoked_exit_code() == 0

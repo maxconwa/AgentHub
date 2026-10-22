@@ -201,3 +201,26 @@ def test_journal_mode_and_litestream_checks(tmp_path, monkeypatch):
     conn.close()
     bad = {c.name: c for c in doctor.hub_checks(fake_run({}))}["journal_mode"]
     assert bad.status == "fail" and "delete" in bad.detail
+
+
+def test_launchd_runner_check():
+    from agenthub.runner import service
+
+    target = f"launchctl print {service.launchd_domain()}/{service.LAUNCHD_LABEL}"
+    running = doctor.check_launchd(fake_run({target: (0, "com.agenthub.runner = {\n\tstate = running\n}")}))
+    assert running.status == "ok" and running.detail == "running"
+    waiting = doctor.check_launchd(fake_run({target: (0, "\tstate = not running\n")}))
+    assert waiting.status == "warn" and "runner.log" in waiting.detail
+    missing = doctor.check_launchd(fake_run({}))
+    assert missing.status == "warn" and "not loaded" in missing.detail
+
+
+def test_tailscale_bin_finds_the_macos_app(tmp_path, monkeypatch):
+    app_cli = tmp_path / "Tailscale"
+    app_cli.write_text("")
+    monkeypatch.setattr(doctor, "MACOS_TAILSCALE", app_cli)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    assert doctor.tailscale_bin() == str(app_cli)
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
+    assert doctor.tailscale_bin() == "tailscale"

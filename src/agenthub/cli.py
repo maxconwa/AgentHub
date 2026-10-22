@@ -472,7 +472,7 @@ def join(
     mcp_scope: Annotated[str, typer.Option(help="Claude Code MCP scope: user, local, or project.")] = "user",
     no_mcp: Annotated[bool, typer.Option("--no-mcp", help="Skip registering the MCP server with Claude Code.")] = False,
     no_hooks: Annotated[bool, typer.Option("--no-hooks", help="Skip installing hooks and deny rules.")] = False,
-    no_runner: Annotated[bool, typer.Option("--no-runner", help="Skip installing the runner systemd service.")] = False,
+    no_runner: Annotated[bool, typer.Option("--no-runner", help="Skip installing the runner service (systemd or launchd).")] = False,
     insecure_dev: Annotated[bool, typer.Option("--insecure-dev", help="Allow an http:// hub URL (local dev).")] = False,
     force: Annotated[bool, typer.Option(help="Replace an existing agent config on this machine.")] = False,
 ) -> None:
@@ -512,15 +512,17 @@ def join(
     if not no_runner:
         from agenthub.runner import service
 
-        unit = service.write_unit(join_mod.agenthub_command(), paths.config_dir())
-        problem = service.enable_and_start()
+        unit, problem = service.install(join_mod.agenthub_command(), paths.config_dir())
         if problem:
             typer.secho(f"runner service written to {unit} but not started: {problem}", fg="yellow")
         else:
             typer.echo(f"runner service installed and started ({unit})")
         typer.echo("  map projects to local directories in "
                    f"{paths.config_dir() / 'runner.toml'} (see examples/runner.example.toml)")
-        typer.echo("  to keep it running while logged out: sudo loginctl enable-linger $USER")
+        if service.use_launchd():
+            typer.echo("  the runner runs while this user is logged in; use fast user switching to keep it running")
+        else:
+            typer.echo("  to keep it running while logged out: sudo loginctl enable-linger $USER")
 
     if status == "pending":
         typer.secho("status: pending — ask the operator to approve this agent.", fg="yellow")
@@ -552,10 +554,10 @@ def runner(verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False) ->
     try:
         asyncio.run(daemon.run(agent, cfg))
     except daemon.Revoked as exc:
-        from agenthub.runner.service import EXIT_REVOKED
+        from agenthub.runner.service import revoked_exit_code
 
         typer.secho(f"stopped: {exc}", fg="red", err=True)
-        raise typer.Exit(EXIT_REVOKED)
+        raise typer.Exit(revoked_exit_code())
     except KeyboardInterrupt:
         pass
 

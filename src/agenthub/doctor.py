@@ -19,6 +19,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,16 @@ def check_private(path: Path, name: str, want: int) -> Check:
     if mode & 0o077:
         return Check(name, FAIL, f"{path} is mode {mode:o}; run: chmod {want:o} {path}")
     return Check(name, OK, f"{path} ({mode:o})")
+
+
+# The Mac App Store and standalone Tailscale apps ship the CLI inside the bundle, not on PATH.
+MACOS_TAILSCALE = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+
+
+def tailscale_bin() -> str:
+    if shutil.which("tailscale") is None and sys.platform == "darwin" and MACOS_TAILSCALE.exists():
+        return str(MACOS_TAILSCALE)
+    return "tailscale"
 
 
 def tailscale_status(run: Runner, tailscale: str = "tailscale") -> dict[str, Any] | None:
@@ -126,8 +137,9 @@ def check_api_billing(cwd: Path, project_dirs: list[Path] | tuple[Path, ...] = (
     return Check("API billing", OK, "no API key, gateway or cloud provider settings found")
 
 
-# Only this file is checked: no managed-settings.d drop-ins, no macOS path.
-MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
+# Only this file is checked: no managed-settings.d drop-ins.
+MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json") if sys.platform == "darwin"
+                    else Path("/etc/claude-code/managed-settings.json"))
 
 
 def check_permission_mode(cfg) -> Check:
@@ -216,17 +228,31 @@ async def _hub_checks(cfg) -> list[Check]:
     return out
 
 
+def check_launchd(run: Runner) -> Check:
+    from agenthub.runner import service
+
+    target = f"{service.launchd_domain()}/{service.LAUNCHD_LABEL}"
+    proc = run(["launchctl", "print", target])
+    if proc.returncode != 0:
+        return Check("runner service", WARN, f"{target} is not loaded; rerun `agenthub join --force` from a "
+                     "desktop login, or `launchctl bootstrap` the plist in ~/Library/LaunchAgents")
+    state = next((line.split("=", 1)[1].strip() for line in proc.stdout.splitlines()
+                  if line.strip().startswith("state =")), "unknown")
+    return Check("runner service", OK if state == "running" else WARN,
+                 state if state == "running" else f"{state}; see ~/Library/Logs/agenthub-runner.log")
+
+
 def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
     from agenthub.config import AgentConfig
     from agenthub.runner.config import RunnerConfigError, load_runner_config
-    from agenthub.runner.service import UNIT_NAME
+    from agenthub.runner import service
 
     cwd = cwd or Path.cwd()
     config_dir = paths.config_dir()
     out: list[Check] = []
     if os.geteuid() == 0:
         out.append(Check("user", FAIL, "running as root; run agents as a dedicated non-root user"))
-    out += check_tailscale(run, "tag:agent")
+    out += check_tailscale(run, "tag:agent", tailscale_bin())
     try:
         project_dirs = [Path(d) for d in load_runner_config().projects.values()]
     except RunnerConfigError:
@@ -262,8 +288,10 @@ def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
             out.append(Check("runner config", OK, f"{len(rcfg.projects)} project(s) mapped"))
     except RunnerConfigError as exc:
         out.append(Check("runner config", FAIL, str(exc)))
-    if shutil.which("systemctl"):
-        active = run(["systemctl", "--user", "is-active", UNIT_NAME]).stdout.strip()
+    if service.use_launchd():
+        out.append(check_launchd(run))
+    elif shutil.which("systemctl"):
+        active = run(["systemctl", "--user", "is-active", service.UNIT_NAME]).stdout.strip()
         out.append(Check("runner service", OK if active == "active" else WARN, active or "unknown"))
         linger = run(["loginctl", "show-user", getpass.getuser(), "--property=Linger"]).stdout.strip()
         out.append(Check("linger", OK if linger == "Linger=yes" else WARN,
