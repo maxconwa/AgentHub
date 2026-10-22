@@ -122,26 +122,28 @@ def _ts_key(item: dict[str, Any]) -> str:
 def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     """The Board page's thread list: project boards, task boards, other channels, agent pairs.
 
-    Each item is ``{key, title, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
+    Each item is ``{key, title, created_by, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
     None: agent-written snippets stay out of lists, so a row shows who spoke last and when.
     """
     board = avatars.board(conn)
-    task_titles = {(r["project"], r["id"]): r["title"] for r in conn.execute("SELECT id, project, title FROM tasks")}
+    task_titles = {(r["project"], r["id"]): (r["title"], r["created_by"])
+                   for r in conn.execute("SELECT id, project, title, created_by FROM tasks")}
     authors: dict[int, list[str]] = {}
     for r in conn.execute("SELECT channel_id, author FROM messages GROUP BY channel_id, author ORDER BY MAX(id) DESC"):
         authors.setdefault(r["channel_id"], []).append(r["author"])
     last = {r["channel_id"]: r["ts"] for r in conn.execute(
         "SELECT channel_id, ts FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY channel_id)")}
     out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": [], "between_agents": []}
-    for c in conn.execute("SELECT id, project, name, created_at FROM channels"):
-        item = {"key": f"ch-{c['project']}-{c['name']}", "title": f"{c['project']} / {c['name']}", "last_body": None,
+    for c in conn.execute("SELECT id, project, name, created_by FROM channels"):
+        item = {"key": f"ch-{c['project']}~{c['name']}", "created_by": c["created_by"], "title": f"{c['project']} / {c['name']}", "last_body": None,
                 "last_ts": last.get(c["id"]), "project": c["project"],
                 "avatars": [board[a] for a in authors.get(c["id"], []) if a in board][:3]}
         m = _TASK_CHANNEL.fullmatch(c["name"])
         if c["name"] == "general":
             out["projects"].append(item | {"title": c["project"]})
         elif m and (c["project"], int(m[1])) in task_titles:
-            out["tasks"].append(item | {"title": f"#{m[1]} {task_titles[(c['project'], int(m[1]))]}"})
+            title, by = task_titles[(c["project"], int(m[1]))]
+            out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by})
         else:
             out["threads"].append(item)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
@@ -160,32 +162,31 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
-def _channel_for_key(conn: sqlite3.Connection, key: str) -> tuple[str, str] | None:
-    """The existing (project, channel) behind ``ch-<project>-<channel>``; names may contain ``-``."""
-    if not key.startswith("ch-"):
+def _channel_for_key(conn: sqlite3.Connection, key: str) -> tuple[str, str, str] | None:
+    """The existing (project, channel, created_by) behind ``ch-<project>~<channel>``.
+
+    ``~`` can't appear in a name, so the split is unambiguous (``-`` can).
+    """
+    project, sep, channel = key.removeprefix("ch-").partition("~")
+    if not key.startswith("ch-") or not sep:
         return None
-    rest = key[3:]
-    for i, ch in enumerate(rest):
-        project, channel = rest[:i], rest[i + 1:]
-        if ch == "-" and store.NAME_RE.fullmatch(project) and store.NAME_RE.fullmatch(channel) and conn.execute(
-                "SELECT 1 FROM channels WHERE project = ? AND name = ?", (project, channel)).fetchone():
-            return project, channel
-    return None
+    row = conn.execute("SELECT created_by FROM channels WHERE project = ? AND name = ?", (project, channel)).fetchone()
+    return (project, channel, row["created_by"]) if row else None
 
 
 def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
     """One Board thread: ``{title, messages, can_post}`` (plus ``project``/``channel`` for channels).
 
-    Channel keys are ``ch-<project>-<channel>``; pair keys ``pair-<a>-<b>`` (agent ids sorted) show
+    Channel keys are ``ch-<project>~<channel>``; pair keys ``pair-<a>-<b>`` (agent ids sorted) show
     addressed messages between two agents and their asks, read-only. Raises store.NotFound if unknown.
     """
     found = _channel_for_key(conn, key)
     if found:
-        project, channel = found
+        project, channel, created_by = found
         msgs = [{"author": m["author"], "ts": m["ts"], "body": m["body"]}
                 for m in store.recent_messages(conn, project=project, channel=channel, limit=BOARD_LIMIT)]
         return {"title": f"{project} / {channel}", "messages": msgs, "can_post": True,
-                "project": project, "channel": channel}
+                "project": project, "channel": channel, "created_by": created_by}
     m = _PAIR_KEY.fullmatch(key)
     if not m or m[1] >= m[2]:
         raise store.NotFound(f"no board thread {key!r}")

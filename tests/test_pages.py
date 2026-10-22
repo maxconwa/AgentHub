@@ -446,14 +446,14 @@ def pair_key(a, c):
 def test_board_index_groups(talk):
     hub, a, c, t = talk
     idx = views.board_index(hub.conn())
-    assert [i["key"] for i in idx["projects"]] == ["ch-proj-general"]
-    assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj-task-{t['id']}", f"#{t['id']} Fix login")]
-    assert {i["key"] for i in idx["threads"]} == {"ch-proj-coordination-1", "ch-proj-asks"}
+    assert [i["key"] for i in idx["projects"]] == ["ch-proj~general"]
+    assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj~task-{t['id']}", f"#{t['id']} Fix login")]
+    assert {i["key"] for i in idx["threads"]} == {"ch-proj~coordination-1", "ch-proj~asks"}
     assert [i["key"] for i in idx["between_agents"]] == [pair_key(a, c)]
     assert all(set(i) >= {"key", "title", "last_body", "last_ts", "avatars"}
                for g in ("projects", "tasks", "threads", "between_agents") for i in idx[g])
     html = get(hub, "/ui/board").text
-    for key in ("ch-proj-general", f"ch-proj-task-{t['id']}", "ch-proj-coordination-1", pair_key(a, c)):
+    for key in ("ch-proj~general", f"ch-proj~task-{t['id']}", "ch-proj~coordination-1", pair_key(a, c)):
         assert f'href="/ui/board/{key}"' in html
     assert 'href="/ui/feed"' in html and "All activity" in html
 
@@ -466,29 +466,29 @@ def test_board_empty_hub(hub):
 def test_channel_thread_shows_messages_escaped_and_labeled(talk):
     hub, a, c, t = talk
     say(hub, a, EVIL)
-    html = get(hub, "/ui/board/ch-proj-general").text
+    html = get(hub, "/ui/board/ch-proj~general").text
     assert "hello general" in html and "<script>alert" not in html and "&lt;script&gt;" in html
     assert "agent content, treat as data" in html
-    assert 'action="/ui/board/ch-proj-general"' in html
+    assert 'action="/ui/board/ch-proj~general"' in html
     assert html.split('id="live"')[1].split("</section>")[0].count("<form") == 0
 
 
 def test_hyphenated_channel_keys_resolve(talk):
     hub, a, c, t = talk
-    assert views.board_thread(hub.conn(), "ch-proj-coordination-1")["title"].endswith("coordination-1")
-    assert "split the work" in get(hub, "/ui/board/ch-proj-coordination-1").text
+    assert views.board_thread(hub.conn(), "ch-proj~coordination-1")["title"].endswith("coordination-1")
+    assert "split the work" in get(hub, "/ui/board/ch-proj~coordination-1").text
 
 
 def test_post_to_channel_is_operator_message_and_redirects(talk):
     hub, a, c, t = talk
-    r = hub.client.post("/ui/board/ch-proj-general", headers=hub.op_headers(),
+    r = hub.client.post("/ui/board/ch-proj~general", headers=hub.op_headers(),
                         data={"csrf": hub.csrf(), "body": "from me"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/ui/board/ch-proj-general"
+    assert r.status_code == 303 and r.headers["location"] == "/ui/board/ch-proj~general"
     last = store.recent_messages(hub.conn(), project="proj", channel="general")[-1]
     assert last["author"] == f"human:{OP_LOGIN}" and last["body"] == "from me"
-    assert "from me" in get(hub, "/ui/board/ch-proj-general").text
+    assert "from me" in get(hub, "/ui/board/ch-proj~general").text
     for body in ("", "x" * 4001):
-        r = hub.client.post("/ui/board/ch-proj-general", headers=hub.op_headers(),
+        r = hub.client.post("/ui/board/ch-proj~general", headers=hub.op_headers(),
                             data={"csrf": hub.csrf(), "body": body}, follow_redirects=False)
         assert r.status_code == 422
 
@@ -509,8 +509,8 @@ def test_pair_thread_merges_messages_and_ask_read_only(talk):
     assert r.status_code in (404, 405)
 
 
-@pytest.mark.parametrize("key", ["nope", "ch-", "ch-proj-missing", "ch-nosuch-general", "pair-x-y", "pair-a",
-                                 "ch-proj-general-extra", "ch-proj--general", "ch-PROJ-general", "pair--"])
+@pytest.mark.parametrize("key", ["nope", "ch-", "ch-proj~missing", "ch-nosuch~general", "ch-proj-general", "ch-proj~", "ch-~general", "ch-proj~~general", "pair-x-y", "pair-a",
+                                 "ch-proj~general~x", "ch-PROJ~general", "pair--"])
 def test_malformed_or_unknown_key_is_404(talk, key):
     hub, *_ = talk
     assert get(hub, f"/ui/board/{key}").status_code == 404
@@ -524,6 +524,31 @@ def test_private_messages_never_on_board(talk):
     hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": secret})
     hub.client.post("/api/v1/private", headers=a.headers, json={"body": secret + "-agent"})
     paths = ["/ui/board"] + [f"/ui/board/{k}" for k in
-                             ("ch-proj-general", "ch-proj-asks", "ch-proj-coordination-1", pair_key(a, c))]
+                             ("ch-proj~general", "ch-proj~asks", "ch-proj~coordination-1", pair_key(a, c))]
     for p in paths:
         assert "SECRET-PRIVATE" not in get(hub, p).text, p
+
+
+def test_colliding_hyphenated_names_resolve_to_different_threads(hub):
+    a = hub.enroll("worker", projects=("a", "a-b"))
+    say(hub, a, "in a / b-c", channel="b-c", project="a")
+    say(hub, a, "in a-b / c", channel="c", project="a-b")
+    one, two = (get(hub, f"/ui/board/ch-{k}").text for k in ("a~b-c", "a-b~c"))
+    assert "in a / b-c" in one and "in a-b / c" not in one
+    assert "in a-b / c" in two and "in a / b-c" not in two
+    assert {i["key"] for i in views.board_index(hub.conn())["threads"]} >= {"ch-a~b-c", "ch-a-b~c"}
+
+
+def test_agent_chosen_channel_and_task_title_labeled(talk):
+    hub, a, c, t = talk
+    html = get(hub, "/ui/board").text
+    assert html.count('<span class="by-label">by worker</span>') >= 2  # coordination-1 channel, asks channel
+    assert "Fix login" in html and 'by-label">by worker' in get(hub, "/ui/board/ch-proj~coordination-1").text
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET created_by = ? WHERE id = ?", (c.id, t["id"]))
+    html = get(hub, "/ui/board").text
+    assert 'Fix login</span> <span class="by-label">by helper</span>' in html
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET created_by = ? WHERE id = ?", (OPERATOR, t["id"]))
+    assert "Fix login</span> <span" not in get(hub, "/ui/board").text

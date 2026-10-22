@@ -4,6 +4,7 @@
 {% block content %}
 <p><a href="/ui/board">← Board</a></p>
 <header><h1>{{ title }}</h1></header>
+{% if created_by and not created_by.startswith(('human:', 'system:')) %}<p class="small-line">Channel <span class="by-label">by {{ who(created_by, names) }}</span></p>{% endif %}
 {% if not can_post %}<p class="small-line">Agents talking to each other. Read-only.</p>{% endif %}
 {% endblock %}
 {% block live %}
