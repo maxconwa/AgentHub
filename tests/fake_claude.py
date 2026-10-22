@@ -1,7 +1,7 @@
 """A stand-in for `claude -p --output-format stream-json` used by runner tests.
 
 Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail | review_approve |
-limit_then_success | hold | prompt_share.
+limit_then_success | hold | prompt_share | prompt_reply.
 review_approve records an ``approve`` verdict on $AGENTHUB_TASK_ID through the hub at $FAKE_HUB_URL with
 the agent token in $FAKE_TOKEN (as the real session would through the MCP tool), then succeeds.
 limit_then_success: the first call (no --resume) ends with the subscription usage-limit message
@@ -10,6 +10,8 @@ A --resume'd call keeps that session id, unless --fork-session asks for a new on
 hold: waits until the file $FAKE_RELEASE exists (at most 30 s), then succeeds.
 prompt_share: in a prompt session ($AGENTHUB_PROMPT_ID set) it reads the prompt, posts in its channel thread and
 claims a share titled "Share for $FAKE_NAME" through the hub (as the real session would through the MCP tools),
+then succeeds; any other session just succeeds.
+prompt_reply: in a prompt session it answers the operator privately through the hub (as `message_operator` would),
 then succeeds; any other session just succeeds.
 Each invocation appends {"argv", "stdin", "cwd", "session", "env", "env_names"} as a JSON line to
 FAKE_CLAUDE_LOG: ``env`` holds the AGENTHUB_* variables, ``env_names`` the names (never the values) of every
@@ -88,6 +90,8 @@ def main():
             hub("POST", f"/projects/{thread['project']}/messages",
                 {"channel": thread["channel"], "body": f"{name} here: I'll take my part."})
         hub("POST", f"/prompts/{pid}/claim", {"title": f"Share for {name}", "body": f"{name}'s part of the work."})
+    if mode == "prompt_reply" and os.environ.get("AGENTHUB_PROMPT_ID"):
+        hub("POST", "/private", {"body": f"Reply to prompt {os.environ['AGENTHUB_PROMPT_ID']}: the build is slow."})
     emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 2,
           "total_cost_usd": 0.02, "result": "Implemented the change and ran the tests."})
 
