@@ -6,7 +6,8 @@ that aren't connected, or whose runner is too old to run prompts (its heartbeat 
 the operator sees who missed it and why. One
 live recipient makes a ``single`` prompt: its runner runs a session on it. Several make a
 ``group`` prompt: they discuss it as equals in one thread (the project channel
-``prompt-<id>``, or the device board for a device target), and each claims a share (a new,
+``prompt-<id>``, or the device board for a device target; it starts with a pointer, never the
+operator's text, which other agents there would read too), and each claims a share (a new,
 already approved task) or declines. Undecided recipients time out after
 ``prompt_discussion_minutes`` (:func:`expire`).
 
@@ -47,6 +48,13 @@ def _labeled(pid: int, body: str, limit: int) -> str:
         note = f"… [truncated; full prompt: call prompt_status with prompt_id={pid}]"
         text = text[: limit - len(note)] + note
     return text
+
+
+def _pointer(pid: int, names: list[str]) -> str:
+    """What a group prompt's thread starts with: who discusses it there and where its text is, but not the text."""
+    who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"Prompt #{pid} from the operator: {who} discuss it here in their prompt sessions; the text is in "
+            f"prompt_status(prompt_id={pid}). Others: no action.")[:device_board.MAX_BODY_CHARS]
 
 
 def _thread(key: str | None) -> dict[str, Any] | None:
@@ -183,12 +191,15 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
                      (pid, a["id"], "pending" if woken else "skipped",
                       "" if woken else TOO_OLD if a["connected"] else OFFLINE, int(not woken), ts))
     if mode == "group":
+        # The thread gets a pointer, never the text: every project agent reads the channel and every agent on the
+        # machine reads the device board, and only the recipients' prompt sessions should act on the prompt.
+        note = _pointer(pid, [a["name"] for a in live])
         if kind == "device":
-            device_board.post(conn, key, author=actor, body=_labeled(pid, body, device_board.MAX_BODY_CHARS))
+            device_board.post(conn, key, author=actor, body=note)
             thread = f"device:{key}"
         else:
             assert project is not None
-            store.post_message(conn, author=actor, project=project, channel=f"prompt-{pid}", body=body)
+            store.post_message(conn, author=actor, project=project, channel=f"prompt-{pid}", body=note)
             thread = f"board:ch-{project}~prompt-{pid}"
         conn.execute("UPDATE prompts SET thread = ? WHERE id = ?", (thread, pid))
     for a in live:  # the agent's private chat shows the prompt too (tagged: never unread mail)

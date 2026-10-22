@@ -215,7 +215,7 @@ def test_group_prompt_to_a_task_opens_a_channel_thread(trio):
     assert statuses == {a.id: "pending", b.id: "pending", c.id: "skipped"}
     assert [r["name"] for r in p["recipients"] if r["status"] == "skipped"] == ["carol"]
     msgs = store.recent_messages(hub.conn(), project="proj", channel=f"prompt-{p['id']}")
-    assert [(m["author"], m["body"]) for m in msgs] == [(OPERATOR, p["body"])]
+    assert [(m["author"], m["body"]) for m in msgs] == [(OPERATOR, pointer(p["id"], "alice and bob"))]
     ev = prompt_events(hub, p["id"])[0]
     assert sorted(ev["payload"]["agents"]) == sorted([a.id, b.id]) and ev["payload"]["skipped"] == [c.id]
     assert ev["payload"]["mode"] == "group"
@@ -238,16 +238,33 @@ def test_group_prompt_to_a_device_uses_the_device_board(trio):
     p = create(hub, "device:nbox")
     assert (p["mode"], p["status"], p["project"], p["thread"]) == ("group", "discussing", None, "device:nbox")
     notes = hub.conn().execute("SELECT author, body FROM device_messages WHERE node_id = 'nbox'").fetchall()
-    assert [(n["author"], n["body"]) for n in notes] == [(OPERATOR, f"Prompt #{p['id']}: {p['body']}")]
+    assert [(n["author"], n["body"]) for n in notes] == [(OPERATOR, pointer(p["id"], "alice and bob"))]
 
 
-def test_long_device_prompt_is_truncated_on_the_board_with_a_pointer(trio):
-    hub, a, b, c = trio
-    same_device(hub, "nbox", a, b)
-    online(hub, a, b)
-    p = create(hub, "device:nbox", body="z" * 8000)
-    note = hub.conn().execute("SELECT body FROM device_messages").fetchone()["body"]
-    assert len(note) <= 4000 and f"prompt_id={p['id']}" in note
+def pointer(pid, names):
+    return (f"Prompt #{pid} from the operator: {names} discuss it here in their prompt sessions; the text is in "
+            f"prompt_status(prompt_id={pid}). Others: no action.")
+
+
+def test_group_threads_get_a_pointer_never_the_operators_text(hub):
+    """Every project agent reads the channel and every agent on the machine reads the device board, so the body
+    stays out of both: recipients read it in their prompt sessions; others (even busy recipients' task sessions)
+    must not act on it."""
+    a, b = hub.enroll("alice"), hub.enroll("bob")
+    c = hub.enroll("carol")  # in the project, but not on the task: not a recipient
+    same_device(hub, "nbox", a, b, c)
+    t = mk_task(hub, a, b)
+    online(hub, a, b, c)
+    by_task = create(hub, f"task:{t['id']}", body=f"Split this. {SECRET}")
+    by_device = create(hub, "device:nbox", body="z" * 7000 + SECRET)
+    assert by_task["mode"] == by_device["mode"] == "group" and by_device["body"].endswith(SECRET)
+    conn = hub.conn()
+    posts = [r["body"] for r in conn.execute("SELECT body FROM messages")]
+    posts += [r["body"] for r in conn.execute("SELECT body FROM device_messages")]
+    assert posts == [pointer(by_task["id"], "alice and bob"), pointer(by_device["id"], "alice, bob and carol")]
+    inbox = hub.client.get("/api/v1/inbox", headers=c.headers).json()["messages"]
+    assert inbox and SECRET not in json.dumps(inbox)  # the pointers only (her own prompt's copy is never mail)
+    assert api(hub, c, "GET", f"/{by_task['id']}").status_code == 404
 
 
 def test_single_live_recipient_of_a_task_is_single_mode(trio):

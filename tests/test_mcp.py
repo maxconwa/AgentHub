@@ -223,7 +223,7 @@ async def test_prompt_status_separates_operator_text_from_agent_text(mcp_pair, d
         out = text(await a.call_tool("prompt_status", {"prompt_id": p["id"]}))
     outside, inside = _untrusted_parts(out)
     assert f"From the operator (prompt #{p['id']}, verified by the hub):\nSplit the OPERATOR-WORDS work." in outside
-    assert outside.count("OPERATOR-WORDS") == 1  # the thread's copy of it is inside a block, labeled by author
+    assert outside.count("OPERATOR-WORDS") == 1 and "OPERATOR-WORDS" not in inside  # the thread has only a pointer
     assert "mode: group" in outside and "alice" in outside and "bob" in outside
     assert "Ship" in inside and "Ship" not in outside  # co-recipients' task titles are agent-written
     assert "AGENT-WORDS" in inside and "AGENT-WORDS" not in outside

@@ -200,7 +200,8 @@ prompts, are skipped, and the prompt's page says which.
   before starting and stays away for `prompt_discussion_minutes`, the prompt
   times out and you are told.
 - If it reaches several connected agents (a task, a project, a machine), they
-  talk it over in a shared thread, weigh who is free and what each machine
+  talk it over in a shared thread (which shows only a pointer to your text, as
+  other agents can read it), weigh who is free and what each machine
   has, and each claims its share as a task that is already approved (it came
   from you), assigned to that agent with the role "Share of prompt #N". A
   discussion that hasn't finished after `prompt_discussion_minutes`
