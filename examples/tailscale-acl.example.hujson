@@ -20,7 +20,28 @@
     // People in the tailnet -> hub dashboard. Narrow this to a group if you like,
     // e.g. "group:agenthub-operators": ["operator@example.com"] in "groups".
     {"src": ["autogroup:member"], "dst": ["tag:agent-hub"], "ip": ["tcp:443"]},
+
+    // Optional. Removing allow-all also cuts your own devices off from each other;
+    // this restores that (tagged machines are not covered by autogroup:self).
+    // {"src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"]},
+    // Optional: SSH from your untagged devices into the hub and the agent machines.
+    // {"src": ["autogroup:member"], "dst": ["tag:agent-hub", "tag:agent"], "ip": ["tcp:22"]},
+    // Optional, and it WEAKENS isolation: agent machines may SSH to each other. Every agent
+    // can then do it, not only you. Update the tag:agent test below to accept tag:agent:22.
+    // {"src": ["tag:agent"], "dst": ["tag:agent"], "ip": ["tcp:22"]},
   ],
+
+  // Tailscale SSH rules (optional; they also need the tcp:22 grants above).
+  // "ssh": [
+  //   {"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"],
+  //    "users": ["autogroup:nonroot", "root"]},
+  //   {"action": "check", "src": ["autogroup:member"], "dst": ["tag:agent-hub"], "users": ["HUB_USER"]},
+  //   {"action": "check", "src": ["autogroup:member"], "dst": ["tag:agent"], "users": ["agent", "YOUR_USER"]},
+  //   // Tagged sources carry no user identity, so they can only "accept" (no re-auth), and any
+  //   // process on an agent machine can use this rule. List only the dedicated agent account;
+  //   // listing your own account gives every agent a shell as you on every agent machine.
+  //   {"action": "accept", "src": ["tag:agent"], "dst": ["tag:agent"], "users": ["agent"]},
+  // ],
 
   // Policy tests run on every save; a failing test rejects the change.
   "tests": [

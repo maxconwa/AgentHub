@@ -12,7 +12,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 ## How it fits together
 
 ```
- agent machines (tag:agent, user "agent")              hub machine (tag:agent-hub)
+ agent machines (tag:agent, any account)               hub machine (tag:agent-hub)
 ┌───────────────────────────────────────┐            ┌─────────────────────────────────┐
 │ claude ──stdio── agenthub mcp          │   tailnet  │ tailscale serve :443 (HTTPS)    │
 │   hooks: PreToolUse / Stop /           │   HTTPS    │   └▶ agenthub hub serve         │
@@ -43,13 +43,15 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install agenthub==0.2.1
-# or, before a PyPI release, a git tag:
 uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.1"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
-every machine, and Claude Code on the agent machines.
+every machine, and Claude Code on the agent machines. agenthub is not on PyPI:
+a package named `agenthub` there is not this project, so don't install it by
+name. uv installs without root
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`, into `~/.local/bin`), as
+does agenthub; only Tailscale and lingering need `sudo`.
 
 ### Upgrading
 
@@ -82,7 +84,17 @@ apply a policy like `examples/tailscale-acl.example.hujson`:
 - your own devices can reach the hub.
 
 **Remove the default allow-all rule** first; the file includes policy tests
-that check all of this.
+that check all of this. The file also has commented-out grants for keeping your
+own devices connected to each other and for SSH; read the warnings before
+enabling the agent-to-agent one.
+
+Save the `tagOwners` block **before** tagging a machine. Until both tags are
+defined, `tailscale up --advertise-tags=...` fails with `requested tags [...]
+are invalid or not permitted`.
+
+**Keep at least one device untagged** (your phone, say). Only an untagged
+device can use the dashboard as the operator, so if every device is tagged,
+nobody can approve anything.
 
 Tagging matters for security. A tagged device never carries a user identity,
 so an agent machine can never act as the operator. An untagged machine sends
@@ -91,14 +103,29 @@ isn't tagged.
 
 ### 2. Hub machine
 
+The hub runs as an ordinary user account; it needs no dedicated user.
+
 ```bash
+sudo tailscale up --advertise-tags=tag:agent-hub
+sudo tailscale set --operator="$USER"            # lets this account run `tailscale serve` without sudo
+sudo loginctl enable-linger "$USER"              # keep it running while logged out
 agenthub hub init --operator you@example.com     # config, database, systemd user unit
 # edit ~/.config/agenthub/hub.toml: public_url, and optionally ntfy_* (see examples/hub.example.toml)
 systemctl --user daemon-reload && systemctl --user enable --now agenthub-hub
-sudo loginctl enable-linger "$USER"              # keep it running while logged out
 tailscale serve --bg --https=443 http://127.0.0.1:8700
 agenthub doctor
 ```
+
+- `--operator` is the **Tailscale login** of your own devices, as shown in the
+  USER column of `tailscale status` (e.g. `you@gmail.com`), not necessarily the
+  email you use elsewhere.
+- `public_url` is `https://` plus this machine's MagicDNS name
+  (`tailscale status --self`).
+- The first `tailscale serve` on a tailnet prints a link to enable Serve and
+  HTTPS certificates; open it, then rerun the command.
+- Open the dashboard from one of your **untagged** devices. On the hub itself
+  (or any tagged machine) it shows "Not allowed: no Tailscale user identity".
+  That's expected: tagged devices carry no user identity.
 
 Back up the database continuously with Litestream: see [docs/backup.md](docs/backup.md).
 
@@ -107,13 +134,36 @@ other address unless you pass `--insecure-dev`.
 
 ### 3. Each agent machine
 
-Run agents as a **dedicated, unprivileged `agent` user** with no access to
-your own accounts or credentials.
+agenthub runs under whichever account you install it in. Nothing depends on
+the account's name, and everything it writes lives in that account's home
+directory. Tag the machine first:
 
 ```bash
-sudo useradd --create-home agent && sudo -iu agent
-uv tool install agenthub==0.2.1
-claude                                        # log Claude Code in once as this user
+sudo tailscale up --advertise-tags=tag:agent
+```
+
+Then choose the account:
+
+- **A dedicated, unprivileged account (recommended).** For example `agent`, created
+  with `sudo useradd --create-home agent && sudo -iu agent` on Linux, or a
+  Standard user in System Settings → Users & Groups on macOS. Claude then can't
+  read your files, SSH keys, or git and cloud credentials, and can't `sudo`. Keep
+  your home directory closed to it (`chmod 750 ~`) and don't add it to your
+  groups. The rest of this README calls this account `agent`.
+- **Your own account.** This also works and is simpler, but every agent session
+  then has everything your account has. Only choose it if nothing your account
+  can reach matters.
+
+One account holds one agent (`join` stores one token per config directory).
+To run a second agent on the same machine, use a second account or a separate
+`AGENTHUB_CONFIG_DIR` for each agent.
+
+As the chosen account:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.1"
+claude                                        # log Claude Code in once as this account
 ```
 
 Create an enrollment code, either on the dashboard (**Agents → Enroll**) or on
@@ -139,7 +189,7 @@ Finally, map projects to local checkouts in `~/.config/agenthub/runner.toml`
 (see `examples/runner.example.toml`), enable lingering, and check the result:
 
 ```bash
-sudo loginctl enable-linger agent
+sudo loginctl enable-linger "$USER"           # as an administrator, for the agent's account
 agenthub doctor
 ```
 
@@ -147,14 +197,15 @@ agenthub doctor
 
 The steps are the same, with three differences:
 
-- **The agent user.** Create a standard (not administrator) user named `agent`
-  in System Settings → Users & Groups, and sign in to it once on the desktop.
-  Claude Code keeps its login in that user's keychain, which is only unlocked
-  in a desktop session.
+- **The account.** For a dedicated account, create a Standard (not
+  administrator) user in System Settings → Users & Groups and sign in to it
+  once on the desktop. Claude Code keeps its login in that account's keychain,
+  which is only unlocked in a desktop session. Your own account works the same
+  way while you're signed in.
 - **The runner.** `join` installs a launchd agent,
   `~/Library/LaunchAgents/com.agenthub.runner.plist`, and starts it in the
   user's `gui/<uid>` domain. It logs to `~/Library/Logs/agenthub-runner.log`.
-  There is no lingering on macOS: the runner runs while the `agent` user is
+  There is no lingering on macOS: the runner runs while its account is
   signed in, so leave that session open with fast user switching. If you
   run `join` over `sudo -iu agent` or SSH, there is no desktop session to
   start the runner in; `join` says so and prints the `launchctl bootstrap`
@@ -162,7 +213,24 @@ The steps are the same, with three differences:
 - **Tailscale.** The macOS app keeps its CLI inside the app bundle;
   `agenthub doctor` finds it there. Tag the Mac `tag:agent` like any other
   agent machine. The Mac then can no longer act as the operator, so don't
-  use it for the dashboard.
+  use it for the dashboard. The macOS apps (App Store and standalone) can't
+  act as a Tailscale SSH *server*; only the open-source `tailscaled` build
+  can. To SSH into a Mac, turn on Remote Login (OpenSSH) instead.
+
+### SSH between machines
+
+Tailscale tags whole devices, not accounts. Once a machine is tagged
+`tag:agent`, everything it sends counts as an agent, including your own SSH
+sessions from it. So:
+
+- **SSH from an untagged device** (phone, laptop) into the hub and agent
+  machines is safe. The commented grants in the example policy allow it.
+- **SSH from one agent machine to another** works only if you grant
+  `tag:agent` → `tag:agent:22`, and then *every agent* can do it. With
+  Tailscale SSH (`action: "accept"`; tagged sources can't use `check`),
+  no key is needed, so list only the dedicated agent account in `users`. If you
+  also list your own account, any agent can open a shell as you on every other
+  agent machine.
 
 ### 4. Backups
 
