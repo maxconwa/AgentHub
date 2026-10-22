@@ -585,7 +585,8 @@ def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -
 def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
     """One conversation in the chat window: ``{kind, key, title, messages, action, href, item, ...}``.
 
-    ``action`` is where its form posts (None when read-only), ``href`` the full page and ``item`` the slide-in
+    ``action`` is where its form posts (None when read-only; /ui/prompts for agents and devices, which are only
+    prompted), ``href`` the full page and ``item`` the slide-in
     panel its header opens (None for agent-to-agent chats and other threads). agent: ``ag`` (revoked agents
     are read-only) and its pending ``questions``; pair: read-only; board: ``created_by``; device: ``d``.
     Agent, device and board conversations (but not a prompt's own discussion thread) carry ``prompt`` and
@@ -603,7 +604,7 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
         ag = rows[0]
         return {"kind": kind, "key": key, "title": ag["name"], "ag": ag, "messages": private.thread(conn, ref),
                 "questions": [q for q in questions.pending(conn) if q["agent_id"] == ref],
-                "action": f"/ui/chats/{ref}" if ag["status"] != "revoked" else None,
+                "action": "/ui/prompts" if ag["status"] != "revoked" else None,
                 "href": f"/ui/agents/{ref}", "item": f"agent:{ref}"} | _prompting(conn, f"agent:{ref}", 1)
     if kind == "pair":
         thread = pair_thread(conn, ref)
@@ -629,6 +630,6 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
         return out
     d = device(conn, ref)
     return {"kind": kind, "key": key, "title": d["name"], "d": d, "messages": device_messages(conn, ref),
-            "action": f"/ui/devices/{quote(ref, safe='')}/notes", "href": f"/ui/devices/{quote(ref, safe='')}",
+            "action": "/ui/prompts", "href": f"/ui/devices/{quote(ref, safe='')}",
             "item": f"device:{ref}", "members": _faces(avatars.board(conn), [a["id"] for a in d["agents"]])} \
         | _prompting(conn, key, 1)

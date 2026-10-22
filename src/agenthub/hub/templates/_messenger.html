@@ -1,9 +1,10 @@
-{% from "_macros.html" import open_attrs, chip, task_title, send_and_prompt %}
+{% from "_macros.html" import open_attrs, chip, task_title, send_and_prompt, prompt_only %}
 {% from "_board.html" import board %}
 {% from "_prompt.html" import prompt_line %}
 {#- The chat window (GET /ui/messenger, GET /ui/messenger/<key>), loaded into <section id="messenger"> by app.js.
     Every row keeps its full page as href (a new tab, or no JavaScript); a tap opens the conversation here.
-    A conversation's form posts with HTMX and names it in `messenger`, so the response re-renders it. -#}
+    A conversation's form posts with HTMX and names it in `messenger`, so the response re-renders it. Agents and
+    devices are only prompted (their form posts to /ui/prompts); boards also take posts. -#}
 {% macro face(info, size) -%}
 {%- if info %}<img class="avatar" src="{{ info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
 {%- endmacro %}
@@ -89,14 +90,22 @@
 </ul>
 {% endif %}
 {% for p in prompts %}{{ prompt_line(p) }}{% endfor %}
-{% if action %}
+{% if action and kind in ('agent', 'device') %}
+<form class="composer" method="post" action="/ui/prompts" hx-post="/ui/prompts" hx-target="#messenger" hx-swap="innerHTML">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="messenger" value="{{ key }}">
+  <textarea name="body" rows="2" maxlength="4000" required aria-label="Prompt for {{ title }}" placeholder="{% if kind == 'agent' %}Prompt {{ title }}…{% else %}Prompt every agent on {{ title }}…{% endif %}"></textarea>
+  {{ prompt_only(prompt) }}
+  {% if kind == 'agent' %}<p class="small-line">Messages {{ title }} sends you arrive here.</p>{% endif %}
+</form>
+{% elif action %}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#messenger" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="messenger" value="{{ key }}">
-  <textarea name="body" rows="2" maxlength="4000" required aria-label="{{ 'Message to ' ~ title if kind == 'agent' else 'Post to ' ~ title }}" placeholder="{% if kind == 'agent' %}Write to {{ title }}…{% else %}Post a note…{% endif %}"></textarea>
-  {% if prompt %}{% call send_and_prompt(prompt, 'Send' if kind == 'agent' else 'Post') %}<button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button>{% endcall %}
-  {% else %}<div class="composer-buttons"><button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button></div>{% endif %}
-  <p class="small-line">{% if kind == 'agent' %}Private: only you and {{ title }} see it.{% elif kind == 'device' %}Only the agents on this machine and you see it.{% else %}Every agent in the project can read it.{% endif %}</p>
+  <textarea name="body" rows="2" maxlength="4000" required aria-label="Post to {{ title }}" placeholder="Post a note…"></textarea>
+  {% if prompt %}{% call send_and_prompt(prompt, 'Post') %}<button type="submit">Post</button>{% endcall %}
+  {% else %}<div class="composer-buttons"><button type="submit">Post</button></div>{% endif %}
+  <p class="small-line">Every agent in the project can read it.</p>
 </form>
 {% elif kind == 'agent' %}<p class="mreadonly muted">{{ title }} is revoked, so this chat is read-only.</p>
 {% else %}<p class="mreadonly small-line">Agents talking to each other. Read-only.</p>

@@ -428,8 +428,10 @@ def test_board_index_devices_group(box):
     assert "gone-box" not in html
 
 
-def test_compose_to_device_returns_to_the_device_page(box):
+def test_prompt_sheet_for_a_device_prompts_it(box):
     hub, alice, bob, carol = box
+    html = get(hub, f"/ui/compose?to=device:{BOX}&next=/ui/devices/{BOX}").text
+    assert 'action="/ui/prompts"' in html and f'name="target" value="device:{BOX}"' in html and ">Send<" not in html
     r = hub.client.post("/ui/compose", headers=hub.op_headers(), follow_redirects=False,
                         data={"csrf": hub.csrf(), "to": f"device:{BOX}", "body": "x", "recipients": [alice.id]})
-    assert r.status_code == 303 and r.headers["location"] == f"/ui/devices/{BOX}"
+    assert r.status_code == 405  # Send is gone
