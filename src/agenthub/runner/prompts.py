@@ -4,16 +4,17 @@
   per prompt. A prompt runs as soon as a session slot is free and before any new task session
   (:class:`Slots`); a running session is never interrupted.
 * Where it runs: a task target in that project's checkout, resuming this agent's latest session on the task
-  when there is one; a project target in that project's checkout; an agent or device target in the checkout
-  of the agent's current task's project, else its first configured checkout. Without a checkout the prompt is
-  finished as failed with a note.
+  when there is one (forked, so a task session never shares the id); a project target in that project's
+  checkout; an agent or device target in the checkout of the agent's current task's project, else its first
+  configured checkout. Without a checkout the prompt is finished as failed with a note.
 * The operator's text reaches the session outside any untrusted block, under
   ``From the operator (prompt #N, verified by the hub):``. A single recipient acts on it and answers with
   ``message_operator``; a group discusses it in the prompt's thread, then each claims a share (a task it picks
   up next) or declines.
 * Budget: ``prompt_max_turns`` and ``prompt_wall_clock_minutes`` (runner.toml). The subscription usage limit
-  pauses the prompt until the reset, then resumes the same session once; the hub's prompt stays ``running``
-  meanwhile. Prompt sessions record no task runs: the outcome is reported with ``finish``.
+  pauses the prompt until the reset, then resumes the same session once, unless the prompt was settled meanwhile;
+  the hub's prompt stays ``running`` meanwhile. Prompt sessions record no task runs: the outcome is reported with
+  ``finish``. A transient hub error before the prompt started leaves it for the next sync.
 * Each prompt's claude session id is kept on disk (:class:`PromptSessions`): a prompt a previous runner process
   left ``running`` is resumed once after a restart (started afresh with a note if its session id was never
   seen). If the runner restarts again, or the resumed session fails, the prompt is finished as failed.
@@ -35,6 +36,8 @@ import httpx
 
 from agenthub import paths, untrusted
 from agenthub.client import HubError
+from agenthub.config import write_private
+from agenthub.hooks.permission import NO_TASK_GRANTS
 from agenthub.runner.session import Session, SessionResult, build_command
 
 if TYPE_CHECKING:
@@ -109,9 +112,8 @@ class PromptSessions:
 
     def _save(self, data: dict[str, dict[str, Any]]) -> None:
         try:
-            paths.ensure_private_dir(self.path.parent)
             tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(data))
+            write_private(tmp, json.dumps(data))  # 0600 before it gets its name
             os.replace(tmp, self.path)
         except OSError as exc:  # a prompt still runs; only a restart could not resume it
             log.warning("could not save prompt sessions to %s: %s", self.path, exc)
@@ -193,14 +195,23 @@ def resume_prompt(p: dict[str, Any], reason: str) -> str:
 
 def system_prompt(agent_name: str, p: dict[str, Any]) -> str:
     others = " (with other agents)" if p["mode"] == "group" else ""
+    if p["target"].startswith("task:"):  # the permission hook asks the operator on that task
+        permissions = ("Risky shell commands and tools outside your permissions need operator approval: follow the "
+                       "instructions the hooks give you.\n")
+    else:
+        permissions = ("Risky shell commands need operator approval: follow the instructions the hooks give you. "
+                       + NO_TASK_GRANTS + "\n")
     return (
         f"You are the agenthub agent '{agent_name}', running headless (no human at this terminal). The operator "
         f"woke you with prompt #{p['id']}{others}; work on that prompt only.\n"
         "Coordinate through the agenthub MCP tools: read_inbox/post for messages, ask_agent for direct "
-        "questions, board_get/board_put for shared notes.\n"
-        "Risky shell commands and tools outside your permissions need operator approval: follow the "
-        "instructions the hooks give you.\n" + untrusted.NOTICE
+        "questions, board_get/board_put for shared notes.\n" + permissions + untrusted.NOTICE
     )
+
+
+def _transient(exc: Exception) -> bool:
+    """A hub that is unreachable or failing for now (not a refusal)."""
+    return isinstance(exc, httpx.HTTPError) or (isinstance(exc, HubError) and exc.status >= 500)
 
 
 class PromptRunner:
@@ -213,6 +224,8 @@ class PromptRunner:
         self.sessions: dict[int, Session] = {}
         # prompt id -> (ok, note) of a finish the hub didn't take; sent again on the next sync
         self._unreported: dict[int, tuple[bool, str]] = {}
+        # Prompts whose session this process has started (until then, a transient hub error is retried).
+        self._launched: set[int] = set()
 
     async def sync(self) -> None:
         """Start a flow for each prompt this agent still has to act on and isn't handling yet (oldest first)."""
@@ -232,10 +245,16 @@ class PromptRunner:
         pid = summary["id"]
         try:
             await self._run(pid, restarted=summary["my_status"] == "running")
-        except Exception:  # noqa: BLE001 - one prompt's failure must not kill the runner
+        except Exception as exc:  # noqa: BLE001 - one prompt's failure must not kill the runner
+            if pid not in self._launched and _transient(exc):
+                log.warning("prompt %s: hub unavailable before it started (%s); trying again on the next sync",
+                            pid, exc)
+                self.flows.pop(pid, None)  # the next sync starts it afresh
+                return
             log.exception("prompt %s failed in the runner", pid)
             await self._report(pid, False, "runner error; see runner logs")
         finally:
+            self._launched.discard(pid)
             self.runner.slots.unqueue(pid)
 
     async def _run(self, pid: int, *, restarted: bool) -> None:
@@ -249,8 +268,6 @@ class PromptRunner:
                 await self._report(pid, False, "the runner restarted again during this prompt; it is not resumed "
                                                "a second time")
                 return
-            self.store.update(pid, restarts=record.get("restarts", 0) + 1)
-            log.info("prompt %s: resuming after a runner restart", pid)
         project, cwd = self._checkout(p)
         if cwd is None:
             await self._report(pid, False, f"no checkout configured for {project or 'any project'}")
@@ -262,18 +279,23 @@ class PromptRunner:
         else:
             resume, text = None, operator_prompt(p, restarted=restarted)
         turns, seconds = cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes * 60
-        started, waited_for_limit = restarted, False
+        waited_for_limit, fork = False, False
         while True:
             async with self.runner.slots.prompt(pid):
-                if not started:  # the session starts now, when a slot is free
-                    if not await self._start(pid):
+                if pid not in self._launched:  # the first session starts now, when a slot is free
+                    if restarted:
+                        self.store.update(pid, restarts=record.get("restarts", 0) + 1)
+                        log.info("prompt %s: resuming after a runner restart", pid)
+                    elif not await self._start(pid):
                         return
-                    started = True
-                    if task_id is not None:
+                    self._launched.add(pid)
+                    if not restarted and task_id is not None:
                         resume = await self._task_session(task_id)
+                        fork = resume is not None  # the task's session stays the task's
                 began = time.monotonic()
-                result = await self._session(p, text, resume=resume, cwd=cwd, project=project, task_id=task_id,
-                                             turns=turns, seconds=seconds)
+                result = await self._session(p, text, resume=resume, fork=fork, cwd=cwd, project=project,
+                                             task_id=task_id, turns=turns, seconds=seconds)
+                fork = False
             turns -= result.num_turns or 0
             seconds -= time.monotonic() - began
             resume = result.session_id or resume
@@ -281,6 +303,10 @@ class PromptRunner:
                 waited_for_limit = True
                 self.runner.slots.queue(pid)  # no new task session starts meanwhile; this prompt goes first after
                 await self.runner.wait_for_limit_reset(result.resets_at, what=f"prompt {pid}")
+                if (await client.get_prompt(pid))["my_status"] not in OPEN:
+                    log.info("prompt %s was settled while waiting for the usage limit; not resuming it", pid)
+                    self.store.drop(pid)
+                    return
                 text = resume_prompt(p, "limit")
                 continue
             break
@@ -317,23 +343,20 @@ class PromptRunner:
         return (mine[0]["project"] if mine else None), None
 
     async def _task_session(self, task_id: int) -> str | None:
-        """This agent's latest session on the task, to resume, unless a task session runs on it right now."""
-        work = self.runner.work.get(task_id)
-        if work is not None and work.session is not None:
-            return None
+        """This agent's latest session on the task, to resume (forked), if any."""
         try:
             usage = (await self.runner.client.task_runs(task_id, agent=self.runner.agent.agent_id))["usage"]
-        except HubError as exc:
+        except (HubError, httpx.HTTPError) as exc:
             log.warning("could not read the runs of task %s: %s", task_id, exc)
             return None
         return usage["last_session_id"]
 
-    async def _session(self, p: dict[str, Any], text: str, *, resume: str | None, cwd: Path, project: str | None,
-                       task_id: int | None, turns: int, seconds: float) -> SessionResult:
+    async def _session(self, p: dict[str, Any], text: str, *, resume: str | None, fork: bool, cwd: Path,
+                       project: str | None, task_id: int | None, turns: int, seconds: float) -> SessionResult:
         cfg, pid = self.runner.cfg, p["id"]
         cmd = build_command(cfg.claude_bin, max_turns=max(turns, 1),
                             system_prompt=system_prompt(self.runner.agent.name, p), resume_session=resume,
-                            extra_args=cfg.extra_args, permission_mode=cfg.permission_mode)
+                            extra_args=cfg.extra_args, permission_mode=cfg.permission_mode, fork_session=fork)
         env = {
             "AGENTHUB_PROMPT_ID": str(pid),
             "AGENTHUB_CONFIG_DIR": str(paths.config_dir()),
@@ -347,7 +370,7 @@ class PromptRunner:
         async def on_progress(item: dict[str, str]) -> None:
             pass  # a prompt session has no task to stream progress to
 
-        async def on_session(session_id: str) -> None:
+        async def on_session(session_id: str) -> None:  # the prompt's own id (a new one when forked)
             self.store.update(pid, session_id=session_id)
 
         session = Session(cmd, prompt=text, cwd=cwd, env=env, timeout_seconds=max(seconds, 0),

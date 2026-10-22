@@ -162,11 +162,14 @@ def build_command(
     resume_session: str | None,
     extra_args: list[str],
     permission_mode: str = "auto",
+    fork_session: bool = False,
 ) -> list[str]:
+    """``fork_session`` (with ``resume_session``): continue from a copy of that transcript under a new session id
+    (``--fork-session``), leaving the original to its owner."""
     cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
            "--permission-mode", permission_mode, "--append-system-prompt", system_prompt]
     if resume_session:
-        cmd += ["--resume", resume_session]
+        cmd += ["--resume", resume_session] + (["--fork-session"] if fork_session else [])
     return cmd + list(extra_args)
 
 

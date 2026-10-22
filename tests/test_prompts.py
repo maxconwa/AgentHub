@@ -542,7 +542,7 @@ def test_single_prompt_to_an_agent_that_went_offline_times_out(trio):
     stuck = create(hub, f"agent:{a.id}")
     started = create(hub, f"agent:{b.id}")
     api(hub, b, "POST", f"/{started['id']}/start")
-    online(hub, a, b, connected=False)
+    online(hub, a, connected=False)
     online(hub, c)
     live = create(hub, f"agent:{c.id}")
     conn = hub.conn()
@@ -552,13 +552,37 @@ def test_single_prompt_to_an_agent_that_went_offline_times_out(trio):
         assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=31), minutes=30) == [stuck["id"]]
     got = prompts.get(conn, stuck["id"])
     assert got["status"] == "failed" and got["finished_at"] and got["recipients"][0]["status"] == "timed_out"
-    assert prompts.get(conn, started["id"])["status"] == "running"  # a running session is never cut off here
+    assert prompts.get(conn, started["id"])["status"] == "running"  # connected and running: never cut off
     assert prompts.get(conn, live["id"])["status"] == "pending"  # connected: its runner will pick it up
     ev = prompt_events(hub, stuck["id"])[-1]
     assert ev["payload"]["status"] == "failed" and ev["payload"]["timed_out"] == [a.id]
     msg = build_notification(ev, {a.id: "alice"}, CFG)
     assert msg["title"] == f"Prompt #{stuck['id']}: alice timed out"
     assert event_summary(ev, {a.id: "alice"}) == f"prompt #{stuck['id']} failed: alice timed out"
+
+
+def test_running_prompt_whose_runner_never_comes_back_fails(trio):
+    hub, a, b, c = trio
+    online(hub, a, b)
+    gone, alive = create(hub, f"agent:{a.id}"), create(hub, f"agent:{b.id}")
+    for agent, p in ((a, gone), (b, alive)):
+        api(hub, agent, "POST", f"/{p['id']}/start")
+    conn = hub.conn()
+    beat = datetime.now(UTC)
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 0, last_heartbeat = ? WHERE id = ?", (db.now_iso(beat), a.id))
+        conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(beat), b.id))
+    with db.transaction(conn):  # disconnected, but not for long enough yet
+        assert prompts.expire(conn, beat + timedelta(minutes=29), minutes=30) == []
+    with db.transaction(conn):
+        assert prompts.expire(conn, beat + timedelta(minutes=31), minutes=30) == [gone["id"]]
+    got = prompts.get(conn, gone["id"])
+    assert got["status"] == "failed" and got["finished_at"]
+    assert got["recipients"][0]["status"] == "failed" and "disconnected" in got["recipients"][0]["note"]
+    assert prompts.get(conn, alive["id"])["status"] == "running"  # connected: still running
+    ev = prompt_events(hub, gone["id"])[-1]
+    assert ev["payload"]["status"] == "failed" and ev["payload"]["failed"] == [a.id]
+    assert build_notification(ev, {a.id: "alice"}, CFG)["title"] == f"Prompt #{gone['id']}: alice failed"
 
 
 def test_target_with_nobody_to_prompt(trio):

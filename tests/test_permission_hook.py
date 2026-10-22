@@ -39,6 +39,13 @@ def test_interactive_sessions_are_left_alone(monkeypatch):
     assert permission.handle(WRITE, client_factory=lambda: pytest.fail("no hub")) is None
 
 
+def test_prompt_sessions_without_a_task_are_denied_with_a_pointer(monkeypatch):
+    monkeypatch.delenv("AGENTHUB_TASK_ID", raising=False)
+    monkeypatch.setenv("AGENTHUB_PROMPT_ID", "7")
+    kind, msg = behavior(permission.handle(WRITE, client_factory=lambda: pytest.fail("no hub")))
+    assert kind == "deny" and permission.NO_TASK_GRANTS in msg and "message_operator" in msg
+
+
 def test_live_grant_flow_allows_exactly_once(task_env):
     hub, task, factory = task_env
     kind, msg = behavior(permission.handle(WRITE, client_factory=factory, wait_seconds=0, poll=0.01))

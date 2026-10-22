@@ -6,6 +6,7 @@ review_approve records an ``approve`` verdict on $AGENTHUB_TASK_ID through the h
 the agent token in $FAKE_TOKEN (as the real session would through the MCP tool), then succeeds.
 limit_then_success: the first call (no --resume) ends with the subscription usage-limit message
 ("You've hit your session limit · resets <now+2min>", or $FAKE_LIMIT_TEXT when set); a resumed call succeeds.
+A --resume'd call keeps that session id, unless --fork-session asks for a new one.
 hold: waits until the file $FAKE_RELEASE exists (at most 30 s), then succeeds.
 prompt_share: in a prompt session ($AGENTHUB_PROMPT_ID set) it reads the prompt, posts in its channel thread and
 claims a share titled "Share for $FAKE_NAME" through the hub (as the real session would through the MCP tools),
@@ -42,7 +43,7 @@ def main():
     prompt = sys.stdin.read()
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
     max_turns = int(argv[argv.index("--max-turns") + 1])
-    session = resume or str(uuid.uuid4())
+    session = str(uuid.uuid4()) if resume is None or "--fork-session" in argv else resume
     log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:
         with open(log, "a") as fh:

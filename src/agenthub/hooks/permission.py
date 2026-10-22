@@ -8,8 +8,10 @@ decision. Stdin has ``tool_name`` and ``tool_input``; stdout
 earlier (PreToolUse hooks, deny/ask/allow rules) resolved the call, so it can
 never override agenthub's PreToolUse gate or the never-allow deny rules.
 
-Only runner sessions (``AGENTHUB_TASK_ID`` set by the runner) ask the hub. In
-interactive sessions the hook stays silent and Claude Code prompts the person
+Only runner sessions (``AGENTHUB_TASK_ID`` set by the runner) ask the hub. A runner
+session on an operator's prompt without a task (``AGENTHUB_PROMPT_ID`` only) has
+nothing to ask on, so the call is denied with a pointer to ``message_operator``.
+In interactive sessions the hook stays silent and Claude Code prompts the person
 at the terminal as usual.
 """
 
@@ -29,6 +31,9 @@ from agenthub.config import AgentConfig
 DEFAULT_WAIT_SECONDS = 600
 POLL_SECONDS = 3.0
 MAX_INLINE_INPUT = 4000  # larger inputs are sent as a preview plus a hash
+# Said to a prompt session without a task (in its system prompt and when the hook denies a tool).
+NO_TASK_GRANTS = ("This session has no task, so tools outside your permissions are unavailable in it. If you need "
+                  "one, tell the operator with message_operator what you would need and why.")
 
 
 def _decision(behavior: str, message: str | None = None) -> dict[str, Any]:
@@ -96,6 +101,8 @@ def handle(
 ) -> dict[str, Any] | None:
     task_id = os.environ.get("AGENTHUB_TASK_ID")
     if not task_id:
+        if os.environ.get("AGENTHUB_PROMPT_ID"):  # a headless prompt session: nobody at the terminal to ask
+            return _decision("deny", NO_TASK_GRANTS)
         return None  # interactive session: let Claude Code prompt as usual
     tool_name = payload.get("tool_name")
     if not isinstance(tool_name, str) or not tool_name:

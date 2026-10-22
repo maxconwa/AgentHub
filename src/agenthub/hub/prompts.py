@@ -277,18 +277,21 @@ def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DI
 
     Older than ``minutes``: a group discussion's undecided recipients, and a single prompt's recipient that never
     started and is disconnected, become ``timed_out`` (the single prompt fails). In any open prompt, recipients
-    that were revoked fail."""
+    that were revoked fail, and so do running recipients whose agent has been disconnected for longer than
+    ``minutes`` (its runner never came back to finish)."""
     cutoff = now_iso(now - timedelta(minutes=minutes))
     changed: list[int] = []
     stale = conn.execute(
         "SELECT DISTINCT p.id FROM prompts p JOIN prompt_recipients r ON r.prompt_id = p.id "
         "JOIN agents a ON a.id = r.agent_id WHERE p.status NOT IN ('done', 'failed') "
         "AND r.status IN ('pending', 'running') AND (a.status = 'revoked' OR (p.created_at < ? AND "
-        "(p.mode = 'group' OR (r.status = 'pending' AND a.connected = 0)))) ORDER BY p.id", (cutoff,)).fetchall()
+        "(p.mode = 'group' OR (r.status = 'pending' AND a.connected = 0))) OR (r.status = 'running' "
+        "AND a.connected = 0 AND COALESCE(a.last_heartbeat, '') < ?)) ORDER BY p.id", (cutoff, cutoff)).fetchall()
     for (pid,) in stale:
         p = _row(conn, pid)
         open_rows = conn.execute(
-            "SELECT r.agent_id, r.status, a.status AS agent_status, a.connected FROM prompt_recipients r "
+            "SELECT r.agent_id, r.status, a.status AS agent_status, a.connected, a.last_heartbeat "
+            "FROM prompt_recipients r "
             "JOIN agents a ON a.id = r.agent_id WHERE r.prompt_id = ? AND r.status IN ('pending', 'running') "
             "ORDER BY r.agent_id", (pid,)).fetchall()
         timed_out, failed = [], []
@@ -303,6 +306,9 @@ def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DI
             elif old and r["status"] == "pending" and not r["connected"]:
                 _set_recipient(conn, pid, r["agent_id"], "timed_out", note="offline; never started")
                 timed_out.append(r["agent_id"])
+            elif r["status"] == "running" and not r["connected"] and (r["last_heartbeat"] or "") < cutoff:
+                _set_recipient(conn, pid, r["agent_id"], "failed", note="runner disconnected and did not come back")
+                failed.append(r["agent_id"])
         if timed_out or failed:
             _emit(conn, _settle(conn, pid), actor=SYSTEM, timed_out=timed_out, failed=failed)
             changed.append(pid)

@@ -26,7 +26,8 @@ from agenthub.runner.config import RunnerConfig, RunnerConfigError, load_runner_
 from agenthub.runner.daemon import (
     Revoked, Runner, exceeded_limit, first_prompt, resume_prompt, review_prompt, system_prompt,
 )
-from agenthub.runner.prompts import Slots, operator_prompt
+from agenthub.hooks.permission import NO_TASK_GRANTS
+from agenthub.runner.prompts import PromptSessions, Slots, operator_prompt
 from agenthub.runner.session import BILLING_ENV_VARS, Session, build_command, parse_limit, parse_line, result_from, session_env
 
 from .conftest import OPERATOR
@@ -1153,7 +1154,9 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert _arg(call, "--max-turns") == "40" and _arg(call, "--permission-mode") == "auto"
     assert "--resume" not in call["argv"]
     assert call["env"]["AGENTHUB_PROMPT_ID"] == str(pid) and "AGENTHUB_TASK_ID" not in call["env"]
-    assert f"prompt #{pid}" in _arg(call, "--append-system-prompt")
+    system = _arg(call, "--append-system-prompt")
+    assert f"prompt #{pid}" in system and NO_TASK_GRANTS in system  # no task to grant tools on
+    assert "--fork-session" not in call["argv"]
     (me,) = _prompt_row(live_hub, pid)["recipients"]
     assert me["status"] == "done" and me["note"] == "Implemented the change and ran the tests."
     assert runner.prompts.store.get(pid) is None  # nothing left to resume
@@ -1242,6 +1245,8 @@ async def test_task_prompt_resumes_the_agents_latest_session_on_the_task(live_hu
         await stop(main)
     (call,) = calls()
     assert _arg(call, "--resume") == "sess-latest" and call["cwd"] == str(tmp_path / "checkout")
+    assert "--fork-session" in call["argv"] and call["session"] != "sess-latest"  # the task keeps its own session
+    assert "operator approval" in _arg(call, "--append-system-prompt")  # live grants work on the task
     assert call["env"]["AGENTHUB_TASK_ID"] == str(task_id) and call["env"]["AGENTHUB_PROJECT"] == "proj"
     assert call["stdin"].startswith(f"From the operator (prompt #{pid}, verified by the hub):\nWhy is this blocked?")
     assert len(tasks.list_runs(live_hub.conn(), task_id)) == 2  # a prompt session records no task run
@@ -1316,6 +1321,7 @@ async def test_usage_limit_during_a_prompt_waits_and_resumes(live_hub, fake_clau
     assert until - timedelta(seconds=60) in resets
     first, second = calls()
     assert _arg(second, "--resume") == first["session"] and "usage limit has reset" in second["stdin"]
+    assert "--fork-session" not in second["argv"]
     assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
 
 
@@ -1401,3 +1407,71 @@ async def test_a_finish_the_hub_missed_is_sent_again(live_hub, fake_claude, tmp_
     finally:
         await stop(main)
     assert failures == [pid] and len(calls()) == 1  # reported on a later sync, not run again
+
+
+def test_prompt_sessions_file_is_private(tmp_path):
+    sessions = PromptSessions(tmp_path / "state" / "prompt-sessions-ag1.json")
+    sessions.update(3, session_id="s1")
+    sessions.update(3, restarts=1)
+    assert sessions.get(3) == {"session_id": "s1", "restarts": 1}
+    assert (sessions.path.stat().st_mode & 0o777) == 0o600
+    assert (sessions.path.parent.stat().st_mode & 0o777) == 0o700
+    sessions.drop(3)
+    assert sessions.get(3) is None and (sessions.path.stat().st_mode & 0o777) == 0o600
+
+
+async def test_prompt_decided_during_a_usage_limit_wait_is_not_resumed(live_hub, fake_claude, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_then_success")
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+
+    async def fake_wait(until):  # meanwhile the hub settles the prompt (here: as if the operator gave up)
+        conn = live_hub.conn()
+        with db.transaction(conn):
+            hub_prompts.finish(conn, ids["pid"], store.get_agent(conn, agent_cfg.agent_id), ok=False,
+                               note="settled elsewhere")
+
+    monkeypatch.setattr(daemon, "wait_until", fake_wait)
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        ids["pid"] = pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "failed")
+        await wait_for(lambda: pid not in runner.prompts.flows or runner.prompts.flows[pid].done())
+        assert not runner.slots.queued
+        await asyncio.sleep(0.5)
+    finally:
+        await stop(main)
+    assert len(calls()) == 1
+    assert _prompt_row(live_hub, pid)["recipients"][0]["note"] == "settled elsewhere"
+
+
+async def test_transient_hub_error_before_a_prompt_starts_is_retried(live_hub, fake_claude, tmp_path,
+                                                                     monkeypatch):
+    import httpx
+
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    real_start = runner.client.start_prompt
+    failures: list[int] = []
+
+    async def flaky_start(pid):
+        failures.append(pid)
+        if len(failures) == 1:
+            raise httpx.ConnectError("hub restarting")
+        if len(failures) == 2:
+            raise HubError(503, "busy")
+        return await real_start(pid)
+
+    monkeypatch.setattr(runner.client, "start_prompt", flaky_start)
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    assert failures == [pid, pid, pid] and len(calls()) == 1
+    assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
