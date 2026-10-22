@@ -74,9 +74,11 @@ class HubConfig:
     # Off by default: notifications go to an external service, so they carry
     # only the approval id, kind and requester, not commands or task text.
     ntfy_include_details: bool = False
-    # A group prompt's discussion ends after this long; recipients that haven't claimed or declined time out.
-    # 1 to 1440 (a day). A v0.1.0 hub rejects this key: remove it from hub.toml before rolling back.
-    prompt_discussion_minutes: int = 30
+    # 0 (the default): prompts never time out; a busy agent joins a group prompt when its session ends, and a
+    # single prompt waits for its agent however long it's offline. 1 to 1440: a group prompt's discussion ends
+    # after this long (recipients that haven't claimed or declined time out), and so on, as before 0.3.6.1.
+    # A v0.1.0 hub rejects this key: remove it from hub.toml before rolling back.
+    prompt_discussion_minutes: int = 0
     # Opt-in, and it weakens separation of powers: tagged (agent) machines whose requests count as the
     # operator, as {Tailscale node StableID: operator login}. Any process on such a machine that sends no
     # agent token is the operator there, agents included. Manage with `agenthub hub operator-devices`.
@@ -92,9 +94,9 @@ class HubConfig:
         with path.open("rb") as fh:
             cfg = _from_dict(cls, tomllib.load(fh))
         minutes = cfg.prompt_discussion_minutes
-        if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:
-            raise ValueError(f"prompt_discussion_minutes must be a whole number of minutes from 1 to 1440, "
-                             f"not {minutes!r}")
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 <= minutes <= 1440:
+            raise ValueError(f"prompt_discussion_minutes must be 0 (never time out) or a whole number of minutes "
+                             f"from 1 to 1440, not {minutes!r}")
         if not isinstance(cfg.operator_devices, dict):
             raise ValueError("operator_devices must be a table of node StableID = operator login")
         if cfg.tailnet_operators is not False and (cfg.tailnet_operators is not True or not cfg.operators):

@@ -12,16 +12,16 @@
   ``From the operator (prompt #N, verified by the hub):``. A single recipient acts on it and answers with
   ``message_operator``; a group discusses it in the prompt's thread, then each claims a share (a task it picks
   up next) or declines.
-* Budget: ``prompt_max_turns`` and ``prompt_wall_clock_minutes`` (runner.toml). The subscription usage limit
-  pauses the prompt until the reset, then resumes the same session once, unless the prompt was settled meanwhile;
-  the hub's prompt stays ``running`` meanwhile. Prompt sessions record no task runs: the outcome is reported with
+* No limit by default: a prompt session runs until it's done, unless runner.toml sets ``prompt_max_turns`` or
+  ``prompt_wall_clock_minutes``. The subscription usage limit pauses the prompt until the reset, then resumes the
+  same session, as often as the limit is hit, unless the prompt was settled meanwhile; the hub's prompt stays
+  ``running`` meanwhile. Prompt sessions record no task runs: the outcome is reported with
   ``finish``. A transient hub error before the prompt started leaves it for the next sync.
 * Each prompt's claude session id is kept on disk (:class:`PromptSessions`): a prompt a previous runner process
   left ``running`` is resumed once after a restart (started afresh with a note if its session id was never
   seen). If the runner restarts again, or the resumed session fails, the prompt is finished as failed.
-* On its first sync the runner fails, instead of running, pending prompts older than :data:`STALE_HOURS` (left
-  while it was down or too old to run prompts): the hub checks their age and notes "too old when the runner
-  picked it up".
+* A pending prompt runs however long it has waited (before 0.3.6.1 the first sync failed those older than six
+  hours; the hub still accepts that from older runners).
 * The heartbeat says ``"prompts": 1``: the hub wakes only agents whose runner does.
 * A queued prompt the operator withdrew (no longer pending on the next sync) is dropped at once; one that got
   past the queue is refused by the hub's ``start`` and dropped too.
@@ -36,7 +36,6 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -54,7 +53,6 @@ if TYPE_CHECKING:
 log = logging.getLogger("agenthub.runner")
 
 OPEN = ("pending", "running")  # a recipient's statuses that still need its runner
-STALE_HOURS = 6  # on its first sync the runner fails pending prompts older than this (the hub checks too)
 MAX_NOTE_CHARS = 4000
 # An agent or device prompt runs in the checkout of the agent's current task: a task with a session here first,
 # then by state.
@@ -249,16 +247,11 @@ class PromptRunner:
         self._launched: set[int] = set()
         # Prompts whose flow waits for the slot to start its first session (dropped if withdrawn meanwhile).
         self._waiting: set[int] = set()
-        self._first_sync = True
 
     async def sync(self) -> None:
-        """Start a flow for each prompt this agent still has to act on and isn't handling yet (oldest first). The
-        first sync fails pending prompts too old to run instead (:meth:`_fail_stale`)."""
+        """Start a flow for each prompt this agent still has to act on and isn't handling yet (oldest first),
+        however long it has waited (since 0.3.6.1 nothing is failed as too old)."""
         pending = {p["id"]: p for p in await self.runner.client.pending_prompts()}
-        if self._first_sync:
-            for pid in await self._fail_stale(pending):
-                del pending[pid]
-            self._first_sync = False
         for pid in [pid for pid, flow in self.flows.items() if flow.done() and pid not in pending]:
             del self.flows[pid]
             self._unreported.pop(pid, None)
@@ -273,25 +266,6 @@ class PromptRunner:
                 self.flows[pid] = asyncio.create_task(self._flow(p), name=f"prompt-{pid}")
             elif flow.done() and pid in self._unreported:
                 await self._report(pid, *self._unreported[pid])
-
-    async def _fail_stale(self, pending: dict[int, dict[str, Any]]) -> list[int]:
-        """Fail the pending prompts older than :data:`STALE_HOURS`; returns those the hub failed. One the hub
-        finds not that old (its clock decides) is left to run."""
-        cutoff = datetime.now(UTC) - timedelta(hours=STALE_HOURS)
-        failed = []
-        for pid, p in pending.items():
-            if p["my_status"] != "pending" or datetime.fromisoformat(p["created_at"]) >= cutoff:
-                continue
-            try:
-                await self.runner.client.finish_prompt(pid, False, stale=True)
-            except HubError as exc:
-                if exc.status not in (404, 409):
-                    raise
-                log.info("prompt %s: not failed as too old (%s)", pid, exc.detail)
-                continue
-            log.info("prompt %s was pending for more than %s hours; failed instead of run", pid, STALE_HOURS)
-            failed.append(pid)
-        return failed
 
     async def _flow(self, summary: dict[str, Any]) -> None:
         pid = summary["id"]
@@ -331,8 +305,10 @@ class PromptRunner:
             resume, text = record["session_id"], resume_prompt(p, "restart")
         else:
             resume, text = None, operator_prompt(p, restarted=restarted)
-        turns, seconds = cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes * 60
-        waited_for_limit, fork = False, False
+        # No limit unless runner.toml sets one; the usage limit is waited out as often as it's hit.
+        turns = cfg.prompt_max_turns
+        seconds = cfg.prompt_wall_clock_minutes * 60 if cfg.prompt_wall_clock_minutes is not None else None
+        fork = False
         while True:
             if pid not in self._launched:
                 self._waiting.add(pid)
@@ -352,11 +328,12 @@ class PromptRunner:
                 result = await self._session(p, text, resume=resume, fork=fork, cwd=cwd, project=project,
                                              task_id=task_id, turns=turns, seconds=seconds)
                 fork = False
-            turns -= result.num_turns or 0
-            seconds -= time.monotonic() - began
+            if turns is not None:
+                turns -= result.num_turns or 0
+            if seconds is not None:
+                seconds -= time.monotonic() - began
             resume = result.session_id or resume
-            if result.outcome == "usage_limit" and not waited_for_limit:
-                waited_for_limit = True
+            if result.outcome == "usage_limit":
                 self.runner.slots.queue(pid)  # no new task session starts meanwhile; this prompt goes first after
                 await self.runner.wait_for_limit_reset(result.resets_at, what=f"prompt {pid}")
                 if (await client.get_prompt(pid))["my_status"] not in OPEN:
@@ -416,9 +393,10 @@ class PromptRunner:
         return found["usage"]["last_session_id"]
 
     async def _session(self, p: dict[str, Any], text: str, *, resume: str | None, fork: bool, cwd: Path,
-                       project: str | None, task_id: int | None, turns: int, seconds: float) -> SessionResult:
+                       project: str | None, task_id: int | None, turns: int | None,
+                       seconds: float | None) -> SessionResult:
         cfg, pid = self.runner.cfg, p["id"]
-        cmd = build_command(cfg.claude_bin, max_turns=max(turns, 1),
+        cmd = build_command(cfg.claude_bin, max_turns=max(turns, 1) if turns is not None else None,
                             system_prompt=system_prompt(self.runner.agent.name, p), resume_session=resume,
                             extra_args=cfg.extra_args, permission_mode=cfg.permission_mode, fork_session=fork)
         env = {
@@ -437,7 +415,7 @@ class PromptRunner:
         async def on_session(session_id: str) -> None:  # the prompt's own id (a new one when forked)
             self.store.update(pid, session_id=session_id)
 
-        session = Session(cmd, prompt=text, cwd=cwd, env=env, timeout_seconds=max(seconds, 0),
+        session = Session(cmd, prompt=text, cwd=cwd, env=env, timeout_seconds=max(seconds, 0) if seconds is not None else None,
                           on_progress=on_progress, on_session=on_session)
         self.sessions[pid] = session
         self.runner._session_dirs[session] = str(cwd)
@@ -463,8 +441,6 @@ class PromptRunner:
             ok, note = False, f"the prompt session used all of its {cfg.prompt_max_turns} turns"
         elif result.outcome == "wall_clock":
             ok, note = False, f"the prompt session ran out of its {cfg.prompt_wall_clock_minutes} minutes"
-        elif result.outcome == "usage_limit":
-            ok, note = False, "the usage limit was hit again after waiting for its reset"
         else:
             ok, note = False, "prompt session failed: " + ("; ".join(result.errors) or "session failed")
         await self._report(p["id"], ok, note)

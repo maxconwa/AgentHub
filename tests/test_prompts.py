@@ -940,12 +940,13 @@ def test_hub_loop_runs_expiry(tmp_path):
     from .conftest import make_hub
 
     hub = make_hub(tmp_path)
-    hub.state.config.prompt_discussion_minutes = 0
+    hub.state.config.prompt_discussion_minutes = 1
     hub.state.prompt_expiry_seconds = 0.02
     a, b = hub.enroll("a"), hub.enroll("b")
     t = mk_task(hub, a, b)
     online(hub, a, b)
     p = create(hub, f"task:{t['id']}")
+    backdate(hub, p["id"], minutes=2)
     import time
 
     with TestClient(hub.client.app, client=("127.0.0.1", 40000)):
@@ -955,23 +956,42 @@ def test_hub_loop_runs_expiry(tmp_path):
     assert prompts.get(hub.conn(), p["id"])["status"] == "done"
 
 
+def backdate(hub, pid, *, minutes):
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE prompts SET created_at = ? WHERE id = ?",
+                     (db.now_iso(datetime.now(UTC) - timedelta(minutes=minutes)), pid))
+
+
 def test_expire_prompts_helper_uses_the_configured_minutes(trio):
     hub, a, b, c = trio
     t = mk_task(hub, a, b)
     online(hub, a, b)
     p = create(hub, f"task:{t['id']}")
-    expire_prompts(hub.state)
+    backdate(hub, p["id"], minutes=24 * 60)
+    expire_prompts(hub.state)  # 0, the default: a day-old discussion still waits for its busy agents
     assert prompts.get(hub.conn(), p["id"])["status"] == "discussing"
-    hub.state.config.prompt_discussion_minutes = 0
+    hub.state.config.prompt_discussion_minutes = 30
     expire_prompts(hub.state)
     assert prompts.get(hub.conn(), p["id"])["status"] == "done"
 
 
+def test_no_timeout_still_fails_revoked_recipients(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    hub.set_status(b, "revoked")
+    expire_prompts(hub.state)
+    got = {r["agent_id"]: r["status"] for r in prompts.get(hub.conn(), p["id"])["recipients"]}
+    assert got == {a.id: "pending", b.id: "failed"}
+
+
 def test_config_default():
-    assert HubConfig().prompt_discussion_minutes == 30
+    assert HubConfig().prompt_discussion_minutes == 0  # prompts never time out
 
 
-@pytest.mark.parametrize("value", ["0", "1441", "-5", "true", '"30"', "2.5"])
+@pytest.mark.parametrize("value", ["1441", "-5", "true", '"30"', "2.5"])
 def test_discussion_minutes_are_checked_when_the_config_loads(tmp_path, value):
     path = tmp_path / "hub.toml"
     path.write_text(f"prompt_discussion_minutes = {value}\n")

@@ -1020,7 +1020,7 @@ async def test_task_prompt_does_not_fork_a_session_whose_run_is_in_progress(live
 
 def test_prompt_budget_config(tmp_path):
     cfg = RunnerConfig()
-    assert (cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes) == (40, 30)
+    assert (cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes) == (None, None)  # no limit unless set
     path = tmp_path / "runner.toml"
     path.write_text("prompt_max_turns = 12\nprompt_wall_clock_minutes = 5\n")
     loaded = load_runner_config(path)
@@ -1070,7 +1070,7 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert call["stdin"].startswith(f"From the operator (prompt #{pid}, verified by the hub):\n"
                                     "Check why the nightly build is slow.")
     assert "<untrusted-content" not in call["stdin"]
-    assert _arg(call, "--max-turns") == "40" and _arg(call, "--permission-mode") == "auto"
+    assert "--max-turns" not in call["argv"] and _arg(call, "--permission-mode") == "auto"  # no limit
     assert "--resume" not in call["argv"]
     assert call["env"]["AGENTHUB_PROMPT_ID"] == str(pid) and "AGENTHUB_TASK_ID" not in call["env"]
     system = _arg(call, "--append-system-prompt")
@@ -1083,9 +1083,9 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert runner._heartbeat_frame()["model"] == "claude-test-model"  # what the session's init line said
 
 
-async def test_first_sync_fails_pending_prompts_too_old_to_run(live_hub, fake_claude, tmp_path):
-    """Prompts left pending for more than six hours (e.g. while this runner was down or too old) are failed with
-    the hub's note when the runner starts, not run; newer ones run."""
+async def test_old_pending_prompts_still_run(live_hub, fake_claude, tmp_path):
+    """Since 0.3.6.1 nothing times out: prompts left pending for hours (e.g. while this runner was down) run when
+    it starts."""
     claude_bin, calls = fake_claude
     runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
     conn = live_hub.conn()
@@ -1101,12 +1101,11 @@ async def test_first_sync_fails_pending_prompts_too_old_to_run(live_hub, fake_cl
     main = asyncio.create_task(runner.run_forever())
     try:
         await wait_for(lambda: _prompt_row(live_hub, recent)["status"] == "done"
-                       and _prompt_row(live_hub, old)["status"] == "failed")
+                       and _prompt_row(live_hub, old)["status"] == "done", timeout=10)
     finally:
         await stop(main)
-    (call,) = calls()
-    assert "This morning's request." in call["stdin"]
-    assert _prompt_row(live_hub, old)["recipients"][0]["note"] == "too old when the runner picked it up"
+    ran = [c["stdin"] for c in calls()]
+    assert len(ran) == 2 and any("Yesterday's request." in t for t in ran) and any("This morning's request." in t for t in ran)
 
 
 async def test_agent_prompt_runs_in_its_current_tasks_checkout(live_hub, fake_claude, tmp_path):
@@ -1295,6 +1294,29 @@ async def test_usage_limit_during_a_prompt_waits_and_resumes(live_hub, fake_clau
     assert "--fork-session" not in second["argv"]
     assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
 
+
+
+async def test_prompt_waits_out_the_usage_limit_as_often_as_it_is_hit(live_hub, fake_claude, tmp_path, monkeypatch):
+    """Since 0.3.6.1 a prompt hitting the usage limit again after a reset waits again (it used to fail)."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_twice_then_success")
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    waits: list[datetime] = []
+
+    async def fake_wait(until):
+        waits.append(until)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(daemon, "wait_until", fake_wait)
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    assert len(waits) == 2 and len(calls()) == 3
+    assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
 
 async def test_restart_mid_prompt_resumes_its_stored_session(live_hub, fake_claude, tmp_path):
     claude_bin, calls = fake_claude

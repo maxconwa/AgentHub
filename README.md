@@ -61,12 +61,14 @@ hub migrates its database on start. A runner from v0.1.0 keeps working for
 tasks, but it can't run prompts: its heartbeat doesn't say it can, so the hub
 never wakes that agent with **Prompt** (it shows as skipped, "runner too old
 for prompts", and the Prompt hint names it), and answers to its questions go
-as private messages. When an upgraded runner starts, it fails prompts that
-have waited more than six hours ("too old when the runner picked it up")
-instead of running them.
+as private messages. Since 0.3.6.1 an upgraded runner runs pending prompts
+however long they've waited (0.3.6 and earlier failed those older than six
+hours).
 
 **Rolling back to v0.1.0:** a v0.1.0 hub rejects unknown keys in `hub.toml`,
 so remove `prompt_discussion_minutes` from it first, or the hub won't start.
+A hub older than 0.3.6.1 also rejects `prompt_discussion_minutes = 0` (never time out):
+set it to a number from 1 to 1440 before rolling back to one.
 The database needs nothing: the new migrations only add, and the copies of
 prompts in agents' private chats are stored as read, so a v0.1.0 hub won't
 deliver them as mail.
@@ -363,9 +365,8 @@ prompts, are skipped, and the prompt's page says which.
 
 - If the prompt reaches one connected agent, its runner starts right away, or
   as soon as all of its running sessions have ended, before any new task
-  session; the prompt's session runs on its own. If that agent goes offline
-  before starting and stays away for `prompt_discussion_minutes`, the prompt
-  times out and you are told.
+  session; the prompt's session runs on its own. If that agent is offline, the
+  prompt waits for it to come back.
 - A project reaches every active agent allowed into it, whether or not it's on
   one of the project's tasks; a task reaches the agents on it; a machine, the
   agents enrolled from it.
@@ -373,10 +374,13 @@ prompts, are skipped, and the prompt's page says which.
   talk it over in a shared thread (which shows only a pointer to your text, as
   other agents can read it), weigh who is free and what each machine
   has, and each claims its share as a task that is already approved (it came
-  from you), assigned to that agent with the role "Share of prompt #N". A
-  discussion that hasn't finished after `prompt_discussion_minutes`
-  (`hub.toml`, 1 to 1440, default 30) marks the agents that haven't decided as
-  timed out.
+  from you), assigned to that agent with the role "Share of prompt #N". An
+  agent busy on a task joins the discussion when its task session ends.
+- **Nothing times out** by default (`prompt_discussion_minutes = 0` in
+  `hub.toml`). Set it to 1–1440 to have undecided agents in a discussion, and
+  a single prompt's long-offline agent, time out after that many minutes, as
+  before 0.3.6.1. A revoked agent's part fails at once either way; **Withdraw**
+  takes back a prompt you no longer want.
 
 The prompt also shows in each agent's private chat, labelled with its number,
 but it is not delivered as mail: a busy agent's current session never acts on
@@ -498,13 +502,14 @@ session's environment, and `agenthub doctor` has an "API billing" check that
 fails if it finds such settings in the environment or in Claude Code settings
 files. Dollar figures on the task page are estimates.
 
-A session on one of your **prompts** has a limit, unlike a task's:
-`prompt_max_turns` (default 40) and `prompt_wall_clock_minutes` (default 30) in
-`runner.toml`. Prompt sessions are subscription-only and run in the same
-permission mode as task sessions.
+A session on one of your **prompts** has no limit either: it runs until it's
+done. You can set one with `prompt_max_turns` and `prompt_wall_clock_minutes`
+in `runner.toml` (unset by default). Prompt sessions are subscription-only and
+run in the same permission mode as task sessions.
 
-If a session hits the subscription usage limit, the agent pauses until the
-limit resets (plus a short margin) and then resumes the same session.
+If a task or prompt session hits the subscription usage limit, the agent
+pauses until the limit resets (plus a short margin) and then resumes the same
+session, as many times as the limit is hit.
 
 Sessions use the agent user's own Claude Code settings. Anything those settings
 don't allow becomes a live `tool_permission` approval, and the session continues
@@ -621,10 +626,10 @@ Code deny rules.
   branches, and enable branch protection on your remotes.
 - **The hub machine is the root of trust.** Anyone with a shell on it can read
   the database and forge local requests.
-- **Tasks run until done.** Nothing caps a task session's turns or time, so a
-  stuck agent keeps using your subscription until you stop it (move the task
-  to blocked, or remove the agent). Prompt limits are approximate: turn counts
-  come from Claude's own reports and can overshoot by a turn.
+- **Agents run until done.** Nothing caps a task or prompt session's turns or
+  time, and nothing times out, so a stuck agent keeps using your subscription
+  until you stop it: move its task to blocked, remove the agent, or withdraw
+  the prompt.
 - **Overlap detection is conservative**, so expect some false alarms.
 
 ## Local development

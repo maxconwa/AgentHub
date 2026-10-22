@@ -39,9 +39,9 @@ class RunnerConfig:
     permission_wait_seconds: int = 600
     progress_flush_seconds: float = 5
     sync_seconds: float = 60
-    # The budget of one operator prompt's session (a discussion, for a prompt to several agents).
-    prompt_max_turns: int = 40
-    prompt_wall_clock_minutes: int = 30
+    # Optional limits on one operator prompt's session; unset (the default): none, it runs until it's done.
+    prompt_max_turns: int | None = None
+    prompt_wall_clock_minutes: int | None = None
 
     def project_dir(self, project: str) -> Path | None:
         path = self.projects.get(project)
@@ -75,8 +75,8 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
                                     "(permission-bypass and permission-prompt flags are not allowed)")
     for key in ("prompt_max_turns", "prompt_wall_clock_minutes"):
         value = getattr(cfg, key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise RunnerConfigError(f"{key} must be a whole number of at least 1 (got {value!r})")
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+            raise RunnerConfigError(f"{key} must be unset (no limit) or a whole number of at least 1 (got {value!r})")
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):
         raise RunnerConfigError("[projects] must map project names to directory paths")
     return cfg

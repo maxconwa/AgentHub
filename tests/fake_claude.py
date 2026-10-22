@@ -1,11 +1,12 @@
 """A stand-in for `claude -p --output-format stream-json` used by runner tests.
 
 Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail | review_approve |
-limit_then_success | hold | prompt_share | prompt_reply.
+limit_then_success | limit_twice_then_success | hold | prompt_share | prompt_reply.
 review_approve records an ``approve`` verdict on $AGENTHUB_TASK_ID through the hub at $FAKE_HUB_URL with
 the agent token in $FAKE_TOKEN (as the real session would through the MCP tool), then succeeds.
 limit_then_success: the first call (no --resume) ends with the subscription usage-limit message
 ("You've hit your session limit · resets <now+2min>", or $FAKE_LIMIT_TEXT when set); a resumed call succeeds.
+limit_twice_then_success: likewise, but the first resumed call hits the limit again too (two calls logged before it).
 A --resume'd call keeps that session id, unless --fork-session asks for a new one.
 hold: waits until the file $FAKE_RELEASE exists (at most 30 s), then succeeds.
 prompt_share: in a prompt session ($AGENTHUB_PROMPT_ID set) it reads the prompt, posts in its channel thread and
@@ -74,7 +75,8 @@ def main():
         emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "session_id": session,
               "num_turns": max_turns, "total_cost_usd": 0.01})
         sys.exit(1)
-    if mode == "limit_then_success" and resume is None:
+    calls_so_far = sum(1 for _ in open(log)) if log else 1  # this call is already logged
+    if (mode == "limit_then_success" and resume is None) or (mode == "limit_twice_then_success" and calls_so_far <= 2):
         reset = (datetime.now() + timedelta(minutes=2)).strftime("%I:%M%p").lstrip("0").lower()
         text = os.environ.get("FAKE_LIMIT_TEXT") or f"You've hit your session limit · resets {reset}"
         emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "num_turns": 1,

@@ -329,8 +329,10 @@ def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DI
     started and whose agent has been disconnected for longer than ``minutes`` (a brief disconnect, such as a hub
     restart, doesn't count) or whose runner is now too old to run prompts, become ``timed_out`` (the single prompt
     fails). In any open prompt, recipients that were revoked fail, and so do running recipients whose agent has
-    been disconnected for longer than ``minutes`` (its runner never came back to finish)."""
-    cutoff = now_iso(now - timedelta(minutes=minutes))
+    been disconnected for longer than ``minutes`` (its runner never came back to finish).
+
+    ``minutes`` 0: nothing times out; only revoked recipients fail. (No timestamp is earlier than "".)"""
+    cutoff = now_iso(now - timedelta(minutes=minutes)) if minutes > 0 else ""
     changed: list[int] = []
     gone = "(a.connected = 0 AND COALESCE(a.last_heartbeat, '') < ?)"  # disconnected for longer than ``minutes``
     stale = conn.execute(
