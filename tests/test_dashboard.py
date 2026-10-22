@@ -346,6 +346,7 @@ def test_avatar_image_headers(world):
     assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
     assert r.headers["content-security-policy"] == "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
     assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cross-origin-resource-policy"] == "same-origin"
     assert r.headers["cache-control"] == "private, max-age=31536000, immutable"
     assert r.text.startswith("<svg") and "<script" not in r.text
 
@@ -357,6 +358,12 @@ def test_avatar_image_headers(world):
 def test_bad_avatar_urls_are_404(world, path):
     hub, _, _ = world
     assert hub.client.get(path, headers=hub.op_headers()).status_code == 404
+
+
+def test_other_sites_cannot_embed_avatars(world):
+    hub, _, _ = world
+    r = hub.client.get("/ui/avatars/1/1/mini/idle.svg", headers=hub.op_headers(**{"sec-fetch-site": "cross-site"}))
+    assert r.status_code == 403
 
 
 def test_avatar_needs_an_operator(world):

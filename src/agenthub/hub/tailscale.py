@@ -107,13 +107,19 @@ class TailscaleWhois:
         self.cache_seconds = cache_seconds
         self.timeout = timeout
         self._cache: dict[str, tuple[float, WhoisResult]] = {}
+        # One lookup per address at a time, so a page of avatars doesn't start dozens of processes.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def lookup(self, ip: str) -> WhoisResult:
         if not is_tailnet_ip(ip):
             raise IdentityError("not a tailnet address")
-        cached = self._cache.get(ip)
-        if cached and time.monotonic() - cached[0] < self.cache_seconds:
-            return cached[1]
+        async with self._locks.setdefault(ip, asyncio.Lock()):
+            cached = self._cache.get(ip)
+            if cached and time.monotonic() - cached[0] < self.cache_seconds:
+                return cached[1]
+            return await self._run(ip)
+
+    async def _run(self, ip: str) -> WhoisResult:
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.tailscale_bin, "whois", "--json", ip,

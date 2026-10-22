@@ -272,6 +272,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE agents ADD COLUMN avatar_seed INTEGER NOT NULL DEFAULT 0;
     UPDATE agents SET avatar_seed = abs(random() % 2147483648);
     """,
+    # 8: avatar poses look up each agent's latest run on every page render
+    """
+    CREATE INDEX task_runs_agent ON task_runs(agent_id, id);
+    """,
 ]
 
 

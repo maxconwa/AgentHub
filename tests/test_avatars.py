@@ -71,10 +71,21 @@ def test_needs_you_beats_a_running_session(setup):
 
 def test_recharging_while_paused_at_the_usage_limit(setup):
     _, a, conn = setup
-    _task(conn, a.id, paused_until=LATER)
+    tid = _task(conn, a.id, paused_until=LATER)
     assert avatars.poses(conn)[a.id] == "recharging"
     conn.execute("UPDATE task_agents SET paused_until = ?", (EARLIER,))
     assert avatars.poses(conn)[a.id] == "idle"
+    conn.execute("UPDATE task_agents SET paused_until = ?", (LATER,))
+    conn.execute("UPDATE tasks SET state = 'done' WHERE id = ?", (tid,))
+    _run(conn, _task(conn, a.id), a.id)  # a leftover pause on a finished task doesn't hide new work
+    assert avatars.poses(conn)[a.id] == "working"
+
+
+def test_any_active_review_run_shows_reviewing(setup):
+    _, a, conn = setup
+    _run(conn, _task(conn, a.id, stage="reviews", state="review"), a.id)
+    _run(conn, _task(conn, a.id), a.id)
+    assert avatars.poses(conn)[a.id] == "reviewing"
 
 
 def test_working_and_reviewing_follow_the_stage(setup):

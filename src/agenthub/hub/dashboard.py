@@ -47,6 +47,7 @@ AVATAR_HEADERS = {
     "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
+    "cross-origin-resource-policy": "same-origin",
     "cache-control": "private, max-age=31536000, immutable",
 }
 
@@ -386,7 +387,9 @@ def build_router() -> APIRouter:
         return done(request, f"/ui/agents#agent-{agent_id}")
 
     @router.get("/avatars/{version}/{seed}/{kind}/{pose}.svg")
-    def avatar_image(version: str, seed: str, kind: str, pose: str, operator: Op) -> Response:
+    def avatar_image(version: str, seed: str, kind: str, pose: str, request: Request, operator: Op) -> Response:
+        # Only our own pages embed avatars; another site must not probe for the operator with them.
+        check_same_origin(request)
         if not (version.isdigit() and seed.isdigit() and len(seed) <= 10) or kind not in ("scene", "mini"):
             raise HTTPException(404, "no such avatar")
         try:

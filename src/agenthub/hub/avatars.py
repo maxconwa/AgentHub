@@ -38,11 +38,18 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
     now_s = now_iso(now or datetime.now(UTC))
     agents = conn.execute("SELECT id, connected FROM agents WHERE status != 'revoked'").fetchall()
     needs_you = _ids(conn, "SELECT requester FROM approvals WHERE status = 'pending'")
-    recharging = _ids(conn, "SELECT agent_id FROM task_agents WHERE paused_until > ?", now_s)
-    running = {r["agent_id"]: r["stage"] for r in conn.execute(
-        "SELECT r.agent_id, ta.stage FROM task_runs r "
-        "LEFT JOIN task_agents ta ON ta.task_id = r.task_id AND ta.agent_id = r.agent_id "
-        "WHERE r.ended_at IS NULL")}
+    # A pause left over on a finished task doesn't count.
+    recharging = _ids(conn,
+        "SELECT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
+        "WHERE ta.paused_until > ? AND t.state NOT IN ('done', 'cancelled', 'rejected')", now_s)
+    running: dict[str, str] = {}
+    for r in conn.execute(
+            "SELECT r.agent_id, ta.stage FROM task_runs r "
+            "LEFT JOIN task_agents ta ON ta.task_id = r.task_id AND ta.agent_id = r.agent_id "
+            "WHERE r.ended_at IS NULL"):
+        # Several active runs (on different tasks): any review run makes it "reviewing".
+        if running.get(r["agent_id"]) != "reviews":
+            running[r["agent_id"]] = r["stage"]
     waiting = _ids(conn, "SELECT from_agent FROM asks WHERE status = 'pending' AND expires_at > ?", now_s)
     # The latest ended run per agent errored, on a task that is still live.
     errored = _ids(conn,
