@@ -396,8 +396,8 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
     @server.tool()
     async def claim_share(prompt_id: int, title: str, description: str, project: str | None = None) -> str:
         """Claim your share of a prompt as a task (already approved: it came from the operator). Give it a
-        short title and a description of exactly what you will do. Set `project` for a prompt aimed at a
-        device. You may claim once."""
+        short title and a description of exactly what you will do. For a prompt aimed at a device, set
+        `project` (needed when you have no current task). You may claim once."""
         t = await call(lambda c: c.claim_share(prompt_id, title, description, project))
         return f"Claimed: task #{t['id']} {t['title']}. You'll pick it up next."
 

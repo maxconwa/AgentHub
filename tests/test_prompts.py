@@ -646,6 +646,19 @@ def test_device_prompt_claim_picks_a_project(hub):
     assert r.status_code == 201 and r.json()["project"] == "other"
 
 
+def test_device_prompt_claim_without_a_task_must_name_the_project(hub):
+    """No guessing: an agent with no current task says where its share goes."""
+    a, b = hub.enroll("alice", projects=("proj", "other")), hub.enroll("bob", projects=("other",))
+    same_device(hub, "nbox", a, b)
+    online(hub, a, b)
+    p = create(hub, "device:nbox")
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x"})
+    assert r.status_code == 422 and "say which project with project=" in r.json()["detail"]
+    assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "proj"})
+    assert r.status_code == 201 and r.json()["project"] == "proj"
+
+
 def test_project_must_match_the_prompts_project(group):
     hub, a, b, c, p = group
     assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "else"}).status_code == 422

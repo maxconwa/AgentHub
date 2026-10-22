@@ -1240,7 +1240,8 @@ def test_operator_prompt_text():
         assert needle in text, needle
     device = dict(group, target="device:n1", project=None,
                   thread={"kind": "device", "node_id": "n1", "key": "device:n1"})
-    assert "post_device" in operator_prompt(device)
+    assert "post_device" in operator_prompt(device) and "project=..." in operator_prompt(device)
+    assert "project=..." not in operator_prompt(group)  # a task prompt's shares go to its project
     assert "resuming after a runner restart" in operator_prompt(single, restarted=True)
 
 

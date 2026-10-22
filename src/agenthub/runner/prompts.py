@@ -193,7 +193,9 @@ def operator_prompt(p: dict[str, Any], *, restarted: bool = False) -> str:
         f"on which machine) and the thread so far, and post there with {how}. Weigh who is free and who is busy and "
         "what each machine has, and agree on a split; read the thread again until you have agreed. Then call "
         f"claim_share(prompt_id={pid}, title=..., description=...) with a clear title and description for your "
-        "part: it becomes a task assigned to you, already approved. If you take no part, call "
+        "part: it becomes a task assigned to you, already approved"
+        + (" (give project=... too if you have no current task)" if p["project"] is None else "")
+        + ". If you take no part, call "
         f"decline_share(prompt_id={pid}, reason=...) instead. Do not start the work in this session: your share "
         "becomes a task you'll pick up next."
     )

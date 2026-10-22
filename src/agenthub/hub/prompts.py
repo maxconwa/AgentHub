@@ -234,7 +234,7 @@ def finish(
 
 def _share_project(conn: sqlite3.Connection, p: dict[str, Any], agent: Agent, project: str | None) -> str:
     """Where ``agent``'s share goes: the prompt's project, else (device prompts) ``project`` if given, else the
-    project of its current task, else its first allowed project."""
+    project of its current task; with neither, the agent must say (Invalid)."""
     if p["project"] is not None:
         if project is not None and project != p["project"]:
             raise Invalid(f"prompt {p['id']} is about project {p['project']!r}")
@@ -249,7 +249,8 @@ def _share_project(conn: sqlite3.Connection, p: dict[str, Any], agent: Agent, pr
             return t["project"]
     if not agent.allowed_projects:
         raise Invalid("you have no project to put a share in")
-    return agent.allowed_projects[0]
+    raise Invalid(f"you have no current task, so say which project with project= (one of: "
+                  f"{', '.join(agent.allowed_projects)})")
 
 
 def _decidable(conn: sqlite3.Connection, pid: int, agent: Agent) -> dict[str, Any]:
