@@ -43,9 +43,9 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install agenthub==0.2.1
+uv tool install agenthub==0.2.2
 # or, before a PyPI release, a git tag:
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.1"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.2"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
@@ -112,7 +112,7 @@ your own accounts or credentials.
 
 ```bash
 sudo useradd --create-home agent && sudo -iu agent
-uv tool install agenthub==0.2.1
+uv tool install agenthub==0.2.2
 claude                                        # log Claude Code in once as this user
 ```
 
