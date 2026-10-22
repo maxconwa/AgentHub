@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import mimetypes
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -249,6 +250,7 @@ def create_app(state: HubState) -> FastAPI:
     from agenthub.hub import dashboard
 
     app.include_router(dashboard.build_router())
+    mimetypes.add_type("font/woff2", ".woff2")  # KaTeX's fonts; not every system's mime table knows it
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)

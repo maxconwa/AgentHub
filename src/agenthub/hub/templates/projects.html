@@ -10,7 +10,7 @@
 {% for p in projects %}
 <details class="panel project"{% if p.tasks %} open{% endif %}>
   <summary><span><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>{{ p.name }}</a></span><span class="muted small">{{ p.tasks|length }} live task{{ '' if p.tasks|length == 1 else 's' }}</span></summary>
-  {% if p.description %}<p class="muted small">{{ p.description }}</p>{% endif %}
+  {% if p.description %}<div class="muted small md">{{ p.description|md }}</div>{% endif %}
   <p class="small"><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>Open project</a> {{ message_button('project:' ~ p.name, 'Message the agents on project ' ~ p.name, path) }}</p>
   {% if not p.tasks %}<p class="muted small">No live tasks</p>{% endif %}
   {% for t in p.tasks %}

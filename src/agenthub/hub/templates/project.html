@@ -6,7 +6,7 @@
 <p><a href="/ui/projects">← Projects</a></p>
 <h1>{{ project.name }}</h1>
 <p>{{ message_button('project:' ~ project.name, 'Message the agents on project ' ~ project.name, path) }}</p>
-{% if project.description %}<p class="pre">{{ project.description }}</p>{% else %}<p class="muted">No description yet.</p>{% endif %}
+{% if project.description %}<div class="md">{{ project.description|md }}</div>{% else %}<p class="muted">No description yet.</p>{% endif %}
 <details class="panel">
   <summary>Edit description</summary>
   <form class="stack" method="post" action="/ui/projects/{{ project.name }}/description">

@@ -1,10 +1,18 @@
+{% from "_macros.html" import agent_text %}
 <div id="thread" class="thread"{% if a.status == 'pending' %} hx-get="/ui/approvals/{{ a.id }}/thread" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
   {% if not a.discussion %}<p class="muted">No messages yet. The agent sees your message when it next checks this approval.</p>{% endif %}
   {% for m in a.discussion %}
-  <div class="msg {{ 'mine' if m.author.startswith('human:') else 'theirs' }}">
-    <div class="meta">{% if m.author.startswith('human:') %}{{ m.author.removeprefix('human:') }}{% else %}{{ m.author_name or m.author }} · agent{% endif %} · {{ ago(m.ts) }}</div>
-    <div class="pre">{{ m.body }}</div>
+  {% if m.author.startswith('human:') %}
+  <div class="msg mine">
+    <div class="meta">{{ m.author.removeprefix('human:') }} · {{ ago(m.ts) }}</div>
+    <div class="md">{{ m.body|md }}</div>
   </div>
+  {% else %}
+  <div class="msg theirs">
+    <div class="meta">{{ ago(m.ts) }}</div>
+    {{ agent_text(m.body, m.author, names) }}
+  </div>
+  {% endif %}
   {% endfor %}
   {% if a.awaiting_reply %}<p class="muted small">Waiting for the agent to reply…</p>{% endif %}
 </div>

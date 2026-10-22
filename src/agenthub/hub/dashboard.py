@@ -4,8 +4,9 @@ Every route requires an authenticated operator (see :mod:`agenthub.hub.operator`
 and every POST also requires the CSRF token. Forms work without JavaScript
 (POST, then redirect); HTMX only adds polling and in-place updates.
 
-Agent-written text is rendered with Jinja2 autoescaping and shown inside
-blocks labeled with its author; it is never rendered as HTML or Markdown.
+Agent-written text is shown inside blocks labeled with its author. Message bodies, descriptions,
+notes, questions and answers go through the ``md`` filter (:func:`agenthub.hub.markdown.render`:
+Markdown with raw HTML off and only http(s)/mailto links); everything else is autoescaped.
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agenthub.hub import (
-    approvals, avatar_art, avatars, db, device_board, events, private, questions, store, task_agents, tasks, views,
+    approvals, avatar_art, avatars, db, device_board, events, markdown, private, questions, store, task_agents, tasks,
+    views,
 )
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
@@ -167,6 +169,7 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
 
 
 templates.globals.update(ago=ago, who=who, event_summary=event_summary)
+templates.filters["md"] = markdown.render
 
 
 def pending_total(conn: sqlite3.Connection) -> int:

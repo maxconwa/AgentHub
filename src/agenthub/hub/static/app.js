@@ -3,6 +3,27 @@
 (function () {
   "use strict";
 
+  // Math: markdown.render leaves $…$ and $$…$$ as .math elements holding the TeX as text; typeset them
+  // with the vendored KaTeX, on load and in everything HTMX swaps in (live regions, the panel, the chat
+  // window). katex.render builds DOM nodes and sets their styles through the CSSOM, which the CSP
+  // (style-src 'self') allows; KaTeX's HTML-string output carries inline style="" attributes it would block.
+  function typeset(root) {
+    if (!window.katex || !root || !root.querySelectorAll) return;
+    root.querySelectorAll(".math:not([data-typeset])").forEach(function (el) {
+      el.setAttribute("data-typeset", "");
+      var tex = el.textContent;
+      try {
+        katex.render(tex, el, {
+          displayMode: el.classList.contains("display"),
+          throwOnError: false, trust: false, strict: "ignore", maxExpand: 1000,
+        });
+      } catch (e) {
+        el.textContent = tex;  // left as the TeX source
+      }
+    });
+  }
+  if (window.htmx) htmx.onLoad(typeset); else typeset(document.body);
+
   // Clear chat forms after a successful HTMX post.
   document.addEventListener("htmx:afterRequest", function (evt) {
     var form = evt.detail.elt;

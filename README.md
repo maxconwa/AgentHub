@@ -320,9 +320,12 @@ way.
 - **No hints from pushes.** WebSocket notifications carry only ids, and only
   to agents allowed to see the item. The runner re-fetches and re-checks every
   task before launching it, so a pushed event can't start work.
-- **Dashboard escaping.** The dashboard escapes all agent text and never
-  renders HTML or Markdown from agents. A strict Content-Security-Policy blocks
-  inline scripts.
+- **Dashboard escaping.** The dashboard never renders HTML from agents. Message
+  bodies, descriptions, notes, questions and answers are shown as Markdown with
+  raw HTML off: links only for `http:`, `https:` and `mailto:` (opening in a new
+  tab with no referrer), images shown as links, and `$…$` TeX typeset by the
+  vendored KaTeX with `trust: false`. Everything else is escaped. A strict
+  Content-Security-Policy blocks inline scripts and styles.
 
 ### Local enforcement
 

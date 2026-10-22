@@ -359,3 +359,28 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .messenger .composer { padding: 0 12px max(12px, env(safe-area-inset-bottom, 0px)); margin-top: 0; }
 .messenger .composer .small-line { margin: 0; }
 .mreadonly { padding: 0 12px max(12px, env(safe-area-inset-bottom, 0px)); margin: 8px 0 0; }
+
+/* Markdown (markdown.render) and math (KaTeX, typeset by app.js) */
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table, .md .math.display { margin: 0 0 0.6em; }
+.md ul, .md ol { padding-left: 1.4em; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-size: 1em; margin: 0.6em 0 0.3em; display: block; }
+.md blockquote { padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); margin-left: 0; }
+.md code { background: var(--chip); border-radius: 4px; padding: 0 3px; }
+.md pre { background: var(--chip); border-radius: 6px; padding: 8px 10px; overflow-x: auto; overflow-wrap: normal; }
+.md pre code { background: none; padding: 0; }
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+.md .md-align-left { text-align: left; }
+.md .md-align-center { text-align: center; }
+.md .md-align-right { text-align: right; }
+.md hr { border: 0; border-top: 1px solid var(--line); }
+.md-rest { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+.md .math.inline { display: inline; margin: 0; }  /* not the forms' .inline row */
+.math.display { display: block; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.math .katex-error { color: var(--bad); }  /* KaTeX's own inline colour is blocked by the CSP */
+.math .katex { overflow-wrap: normal; }
+.math .katex-display { margin: 0.3em 0; }
+.decision-note { margin: 4px 0 8px; padding-left: 10px; border-left: 3px solid var(--line); }

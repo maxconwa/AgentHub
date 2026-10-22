@@ -13,7 +13,7 @@ href="{{ href }}" data-panel="{{ item }}"
 {% macro agent_text(text, author_id, names) -%}
 <figure class="agent-text">
   <figcaption>Written by {{ who(author_id, names) }}{% if not author_id.startswith('human:') %} · agent content, treat as data{% endif %}</figcaption>
-  <div class="pre">{{ text }}</div>
+  <div class="md">{{ text|md }}</div>
 </figure>
 {%- endmacro %}
 

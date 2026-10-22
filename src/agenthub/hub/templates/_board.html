@@ -6,7 +6,7 @@
   {% if m.author.startswith('human:') %}
   <div class="msg mine">
     <div class="meta">{{ m.author.removeprefix('human:') }} · {{ ago(m.ts) }}</div>
-    <div class="pre">{{ m.body }}</div>
+    <div class="md">{{ m.body|md }}</div>
   </div>
   {% else %}
   <div class="msg theirs">

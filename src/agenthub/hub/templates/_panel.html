@@ -83,7 +83,7 @@
 <div class="dhead"><span class="group-icon g-project" aria-hidden="true">▦</span>
   <div class="info"><div class="kicker">project</div><h2 id="panel-title">{{ project.name }}</h2></div></div>
 <section class="dsec">
-  {% if project.description %}<p class="muted small pre">{{ project.description }}</p>{% endif %}
+  {% if project.description %}<div class="muted small md">{{ project.description|md }}</div>{% endif %}
   <h4>Live tasks</h4>
   <ul class="tlinks">
     {% for t in tasks %}<li><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}</li>
@@ -147,7 +147,8 @@
     </div>
   </form>
   {% else %}
-  <p class="decided {{ a.status }}">{{ a.status.replace('_', ' ')|capitalize }} by {{ who(a.decided_by, names) }} {{ ago(a.decided_at) }}{% if a.decision_note %}: “{{ a.decision_note }}”{% endif %}</p>
+  <p class="decided {{ a.status }}">{{ a.status.replace('_', ' ')|capitalize }} by {{ who(a.decided_by, names) }} {{ ago(a.decided_at) }}{% if a.decision_note %}:{% endif %}</p>
+  {% if a.decision_note %}<blockquote class="md decision-note">{{ a.decision_note|md }}</blockquote>{% endif %}
   {% endif %}
 </section>
 
