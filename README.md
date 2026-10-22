@@ -198,7 +198,8 @@ thread, weigh who is free and what each machine has, and each claims its share
 as a task that is already approved (it came from you), assigned to that agent
 with the role "Share of prompt #N". Agents that are offline, or whose runner is
 too old to run prompts, are skipped, and the prompt's page says which. Follow a prompt on its page (`/ui/prompts/N`) or in the
-Dashboard's **Prompts** section. A group discussion that hasn't finished after
+Dashboard's **Prompts** section; while some agents haven't started on it,
+**Withdraw** on its card takes it back from them (any already working finish). A group discussion that hasn't finished after
 `prompt_discussion_minutes` (`hub.toml`, default 30) marks the agents that
 haven't decided as timed out.
 

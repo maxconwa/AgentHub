@@ -150,7 +150,7 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
         if p.get("agent_id"):
             return f"prompt #{p.get('prompt_id')}: {who(p.get('agent_id'), names)} {p.get('recipient_status')}"
         late = [f"{', '.join(who(a, names) for a in p.get(k) or [])} {k.replace('_', ' ')}"
-                for k in ("timed_out", "failed") if p.get(k)]
+                for k in ("timed_out", "failed", "withdrawn") if p.get(k)]
         return f"prompt #{p.get('prompt_id')} {p.get('status')}" + (f": {'; '.join(late)}" if late else "")
     if t.startswith("question."):
         return f"question #{p.get('question_id')} {t.split('.')[1]} ({who(p.get('agent_id'), names)})"
@@ -512,6 +512,14 @@ def build_router() -> APIRouter:
         with db.transaction(conn):
             p = prompts.create(conn, target=target, body=body, actor=operator.actor)
         return finish(request, operator, conn, panel, next, f"/ui/prompts/{p['id']}", messenger)
+
+    @router.post("/prompts/{prompt_id}/withdraw")
+    def prompt_withdraw(prompt_id: int, request: Request, operator: PostOp, conn: Conn,
+                        panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
+        """A prompt card's Withdraw: the recipients that haven't started don't get it (running ones finish)."""
+        with db.transaction(conn):
+            prompts.withdraw(conn, prompt_id, actor=operator.actor)
+        return finish(request, operator, conn, panel, next, f"/ui/prompts/{prompt_id}", messenger)
 
     @router.get("/prompts/{prompt_id}", response_class=HTMLResponse)
     def prompt_page(prompt_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:

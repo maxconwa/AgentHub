@@ -28,6 +28,13 @@
     </li>
     {% else %}<li class="small-line">No active agent was here to prompt.</li>{% endfor %}
   </ul>
+  {% if p.recipients|selectattr('status', 'equalto', 'pending')|list %}
+  {#- In the slide-in panel (`item` set) the form re-renders the panel; elsewhere it posts and redirects. -#}
+  <form class="inline" method="post" action="/ui/prompts/{{ p.id }}/withdraw"{% if item %} hx-post="/ui/prompts/{{ p.id }}/withdraw" hx-target="#panel" hx-swap="innerHTML"{% endif %}>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if item %}<input type="hidden" name="panel" value="{{ item }}">{% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}{% endif %}
+    <button type="submit">Withdraw</button> <span class="small-line">The agents that haven't started won't get it; any already working finish.</span>
+  </form>{% endif %}
 </article>
 {%- endmacro %}
 

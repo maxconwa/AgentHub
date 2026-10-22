@@ -1362,6 +1362,31 @@ async def test_busy_runner_runs_the_prompt_after_its_session_and_before_the_next
     assert {task_call["env"]["AGENTHUB_TASK_ID"], next_call["env"]["AGENTHUB_TASK_ID"]} == {str(first), str(second)}
 
 
+async def test_runner_drops_a_queued_prompt_the_operator_withdrew(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "hold")
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_RELEASE", str(release))
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    first, second = live_hub.op_task("first", assignee="worker"), live_hub.op_task("second", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: len(calls()) == 1 and _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: pid in runner.slots.queued)  # waiting for the running session to end
+        conn = live_hub.conn()
+        with db.transaction(conn):
+            hub_prompts.withdraw(conn, pid, actor=OPERATOR)
+        # dropped at once: the next task session no longer waits behind it
+        await wait_for(lambda: not runner.slots.queued and runner.prompts.flows[pid].done())
+        release.touch()
+        await wait_for(lambda: all(live_hub.task(t)["state"] == "review" for t in (first, second)))
+    finally:
+        await stop(main)
+    assert [c["env"].get("AGENTHUB_PROMPT_ID") for c in calls()] == [None, None]
+    assert _prompt_row(live_hub, pid)["recipients"][0]["note"] == "withdrawn by the operator"
+
+
 async def test_task_prompt_resumes_the_agents_latest_session_on_the_task(live_hub, fake_claude, tmp_path):
     claude_bin, calls = fake_claude
     runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)

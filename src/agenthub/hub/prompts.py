@@ -37,6 +37,7 @@ OFFLINE = "offline"
 TOO_OLD = "runner too old for prompts"
 STALE_HOURS = 6  # a runner that starts up fails pending prompts older than this instead of running them
 STALE = "too old when the runner picked it up"
+WITHDRAWN = "withdrawn by the operator"
 
 
 def _labeled(pid: int, body: str, limit: int) -> str:
@@ -289,6 +290,22 @@ def decline(conn: sqlite3.Connection, pid: int, agent: Agent, *, reason: str) ->
     _set_recipient(conn, pid, agent.id, "declined", note=reason)
     _emit(conn, _settle(conn, pid), actor=agent.id, agent_id=agent.id, recipient_status="declined")
     return get_for_agent(conn, pid, agent)
+
+
+def withdraw(conn: sqlite3.Connection, pid: int, *, actor: str) -> dict[str, Any]:
+    """The operator takes the prompt back from the recipients that haven't started: they fail with the hub's note
+    (a runner that queued it drops it), while running ones are left to finish. Conflict if none is pending."""
+    if not actor.startswith("human:"):
+        raise Forbidden("only a human operator can withdraw a prompt")
+    _row(conn, pid)
+    pending = [r["agent_id"] for r in conn.execute(
+        "SELECT agent_id FROM prompt_recipients WHERE prompt_id = ? AND status = 'pending' ORDER BY agent_id", (pid,))]
+    if not pending:
+        raise Conflict(f"prompt {pid} has no recipient left that hasn't started")
+    for agent_id in pending:
+        _set_recipient(conn, pid, agent_id, "failed", note=WITHDRAWN)
+    _emit(conn, _settle(conn, pid), actor=actor, withdrawn=pending)
+    return get(conn, pid)
 
 
 def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DISCUSSION_MINUTES) -> list[int]:

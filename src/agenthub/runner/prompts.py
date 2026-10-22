@@ -23,6 +23,8 @@
   while it was down or too old to run prompts): the hub checks their age and notes "too old when the runner
   picked it up".
 * The heartbeat says ``"prompts": 1``: the hub wakes only agents whose runner does.
+* A queued prompt the operator withdrew (no longer pending on the next sync) is dropped at once; one that got
+  past the queue is refused by the hub's ``start`` and dropped too.
 """
 
 from __future__ import annotations
@@ -242,6 +244,8 @@ class PromptRunner:
         self._unreported: dict[int, tuple[bool, str]] = {}
         # Prompts whose session this process has started (until then, a transient hub error is retried).
         self._launched: set[int] = set()
+        # Prompts whose flow waits for the slot to start its first session (dropped if withdrawn meanwhile).
+        self._waiting: set[int] = set()
         self._first_sync = True
 
     async def sync(self) -> None:
@@ -255,6 +259,10 @@ class PromptRunner:
         for pid in [pid for pid, flow in self.flows.items() if flow.done() and pid not in pending]:
             del self.flows[pid]
             self._unreported.pop(pid, None)
+        for pid in [pid for pid in self._waiting if pid not in pending]:  # e.g. withdrawn by the operator
+            log.info("prompt %s is no longer pending for this agent; dropping it", pid)
+            self._waiting.discard(pid)
+            self.flows[pid].cancel()  # its flow unqueues it, so new task sessions stop waiting for it
         for pid, p in pending.items():
             flow = self.flows.get(pid)
             if flow is None:
@@ -296,6 +304,7 @@ class PromptRunner:
             await self._report(pid, False, "runner error; see runner logs")
         finally:
             self._launched.discard(pid)
+            self._waiting.discard(pid)
             self.runner.slots.unqueue(pid)
 
     async def _run(self, pid: int, *, restarted: bool) -> None:
@@ -322,7 +331,10 @@ class PromptRunner:
         turns, seconds = cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes * 60
         waited_for_limit, fork = False, False
         while True:
+            if pid not in self._launched:
+                self._waiting.add(pid)
             async with self.runner.slots.prompt(pid):
+                self._waiting.discard(pid)
                 if pid not in self._launched:  # the first session starts now, when a slot is free
                     if restarted:
                         self.store.update(pid, restarts=record.get("restarts", 0) + 1)

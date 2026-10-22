@@ -13,7 +13,7 @@ from agenthub.hub.app import expire_prompts
 from agenthub.hub.dashboard import event_summary
 from agenthub.hub.notify import build_notification
 
-from .conftest import OPERATOR
+from .conftest import OP_LOGIN, OPERATOR
 
 SECRET = "SECRET-PROMPT-TEXT"
 CFG = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="ops-x1")
@@ -649,6 +649,67 @@ def test_device_prompt_claim_picks_a_project(hub):
 def test_project_must_match_the_prompts_project(group):
     hub, a, b, c, p = group
     assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "else"}).status_code == 422
+
+
+# --- withdraw ---------------------------------------------------------------------------------------
+
+
+def withdraw(hub, pid, **data):
+    return hub.client.post(f"/ui/prompts/{pid}/withdraw", headers=hub.op_headers(), follow_redirects=False,
+                           data={"csrf": hub.csrf(), **data})
+
+
+def test_operator_withdraws_the_recipients_that_have_not_started(group):
+    hub, a, b, c, p = group
+    api(hub, b, "POST", f"/{p['id']}/start")
+    page = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
+    assert f'action="/ui/prompts/{p["id"]}/withdraw"' in page
+    r = withdraw(hub, p["id"])
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/prompts/{p['id']}"
+    got = prompts.get(hub.conn(), p["id"])
+    assert {r["agent_id"]: (r["status"], r["note"]) for r in got["recipients"]} == {
+        a.id: ("failed", "withdrawn by the operator"), b.id: ("running", ""),
+        c.id: ("failed", "withdrawn by the operator")}
+    assert got["status"] == "discussing"  # bob's session is left to finish
+    assert api(hub, a, "GET", "/pending").json()["prompts"] == []
+    assert api(hub, a, "POST", f"/{p['id']}/start").status_code == 409  # a runner that queued it drops it
+    ev = prompt_events(hub, p["id"])[-1]
+    assert ev["actor"] == f"human:{OP_LOGIN}" and sorted(ev["payload"]["withdrawn"]) == sorted([a.id, c.id])
+    assert sorted(bus.recipients(ev, hub.conn())) == sorted([a.id, b.id, c.id])  # their runners hear of it
+    assert build_notification(ev, {}, CFG) is None  # the operator did it: no push
+    assert "withdrawn" in event_summary(ev, {a.id: "alice", c.id: "carol"})
+    page = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
+    assert "/withdraw" not in page and "withdrawn by the operator" in page  # nothing left to withdraw
+    assert withdraw(hub, p["id"]).status_code == 409
+    api(hub, b, "POST", f"/{p['id']}/claim", json={"title": "mine"})
+    assert prompts.get(hub.conn(), p["id"])["status"] == "done"
+
+
+def test_withdrawing_a_single_prompt_fails_it(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    panel = hub.client.get(f"/ui/panel?item=agent:{a.id}", headers=hub.op_headers()).text
+    assert f'hx-post="/ui/prompts/{p["id"]}/withdraw"' in panel and 'name="panel" value="agent:' in panel
+    r = hub.client.post(f"/ui/prompts/{p['id']}/withdraw", headers={**hub.op_headers(), "hx-request": "true"},
+                        data={"csrf": hub.csrf(), "panel": f"agent:{a.id}"})
+    assert r.status_code == 200 and "/withdraw" not in r.text  # the panel, re-rendered
+    got = prompts.get(hub.conn(), p["id"])
+    assert got["status"] == "failed" and got["finished_at"] and got["recipients"][0]["status"] == "failed"
+
+
+def test_withdraw_needs_the_operator_and_csrf(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    r = hub.client.post(f"/ui/prompts/{p['id']}/withdraw", headers=hub.op_headers(), follow_redirects=False)
+    assert r.status_code == 403
+    with pytest.raises(store.Forbidden):
+        conn = hub.conn()
+        with db.transaction(conn):
+            prompts.withdraw(conn, p["id"], actor=a.id)
+    assert withdraw(hub, 9999).status_code == 404
+    assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
 
 
 # --- expiry -----------------------------------------------------------------------------------------
