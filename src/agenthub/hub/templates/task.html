@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, chip, agent_text, avatar, task_title, open_attrs %}
+{% from "_macros.html" import message_button, chip, agent_text, avatar, task_title, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
@@ -91,7 +91,7 @@
 <form class="stack note-form" method="post" action="/ui/tasks/{{ t.id }}/notes">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <label>Note <textarea name="body" rows="3" maxlength="4000" required placeholder="Post a note to the agents on this task"></textarea></label>
-  <button type="submit">Post note</button>
+  {% call send_and_prompt(prompt, 'Post note') %}<button type="submit">Post note</button>{% endcall %}
 </form>
 
 <h2>Activity</h2>

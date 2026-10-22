@@ -1542,7 +1542,7 @@ def test_buttons_step_aside_for_the_compose_sheet(hub):
 
 # --- Prompt: wake the agents now ------------------------------------------------------------------------
 
-HINT = "Send delivers a message. Prompt wakes the agents now and uses your subscription."
+PROMPT_HINT = "Prompt wakes the agents now and uses your subscription."
 
 
 def online(hub, *agents, connected=True):
@@ -1561,12 +1561,18 @@ def prompt_buttons(html):
     return out
 
 
-def assert_prompt_beside_send(html, target, enabled=True):
+def assert_prompt_beside_send(html, target, enabled=True, wakes=None):
     [(button, form)] = prompt_buttons(html)
     assert f'name="target" value="{target}"' in form and len(re.findall(r"<textarea\b", form)) == 1
-    assert re.search(r'<button type="submit"(?![^>]*formaction)[^>]*>(Send|Post)</button>', form)  # Send stays
-    assert HINT in form
+    send = re.search(r'<button type="submit"(?![^>]*formaction)[^>]*>(Send|Post|Post note)</button>', form)
+    assert send  # Send (or Post) stays, and the hint names it
+    label = send.group(1)
+    does = "delivers a message." if label == "Send" else "adds a note to the board."
+    assert f"{label} {does} {PROMPT_HINT}" in form
     assert ("disabled" in button) is not enabled
+    assert ("Prompt wakes: " in form) is enabled
+    if wakes:
+        assert f"Prompt wakes: {wakes}" in form
 
 
 def make_prompt(hub, target, body="Look at the flaky test"):
@@ -1593,6 +1599,12 @@ def test_every_send_has_a_prompt_button(window):
     for path in (f"/ui/agents/{a.id}", f"/ui/chats/{a.id}", f"/ui/compose?to=task:{tid}"):
         target = f"task:{tid}" if "compose" in path else f"agent:{a.id}"
         assert_prompt_beside_send(get(hub, path).text, target)
+    full_pages = [(f"/ui/tasks/{tid}", f"task:{tid}"), ("/ui/projects/proj", "project:proj"),
+                  ("/ui/devices/nworker", "device:nworker"), (f"/ui/board/ch-proj~task-{tid}", f"task:{tid}"),
+                  ("/ui/board/ch-proj~general", "project:proj")]
+    for path, target in full_pages:
+        assert_prompt_beside_send(get(hub, path).text, target)
+    assert_prompt_beside_send(panel(hub, f"task:{tid}").text, f"task:{tid}", wakes=f"task #{tid} (worker)")
     sheet = hub.client.get(f"/ui/compose?to=agent:{a.id}", headers=hub.op_headers(**{"hx-request": "true"})).text
     assert_prompt_beside_send(sheet, f"agent:{a.id}")
 
@@ -1619,6 +1631,13 @@ def test_prompt_thread_boards_and_read_only_chats_get_no_prompt_button(window):
     assert p["mode"] == "group" and p["thread"] == f"board:ch-proj~prompt-{p['id']}"
     html = messenger(hub, p["thread"]).text
     assert len(forms(html)) == 1 and not prompt_buttons(html)
+    html = get(hub, f"/ui/board/{p['thread'].removeprefix('board:')}").text
+    assert f'action="/ui/board/ch-proj~prompt-{p["id"]}"' in html and not prompt_buttons(html)
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.post_message(conn, author="system:hub", project="proj", channel="overlap-1", body="hub note")
+    for html in (messenger(hub, "board:ch-proj~overlap-1").text, get(hub, "/ui/board/ch-proj~overlap-1").text):
+        assert_prompt_beside_send(html, "project:proj", wakes="project proj (helper, worker)")  # a side thread
     assert not prompt_buttons(messenger(hub, f"pair:{pair_key(a, c)}").text)
     assert not prompt_buttons(messenger(hub, f"agent:{r.id}").text)  # revoked: read-only
 
@@ -1711,7 +1730,8 @@ def test_panel_shows_the_targets_latest_three_prompts(window):
     html = panel(hub, f"agent:{a.id}").text
     shown = [int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', html)]
     assert sorted(set(shown), reverse=True) == ids[:0:-1]
-    assert "number 0" not in html.split("Private chat")[0]
+    section = html.split("<h3>Prompts</h3>")[1]
+    assert "number 3" in section and "number 1" in section and "number 0" not in section
     assert not re.findall(r'href="/ui/prompts/', panel(hub, "project:proj").text)
 
 
@@ -1743,15 +1763,66 @@ def test_answering_a_question_prompts_the_asking_agent(window):
     assert f'href="/ui/prompts/{p["id"]}"' in page and "wakes worker" in page
 
 
-def test_answer_to_an_offline_agent_waits_in_its_private_chat(window):
-    hub, a, c, r, t, ap, q = window
-    from agenthub.hub import prompts
+def answer(hub, qid, text):
+    return hub.client.post(f"/ui/questions/{qid}/answer", headers=hub.op_headers(), follow_redirects=False,
+                           data={"csrf": hub.csrf(), "answer": text})
+
+
+def last_event(hub):
+    return hub.conn().execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+
+
+def assert_answered_privately(hub, agent, qid, text, since):
+    from agenthub.config import HubConfig
+    from agenthub.hub import events
+    from agenthub.hub.notify import build_notification
+    assert hub.conn().execute("SELECT COUNT(*) FROM prompts WHERE body LIKE 'Answer%'").fetchone()[0] == 0
+    assert [m["body"] for m in private.thread(hub.conn(), agent.id)][-1] == f"Answer to your question #{qid}: {text}"
+    cfg = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="t")
+    rows = hub.conn().execute(
+        "SELECT * FROM events WHERE id > ? AND (type LIKE 'prompt.%' OR type = 'question.answered')", (since,))
+    evs = [events.row_to_event(r) for r in rows]
+    assert [e["type"] for e in evs] == ["question.answered"]
+    assert all(build_notification(e, {}, cfg) is None for e in evs)  # no "nobody was online" push
+    for html in (get(hub, f"/ui/questions/{qid}").text, panel(hub, f"question:{qid}").text):
+        assert "as a private message" in html and "/ui/prompts/" not in html
+
+
+def test_answer_to_an_offline_agent_is_a_private_message_not_a_prompt(window):
+    hub, a, c, r, t, ap, q = window  # helper (c) is offline
     q2 = hub.client.post("/api/v1/projects/proj/questions", headers=c.headers, json={"question": "Port?"}).json()
-    hub.client.post(f"/ui/questions/{q2['id']}/answer", headers=hub.op_headers(),
-                    data={"csrf": hub.csrf(), "answer": "9090"})
-    [row] = hub.conn().execute("SELECT id FROM prompts").fetchall()
-    p = prompts.get(hub.conn(), row["id"])
-    assert p["status"] == "failed" and [x["status"] for x in p["recipients"]] == ["skipped"]
-    assert [m["body"] for m in private.thread(hub.conn(), c.id)][-1] == f"Answer to your question #{q2['id']}: 9090"
-    for html in (get(hub, f"/ui/questions/{q2['id']}").text, panel(hub, f"question:{q2['id']}").text):
-        assert "helper was offline" in html and "private chat" in html and f'href="/ui/prompts/{p["id"]}"' in html
+    since = last_event(hub)
+    assert answer(hub, q2["id"], "9090").status_code == 303
+    assert_answered_privately(hub, c, q2["id"], "9090", since)
+
+
+@pytest.mark.parametrize("busy_with", ["task_run", "running_prompt", "pending_prompt"])
+def test_answer_to_a_busy_agent_is_a_private_message_not_a_prompt(window, busy_with):
+    hub, a, c, r, t, ap, q = window  # worker (a) is connected
+    from agenthub.hub import prompts
+    conn = hub.conn()
+    with db.transaction(conn):
+        if busy_with == "task_run":
+            conn.execute("INSERT INTO task_runs (task_id, agent_id, started_at) VALUES (?, ?, ?)",
+                         (t["id"], a.id, db.now_iso()))  # a session on its task, still going
+        else:
+            p = prompts.create(conn, target=f"agent:{a.id}", body="earlier work", actor=OPERATOR)
+            if busy_with == "running_prompt":
+                prompts.start(conn, p["id"], store.get_agent(conn, a.id))
+    since = last_event(hub)
+    assert answer(hub, q["id"], "Use 8080").status_code == 303
+    assert_answered_privately(hub, a, q["id"], "Use 8080", since)
+
+
+def test_a_delivered_answer_still_says_so_after_the_agent_is_revoked(window):
+    hub, a, c, r, t, ap, q = window
+    answer(hub, q["id"], "Use 8080")
+    pid = hub.conn().execute("SELECT id FROM prompts").fetchone()[0]
+    hub.set_status(a, "revoked")
+    for html in (get(hub, f"/ui/questions/{q['id']}").text, panel(hub, f"question:{q['id']}").text):
+        assert f'href="/ui/prompts/{pid}"' in html and "not delivered" not in html
+    q2 = hub.client.post("/api/v1/projects/proj/questions", headers=c.headers, json={"question": "Port?"}).json()
+    answer(hub, q2["id"], "9090")
+    hub.set_status(c, "revoked")
+    html = get(hub, f"/ui/questions/{q2['id']}").text
+    assert "as a private message" in html and "not delivered" not in html

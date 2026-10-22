@@ -365,7 +365,7 @@ def build_router() -> APIRouter:
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
         messages = store.recent_messages(conn, project=name, channel="general", limit=50)
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
-                      messages=messages)
+                      messages=messages, prompt=views.prompt_state(conn, f"project:{name}"))
 
     @router.post("/projects/{name}/description")
     def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
@@ -528,7 +528,10 @@ def build_router() -> APIRouter:
     def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> Response:
         if key.startswith("pair-"):  # agent-to-agent chats moved to Chats
             return RedirectResponse(f"/ui/chats/pair/{key}", status_code=308, headers=SECURITY_HEADERS)
-        return render(request, operator, "board_thread.html", conn, nav="board", key=key, **views.board_thread(conn, key))
+        thread = views.board_thread(conn, key)
+        target = views.board_prompt_target(conn, thread["project"], thread["channel"])
+        return render(request, operator, "board_thread.html", conn, nav="board", key=key,
+                      prompt=views.prompt_state(conn, target) if target else None, **thread)
 
     @router.post("/board/{key}")
     def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
@@ -557,7 +560,7 @@ def build_router() -> APIRouter:
         q = questions.get(conn, qid)
         task = tasks.get_task(conn, q["task_id"]) if q["task_id"] else None
         return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task,
-                      answer_prompt=views.answer_prompt(conn, q))
+                      delivery=views.answer_delivery(conn, q))
 
     @router.post("/questions/{qid}/answer")
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
@@ -654,7 +657,7 @@ def build_router() -> APIRouter:
                       usage=tasks.usage(conn, task_id), member_usage=member_usage,
                       messages=store.recent_messages(conn, project=t["project"], channel=f"task-{task_id}", limit=50),
                       moves=operator_moves(t["state"]), agents=agents,
-                      terminal=t["state"] in tasks.TERMINAL)
+                      terminal=t["state"] in tasks.TERMINAL, prompt=views.prompt_state(conn, f"task:{task_id}"))
 
     @router.post("/tasks/{task_id}/description")
     def task_description(task_id: int, request: Request, operator: PostOp, conn: Conn,
@@ -752,7 +755,8 @@ def build_router() -> APIRouter:
     def device_page(node_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         device = views.device(conn, node_id)
         return render(request, operator, "device.html", conn, nav="devices", d=device,
-                      messages=views.device_messages(conn, node_id))
+                      messages=views.device_messages(conn, node_id),
+                      prompt=views.prompt_state(conn, f"device:{node_id}"))
 
     @router.post("/devices/{node_id}/notes")
     def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,

@@ -11,7 +11,7 @@
   <input type="hidden" name="panel" value="{{ item }}">
   {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
   <textarea name="{{ field }}" rows="2" maxlength="{{ maxlength }}" required aria-label="{{ label }}" placeholder="{{ placeholder }}"></textarea>
-  {% if prompt %}{% call send_and_prompt(prompt) %}<button type="submit">{{ button }}</button>{% endcall %}
+  {% if prompt %}{% call send_and_prompt(prompt, button) %}<button type="submit">{{ button }}</button>{% endcall %}
   {% else %}<div class="composer-buttons"><button type="submit">{{ button }}</button></div>{% endif %}
   {% if help %}<p class="small-line">{{ help }}</p>{% endif %}
 </form>

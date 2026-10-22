@@ -1,10 +1,12 @@
 {% from "_macros.html" import chip %}
 {#- How the operator's answer reached the asking agent (question.html and the question panel): `q` and
-    `answer_prompt` (views.answer_prompt), the prompt questions.answer made to carry it. -#}
+    `delivery` (views.answer_delivery). Delivery is checked first, so revoking the agent later doesn't turn a
+    delivered answer into "not delivered". -#}
 {%- set asker = q.agent_name or q.agent_id -%}
-{%- set ap = answer_prompt -%}
+{%- set ap = delivery.prompt -%}
 {%- set r = ap.recipients[0] if ap and ap.recipients else none -%}
-{% if q.agent_status == 'revoked' %}<p class="small-line">Recorded {{ ago(q.answered_at) }}; not delivered because {{ asker }} is revoked.</p>
-{% elif ap and r and r.status != 'skipped' %}<p class="small-line">Answered {{ ago(q.answered_at) }}; sent to {{ asker }} as <a href="/ui/prompts/{{ ap.id }}">prompt #{{ ap.id }}</a> {{ chip(ap.status) }}{% if ap.status == 'failed' %}, which did not run to the end{% else %}, which wakes {{ asker }} to act on it{% endif %}. The answer is also in your private chat with {{ asker }}.</p>
-{% elif ap %}<p class="small-line">Answered {{ ago(q.answered_at) }}. {{ asker }} was {{ 'offline' if r else 'not active' }}, so <a href="/ui/prompts/{{ ap.id }}">prompt #{{ ap.id }}</a> {{ chip(ap.status) }} woke nobody; the answer waits in {{ asker }}'s private chat until it next reads it.</p>
-{% else %}<p class="small-line">Answered {{ ago(q.answered_at) }}; sent to {{ asker }} as a private message.</p>{% endif %}
+{% if ap and r and r.status != 'skipped' %}<p class="small-line">Answered {{ ago(q.answered_at) }}; sent to {{ asker }} as <a href="/ui/prompts/{{ ap.id }}">prompt #{{ ap.id }}</a> {{ chip(ap.status) }}{% if ap.status == 'failed' %}, which did not run to the end{% else %}, which wakes {{ asker }} to act on it{% endif %}. The answer is also in your private chat with {{ asker }}.</p>
+{% elif delivery.private %}<p class="small-line">Answered {{ ago(q.answered_at) }}; sent to {{ asker }} as a private message. {{ asker }} was offline or busy, so it reads it when its current session stops or at its next one.</p>
+{% elif q.agent_status == 'revoked' %}<p class="small-line">Recorded {{ ago(q.answered_at) }}; not delivered because {{ asker }} is revoked.</p>
+{% elif ap %}<p class="small-line">Answered {{ ago(q.answered_at) }}; <a href="/ui/prompts/{{ ap.id }}">prompt #{{ ap.id }}</a> {{ chip(ap.status) }} woke nobody.</p>
+{% else %}<p class="small-line">Answered {{ ago(q.answered_at) }}.</p>{% endif %}

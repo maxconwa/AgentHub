@@ -94,7 +94,7 @@
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="messenger" value="{{ key }}">
   <textarea name="body" rows="2" maxlength="4000" required aria-label="{{ 'Message to ' ~ title if kind == 'agent' else 'Post to ' ~ title }}" placeholder="{% if kind == 'agent' %}Write to {{ title }}…{% else %}Post a note…{% endif %}"></textarea>
-  {% if prompt %}{% call send_and_prompt(prompt) %}<button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button>{% endcall %}
+  {% if prompt %}{% call send_and_prompt(prompt, 'Send' if kind == 'agent' else 'Post') %}<button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button>{% endcall %}
   {% else %}<div class="composer-buttons"><button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button></div>{% endif %}
   <p class="small-line">{% if kind == 'agent' %}Private: only you and {{ title }} see it.{% elif kind == 'device' %}Only the agents on this machine and you see it.{% else %}Every agent in the project can read it.{% endif %}</p>
 </form>

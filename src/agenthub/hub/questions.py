@@ -1,10 +1,12 @@
 """Questions an agent asks the operator (the ``ask_operator`` tool).
 
 A pending question waits in the approval queue; the operator's answer goes back
-to the asking agent as a single prompt (``Answer to your question #N: …``), so an
-idle agent wakes on it, and the prompt puts it in the agent's private chat. If the
-agent isn't connected the prompt wakes nobody (its recipient is ``skipped``) and the
-answer is sent as a plain private message instead. Unlike private chat text,
+to the asking agent. An idle agent (connected, with no task run and no prompt open) gets
+it as a single prompt (``Answer to your question #N: …``), so it wakes on it now; the
+prompt also puts it in the agent's private chat. Any other agent gets it as a plain
+private message, which its Stop hook or its next session delivers: an offline agent
+isn't woken (and the operator gets no "nobody was online" push), and a busy one isn't
+given a second session alongside the one that asked. Unlike private chat text,
 questions are not secret, but ``question.*`` events carry ids only (the page
 reads the table), the same as private messages.
 """
@@ -92,17 +94,30 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
         raise Conflict(f"question {qid} is already {q['status']}")
     events.emit(conn, type="question.answered", actor=actor, project=q["project"], payload=_payload(q))
     agent = get_agent(conn, q["agent_id"])
-    if agent is not None and agent.status != "revoked":  # a revoked agent's chat is read-only
+    if agent is None or agent.status == "revoked":  # a revoked agent's chat is read-only
+        return get(conn, qid)
+    text = _answer_prefix(qid) + answer
+    if _idle(conn, agent):
         from agenthub.hub import prompts  # imported here: prompts imports views, which imports this module
 
-        text = _answer_prefix(qid) + answer
-        p = prompts.create(conn, target=f"agent:{agent.id}", body=text, actor=actor)
-        if all(r["status"] == "skipped" for r in p["recipients"]):  # nobody woke: the chat still gets the answer
-            if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
-                note = f"… [truncated; full answer: call get_question with question_id={qid}]"
-                text = text[: private.MAX_BODY_CHARS - len(note)] + note
-            private.send(conn, agent.id, author=actor, body=text)
+        prompts.create(conn, target=f"agent:{agent.id}", body=text, actor=actor)
+    else:
+        if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
+            note = f"… [truncated; full answer: call get_question with question_id={qid}]"
+            text = text[: private.MAX_BODY_CHARS - len(note)] + note
+        private.send(conn, agent.id, author=actor, body=text)
     return get(conn, qid)
+
+
+def _idle(conn: sqlite3.Connection, agent: Agent) -> bool:
+    """Whether a prompt would wake ``agent`` now: active and connected, with no task run going and no prompt
+    pending or running (a pending one runs next, and its session reads the answer from the inbox anyway)."""
+    row = conn.execute(
+        "SELECT a.status = 'active' AND a.connected = 1 "
+        "AND NOT EXISTS (SELECT 1 FROM task_runs WHERE agent_id = a.id AND ended_at IS NULL) "
+        "AND NOT EXISTS (SELECT 1 FROM prompt_recipients WHERE agent_id = a.id AND status IN ('pending', 'running')) "
+        "FROM agents a WHERE a.id = ?", (agent.id,)).fetchone()
+    return bool(row and row[0])
 
 
 def _answer_prefix(qid: int) -> str:
@@ -112,7 +127,7 @@ def _answer_prefix(qid: int) -> str:
 def answer_prompt_id(conn: sqlite3.Connection, q: dict[str, Any]) -> int | None:
     """The prompt :func:`answer` made to carry ``q``'s answer: the first prompt to the asking agent, by the
     answering operator, at or after the answer, whose text starts with the answer's prefix. None if there is
-    none (unanswered, answered before prompts existed, or the agent was revoked)."""
+    none (unanswered, or the answer went as a private message)."""
     if q["status"] != "answered" or not q["answered_at"]:
         return None
     prefix = _answer_prefix(q["id"])
@@ -121,6 +136,19 @@ def answer_prompt_id(conn: sqlite3.Connection, q: dict[str, Any]) -> int | None:
         "ORDER BY id LIMIT 1", (f"agent:{q['agent_id']}", q["answered_by"], q["answered_at"], len(prefix), prefix),
     ).fetchone()
     return row["id"] if row else None
+
+
+def answer_delivery(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, Any]:
+    """How ``q``'s answer reached its agent: ``{prompt_id, private}``, the prompt :func:`answer` made (or None)
+    and whether it sent the answer as a plain private message (the answer's prefix, from the answering operator,
+    at or after the answer)."""
+    private_sent = False
+    if q["status"] == "answered" and q["answered_at"]:
+        prefix = _answer_prefix(q["id"])
+        private_sent = conn.execute(
+            "SELECT 1 FROM private_messages WHERE agent_id = ? AND author = ? AND ts >= ? AND substr(body, 1, ?) = ?",
+            (q["agent_id"], q["answered_by"], q["answered_at"], len(prefix), prefix)).fetchone() is not None
+    return {"prompt_id": answer_prompt_id(conn, q), "private": private_sent}
 
 
 def withdraw(conn: sqlite3.Connection, qid: int, agent: Agent) -> dict[str, Any]:

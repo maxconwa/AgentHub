@@ -17,7 +17,7 @@
     </fieldset>
     {% endif %}
     <label>Message <textarea name="body" rows="3" maxlength="4000" required autofocus placeholder="Write your message…"></textarea></label>
-    {% call send_and_prompt(prompt) %}
+    {% call send_and_prompt(prompt, 'Send' if agents else 'Post') %}
       {%- if agents %}<button type="submit" name="mode" value="send">Send</button>{% endif %}
       {%- if board %}<button type="submit" name="mode" value="board">Post on the board instead</button>{% endif %}
     {%- endcall %}
