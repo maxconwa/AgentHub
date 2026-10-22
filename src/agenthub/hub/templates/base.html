@@ -1,7 +1,9 @@
 {#- A page opts into a polled live region with a top-level `{% set has_live = true %}` and a `live` block (no
-    forms in it). A poll of that region (HX-Target: live) gets just the section (`live_only`), not the whole page. -#}
+    forms in it). A poll of that region (HX-Target: live) gets just the section (`live_only`), not the whole page.
+    hx-disinherit keeps the section's select/target/swap off the controls inside it (a Message button's compose
+    sheet would otherwise be filtered to #live, i.e. nothing); not "*", which would also cut <body>'s CSRF header. -#}
 {% macro live_section() -%}
-<section id="live" hx-get="{{ live_url }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s">
+<section id="live" hx-get="{{ live_url }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s" hx-disinherit="hx-select hx-target hx-swap">
   {{ self.live() }}
 </section>
 {%- endmacro %}

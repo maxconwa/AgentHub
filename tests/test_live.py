@@ -198,3 +198,62 @@ def test_task_page_member_blocks_stack(site):
 def test_new_project_form_says_how_agents_get_in(hub):
     html = hub.client.get("/ui/panel?item=new:project", headers=hub.op_headers()).text
     assert "through its tasks" not in html and "allowed projects" in html
+
+
+# --- htmx attribute inheritance --------------------------------------------------------------
+
+INHERITED = ("hx-select", "hx-target", "hx-swap")  # what htmx would pass from the live section to its children
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+def htmx_controls_in_live(html):
+    """Each element inside #live that issues an htmx request, with the hx-select/target/swap it would resolve
+    (its own value, else the nearest ancestor's, stopping at an ancestor whose hx-disinherit names it)."""
+    from html.parser import HTMLParser
+
+    found = []
+
+    class P(HTMLParser):
+        stack: list[dict] = []
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            in_live = any(e.get("id") == "live" for e in self.stack)
+            if in_live and ("hx-get" in a or "hx-post" in a):
+                resolved = {}
+                for name in INHERITED:
+                    value = a.get(name)
+                    if value is None:
+                        for anc in reversed(self.stack):
+                            dis = (anc.get("hx-disinherit") or "").split()
+                            if "*" in dis or name in dis:
+                                break
+                            if name in anc:
+                                value = anc[name]
+                                break
+                    resolved[name] = value
+                found.append((tag, a.get("hx-get") or a.get("hx-post"), resolved))
+            if tag not in VOID:
+                self.stack.append(a)
+
+        def handle_endtag(self, tag):
+            if tag not in VOID and self.stack:
+                self.stack.pop()
+
+    P().feed(html)
+    return found
+
+
+def test_live_region_does_not_leak_its_htmx_attributes(site):
+    hub, a, ids = site
+    seen = 0
+    for path in live_pages(ids, a):
+        html = get(hub, path).text
+        section = re.search(r'<section id="live"[^>]*>', html).group(0)
+        assert 'hx-disinherit="hx-select hx-target hx-swap"' in section, path
+        assert "hx-headers" not in section  # the CSRF header still comes down from <body>
+        for tag, url, resolved in htmx_controls_in_live(html):
+            seen += 1
+            assert resolved["hx-select"] is None, (path, url)  # a Message button gets the whole compose sheet
+            assert resolved["hx-target"] != "#live" and resolved["hx-swap"] != "outerHTML", (path, url)
+    assert seen >= 6  # Message buttons on the pages above

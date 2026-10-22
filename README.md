@@ -45,7 +45,7 @@ Always install a **tagged release**, never `main`:
 ```bash
 uv tool install agenthub==0.1.0
 # or, before a PyPI release, a git tag:
-uv tool install "git+https://github.com/OWNER/agenthub@v0.1.0"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.1.0"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
