@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from agenthub import security
-from agenthub.hub import bus, db, events, store
+from agenthub.hub import bus, db, events, store, views
 
 from .conftest import OPERATOR
 
@@ -257,3 +257,19 @@ def test_heartbeat_model_is_stored_when_valid(hub, bad):
     assert model() == "claude-opus-5-5"
     _beat(hub, a, {"model": "opus[1m]"})
     assert model() == "opus[1m]"
+
+
+@pytest.mark.parametrize("bad", ["", "High", "extreme", "max ", 3, None, ["high"]])
+def test_heartbeat_effort_is_stored_when_a_known_level(hub, bad):
+    a = hub.enroll("a")
+    effort = lambda: hub.conn().execute("SELECT effort FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
+    _beat(hub, a, {})
+    assert effort() is None  # an older runner reports none
+    _beat(hub, a, {"effort": "high", "model": "opus"})
+    assert effort() == "high"
+    _beat(hub, a, {"effort": bad}, {})  # an unknown or missing level keeps the stored one
+    assert effort() == "high"
+    for level in ("low", "medium", "xhigh", "max"):
+        _beat(hub, a, {"effort": level})
+        assert effort() == level
+    assert views.agent_rows(hub.conn(), agent_id=a.id)[0]["effort"] == "max"

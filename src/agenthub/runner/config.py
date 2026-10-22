@@ -98,3 +98,21 @@ def configured_model(cfg: RunnerConfig) -> str | None:
     except (OSError, ValueError, AttributeError):
         model = None
     return model if isinstance(model, str) and model else os.environ.get("ANTHROPIC_MODEL") or None
+
+
+def configured_effort(cfg: RunnerConfig) -> str | None:
+    """The reasoning effort this runner's sessions will use, as far as it can tell before one runs: ``--effort`` in
+    ``extra_args``, else ``effortLevel`` in this account's Claude Code user settings, else
+    ``$CLAUDE_CODE_EFFORT_LEVEL``. None means Claude Code's default for the model."""
+    args = cfg.extra_args
+    for i, arg in enumerate(args):
+        if arg == "--effort" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--effort="):
+            return arg.split("=", 1)[1]
+    settings = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    try:
+        effort = json.loads(settings.read_text()).get("effortLevel")
+    except (OSError, ValueError, AttributeError):
+        effort = None
+    return effort if isinstance(effort, str) and effort else os.environ.get("CLAUDE_CODE_EFFORT_LEVEL") or None

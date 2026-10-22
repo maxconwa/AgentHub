@@ -1914,6 +1914,18 @@ def test_agent_page_and_panel_show_the_reported_model(busy):
     assert "claude-opus-5-5" in panel(hub, f"agent:{a.id}").text
 
 
+def test_agent_page_and_panel_show_the_reported_effort(busy):
+    hub, a, b, ap, t = busy
+    html = get(hub, f"/ui/agents/{a.id}").text
+    assert "<dt>Effort" in html and html.count("Not reported yet") == 2  # neither model nor effort yet
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET effort = 'xhigh' WHERE id = ?", (a.id,))
+    assert "<dd>xhigh</dd>" in get(hub, f"/ui/agents/{a.id}").text
+    side = panel(hub, f"agent:{a.id}").text
+    assert "<dt>Effort</dt><dd>xhigh " in side
+
+
 # --- logo ---------------------------------------------------------------------------
 
 

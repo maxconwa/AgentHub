@@ -49,7 +49,7 @@ from websockets.asyncio.client import connect as ws_connect
 from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import AgentConfig
-from agenthub.runner.config import RunnerConfig, configured_model
+from agenthub.runner.config import RunnerConfig, configured_effort, configured_model
 from agenthub.runner.prompts import PromptRunner, Slots
 from agenthub.runner.session import Session, SessionResult, build_command
 
@@ -193,6 +193,7 @@ class Runner:
         self._waited_out: dict[int, datetime] = {}
         # The model the latest session ran on (its init line); until one has run, the configured model is reported.
         self.last_model: str | None = None
+        self.last_effort: str | None = None  # likewise for the reasoning effort
         # Working directories of the sessions running now, oldest first (dicts keep insertion order).
         self._session_dirs: dict[Session, str] = {}
         self.prompts = PromptRunner(self)
@@ -243,8 +244,10 @@ class Runner:
         runs prompts (``"prompts": 1``; without it the hub doesn't wake this agent with prompts)."""
         dirs = list(self._session_dirs.values())
         model = self.last_model or configured_model(self.cfg)
+        effort = self.last_effort or configured_effort(self.cfg)
         return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
-                "current_dir": dirs[-1] if dirs else None, "prompts": 1, **({"model": model} if model else {})}
+                "current_dir": dirs[-1] if dirs else None, "prompts": 1, **({"model": model} if model else {}),
+                **({"effort": effort} if effort else {})}
 
     async def _heartbeat(self, ws) -> None:
         while True:
@@ -477,6 +480,7 @@ class Runner:
             try:
                 result = await session.run()
                 self.last_model = session.model or self.last_model
+                self.last_effort = session.effort or self.last_effort
             finally:
                 flusher.cancel()
                 self.work[task["id"]].session = None

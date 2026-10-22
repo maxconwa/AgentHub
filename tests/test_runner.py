@@ -1499,3 +1499,33 @@ def test_session_init_line_carries_the_model():
     line = '{"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5"}'
     assert parse_line(line) == [("session", "s1"), ("model", "claude-opus-5-5")]
     assert parse_line('{"type": "system", "subtype": "init", "session_id": "s1"}') == [("session", "s1")]
+    line = '{"type": "system", "subtype": "init", "session_id": "s1", "model": "opus", "effort": "xhigh"}'
+    assert parse_line(line) == [("session", "s1"), ("model", "opus"), ("effort", "xhigh")]
+    line = '{"type": "system", "subtype": "init", "session_id": "s1", "effort": ""}'
+    assert parse_line(line) == [("session", "s1")]
+
+
+def test_configured_effort_before_any_session(tmp_path, monkeypatch):
+    from agenthub.runner.config import RunnerConfig, configured_effort
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL", raising=False)
+    assert configured_effort(RunnerConfig()) is None  # Claude Code's default for the model
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
+    assert configured_effort(RunnerConfig()) == "medium"
+    (tmp_path / "claude").mkdir()
+    (tmp_path / "claude" / "settings.json").write_text('{"effortLevel": "high"}')
+    assert configured_effort(RunnerConfig()) == "high"
+    assert configured_effort(RunnerConfig(extra_args=["--effort", "max"])) == "max"
+    assert configured_effort(RunnerConfig(extra_args=["--verbose", "--effort=low"])) == "low"
+    (tmp_path / "claude" / "settings.json").write_text('["not", "a", "dict"]')
+    assert configured_effort(RunnerConfig()) == "medium"
+
+
+async def test_heartbeat_frame_reports_the_effort(live_hub, fake_claude, tmp_path, monkeypatch):
+    runner, _ = runner_for(live_hub, tmp_path, fake_claude[0])
+    assert "effort" not in runner._heartbeat_frame()
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")
+    assert runner._heartbeat_frame()["effort"] == "high"  # the configured effort until a session reports one
+    runner.last_effort = "xhigh"
+    assert runner._heartbeat_frame()["effort"] == "xhigh"

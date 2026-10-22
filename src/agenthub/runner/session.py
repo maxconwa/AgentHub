@@ -194,8 +194,12 @@ def parse_line(line: str) -> list[tuple[str, Any]]:
         return []
     mtype = msg.get("type")
     if mtype == "system" and msg.get("subtype") == "init" and msg.get("session_id"):
-        model = msg.get("model")
-        return [("session", msg["session_id"])] + ([("model", model)] if isinstance(model, str) and model else [])
+        items: list[tuple[str, Any]] = [("session", msg["session_id"])]
+        for key in ("model", "effort"):
+            value = msg.get(key)
+            if isinstance(value, str) and value:
+                items.append((key, value))
+        return items
     if mtype == "system" and msg.get("subtype") == "permission_denied":
         return [("progress", {"kind": "denied", "text": str(msg.get("tool_name") or msg)[:TEXT_SNIPPET]})]
     if mtype == "assistant":
@@ -273,6 +277,7 @@ class Session:
         self._proc: asyncio.subprocess.Process | None = None
         self._stopped = False
         self.model: str | None = None  # from the session's init line, once it has started
+        self.effort: str | None = None  # likewise, if the init line reports one
 
     async def run(self) -> SessionResult:
         env = session_env(self.env)
@@ -301,6 +306,8 @@ class Session:
                         await self.on_session(value)
                     elif kind == "model":
                         self.model = value
+                    elif kind == "effort":
+                        self.effort = value
                     elif kind == "progress":
                         await self.on_progress(value)
                     elif kind == "result":

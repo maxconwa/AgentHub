@@ -387,6 +387,10 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE agents ADD COLUMN model TEXT;
     """,
+    # 19: the reasoning effort the agent's runner reports (low/medium/high/xhigh/max), shown next to the model
+    """
+    ALTER TABLE agents ADD COLUMN effort TEXT;
+    """,
 ]
 
 

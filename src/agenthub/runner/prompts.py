@@ -424,6 +424,7 @@ class PromptRunner:
                 return await session.run()
             finally:
                 self.runner.last_model = session.model or self.runner.last_model
+                self.runner.last_effort = session.effort or self.runner.last_effort
         finally:
             self.sessions.pop(pid, None)
             self.runner._session_dirs.pop(session, None)
