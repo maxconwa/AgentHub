@@ -1,6 +1,6 @@
 """agenthub: a secure coordination hub for Claude Code agents."""
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 
 def main() -> None:

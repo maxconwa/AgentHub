@@ -43,7 +43,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.2"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.3"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
@@ -163,7 +163,7 @@ As the chosen account:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.2"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.3"
 claude                                        # log Claude Code in once as this account
 ```
 
