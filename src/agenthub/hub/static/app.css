@@ -408,3 +408,6 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .md .math.inline .katex { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; }
 .math .katex-display { margin: 0.3em 0; }
 .decision-note { margin: 4px 0 8px; padding-left: 10px; border-left: 3px solid var(--line); }
+
+/* On decision forms: operator actions are a human's, even where an agent machine can reach the dashboard. */
+.human-only { color: var(--warn); font-size: 0.85rem; margin: 6px 0; }

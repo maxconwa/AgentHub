@@ -68,6 +68,11 @@ def default_rules(protected: list[str]) -> list[Rule]:
              r"\b(?:checkout|switch)\s+" + prot + _NOT_NAME + r"[\s\S]*" + _GIT + r"merge(?![\w-])",
              f"merge into {'/'.join(protected)}"),
         Rule("gh-pr-merge", r"\bgh\s+pr\s+merge\b", "merging a pull request"),
+        # The dashboard is the human operator's; an agent fetching it may be about to act as them (possible
+        # from machines in the hub's operator_devices). Matches a tailnet name or address followed by /ui.
+        Rule("hub-dashboard",
+             r"(?:\.ts\.net|\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}|\bfd7a:115c:a1e0:[\w:]*\]?)(?::\d+)?/ui\b",
+             "fetching the hub's operator dashboard (it is for humans)", ignore_case=True),
     ]
 
 
@@ -88,14 +93,16 @@ def default_never_rules(protected: list[str]) -> list[Rule]:
     ]
 
 
-def default_deny_rules(protected: list[str]) -> list[str]:
+def default_deny_rules(protected: list[str], hub_host: str | None = None) -> list[str]:
     """Claude Code permissions.deny entries mirroring the never-list.
 
     Syntax per code.claude.com/docs/en/permissions (fetched 2026-10-21): a
     trailing `` *`` also matches the bare command. Deny rules beat a hook's
-    "allow", so only never-allowed commands belong here.
+    "allow", so only never-allowed commands belong here. With ``hub_host``,
+    WebFetch of the hub is denied too: agents reach it only through the MCP
+    server, and its web pages are the human operator's.
     """
-    rules = []
+    rules = [f"WebFetch(domain:{hub_host})"] if hub_host else []
     for target in ("/", "~", "~/", "$HOME"):
         for flags in ("-rf", "-fr", "-Rf", "-r -f"):
             rules.append(f"Bash(rm {flags} {target})")

@@ -225,7 +225,8 @@ def system_prompt(agent_name: str, p: dict[str, Any]) -> str:
         f"You are the agenthub agent '{agent_name}', running headless (no human at this terminal). The operator "
         f"woke you with prompt #{p['id']}{others}; work on that prompt only.\n"
         "Coordinate through the agenthub MCP tools: read_inbox/post for messages, ask_agent for direct "
-        "questions, board_get/board_put for shared notes.\n" + permissions + untrusted.NOTICE
+        "questions, board_get/board_put for shared notes.\n" + permissions + untrusted.NOTICE + "\n"
+        + untrusted.HUMAN_ONLY
     )
 
 

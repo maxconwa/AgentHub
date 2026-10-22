@@ -17,6 +17,13 @@ never get identity headers. We do not take the header on faith alone:
      active), so a compromised agent machine owned by the operator still
      cannot approve its own requests.
 
+The hub config's ``operator_devices`` (opt-in) replaces 3-5 for the nodes it
+lists: a request from one of those nodes, tagged or not, with an agent enrolled
+or not, is the operator login it maps to. Tagged nodes carry no identity
+header, so the mapping is the identity, and every local process on such a
+machine without an agent token, agents included, can act as the operator.
+Step 2 and the CSRF and same-origin checks still apply.
+
 State-changing requests also need a CSRF token (HMAC of the login with a
 per-hub secret) and must not be cross-site (Sec-Fetch-Site / Origin), because
 identity headers are ambient like cookies: any page the operator's browser
@@ -79,7 +86,7 @@ async def authenticate_operator(conn: HTTPConnection, db: sqlite3.Connection) ->
     if "authorization" in conn.headers:
         raise _forbidden("agent credentials are not accepted on operator endpoints")
     login = conn.headers.get(LOGIN_HEADER, "").strip()
-    if not login:
+    if not login and not hub.config.operator_devices:
         raise _forbidden("no Tailscale user identity: open the dashboard from a user-owned device over the tailnet")
     peer = conn.client.host if conn.client else None
     try:
@@ -87,6 +94,13 @@ async def authenticate_operator(conn: HTTPConnection, db: sqlite3.Connection) ->
         who = await hub.whois.lookup(ip)
     except IdentityError as exc:
         raise _forbidden(f"tailnet identity check failed: {exc}") from exc
+    device_login = hub.config.operator_devices.get(who.device.node_id)
+    if device_login is not None:
+        if device_login not in hub.config.operators:
+            raise _forbidden(f"{device_login} is not an operator of this hub")
+        return Operator(login=device_login, device=who.device)
+    if not login:
+        raise _forbidden("no Tailscale user identity: open the dashboard from a user-owned device over the tailnet")
     if who.tags:
         raise _forbidden("tagged devices cannot act as an operator")
     if who.login != login:

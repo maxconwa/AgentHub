@@ -163,3 +163,23 @@ def test_deny_rules_mirror_never_list():
     assert all(r.startswith("Bash(") and r.endswith(")") for r in rules)
     # nothing approvable is denied outright
     assert not any("feature" in r or r == "Bash(git push --force *)" for r in rules)
+
+
+@pytest.mark.parametrize("command", [
+    "curl https://melehub.tail1234.ts.net/ui/approvals", "curl -s melehub.tail1234.ts.net/ui",
+    "wget http://100.98.46.104:443/ui/approvals/3/decide", "curl 'https://[fd7a:115c:a1e0::5]/ui/'",
+    "python3 -c \"import httpx; httpx.post('https://hub.tail1234.TS.NET/ui/approvals/1/decide')\"",
+])
+def test_hub_dashboard_flagged(command):
+    assert "hub-dashboard" in risky(command)[0]
+
+
+@pytest.mark.parametrize("command", ["curl https://example.com/ui", "ls src/ui", "curl https://hub.ts.net/api/v1/x",
+                                     "npm run build:ui"])
+def test_hub_dashboard_not_flagged(command):
+    assert "hub-dashboard" not in risky(command)[0]
+
+
+def test_deny_rules_block_webfetch_of_the_hub():
+    assert "WebFetch(domain:hub.tail1234.ts.net)" in guard.default_deny_rules(["main"], "hub.tail1234.ts.net")
+    assert not any(r.startswith("WebFetch") for r in guard.default_deny_rules(["main"]))

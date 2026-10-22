@@ -36,6 +36,7 @@ To ask the operator a question only they can answer, use `ask_operator`; the ans
 Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
 When you get a prompt with several recipients, discuss it in its thread, then `claim_share` your part or `decline_share`; `prompt_status` shows who else is on it.
 {untrusted.NOTICE}
+{untrusted.HUMAN_ONLY}
 """
 
 

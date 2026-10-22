@@ -10,7 +10,7 @@ protected_branches = ["main", "master"]
 shared_branches = ["main", "master", "develop", "release/*"]
 
 # Built-in rules to turn off, by id: rm-recursive-or-force, sql-drop-truncate,
-# git-push-force, git-push-protected, git-merge-into-protected, gh-pr-merge
+# git-push-force, git-push-protected, git-merge-into-protected, gh-pr-merge, hub-dashboard
 disabled_rules = []
 
 # How many times in a row the Stop hook may keep an agent working because of

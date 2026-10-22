@@ -57,3 +57,16 @@ def test_cli_add_and_remove_agent(tmp_path):
     c2 = runner.invoke(app, ["hub", "tasks", "create", "alpha", "U", "--assignee", "rev", "--role", "Builder"])
     assert c2.exit_code == 0, c2.output
     assert tasks.get_task(conn, 2)["agents"][0]["role"] == "Builder"
+
+
+def test_hub_config_round_trips_operator_devices(tmp_path):
+    import pytest
+
+    from agenthub.config import HubConfig
+
+    cfg = HubConfig(operators=["op@example.com"], operator_devices={"nABC123": "op@example.com"})
+    path = cfg.save(tmp_path / "hub.toml")
+    assert HubConfig.load(path).operator_devices == {"nABC123": "op@example.com"}
+    HubConfig(operators=["op@example.com"], operator_devices={"nX": "other@example.com"}).save(path)
+    with pytest.raises(ValueError, match="not in operators"):
+        HubConfig.load(path)

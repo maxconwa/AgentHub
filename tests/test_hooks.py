@@ -261,3 +261,14 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
 def test_hook_command_quotes_paths(tmp_path):
     cmd = install.hook_command("/opt/my tools/agenthub", "stop", tmp_path / "dir with space")
     assert "'/opt/my tools/agenthub' hook stop" in cmd and "'" in cmd.split()[0] + cmd
+
+
+def test_install_denies_webfetch_of_the_enrolled_hub(tmp_path, monkeypatch):
+    from agenthub.config import AgentConfig
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    cfg_dir = tmp_path / "cfg"
+    AgentConfig(hub_url="https://hub.tail1234.ts.net", agent_id="a1", name="w",
+                token_file=str(cfg_dir / "token")).save(cfg_dir / "agent.toml")
+    path = install.install("user", exe="/opt/agenthub/bin/agenthub", config_dir=cfg_dir)
+    assert "WebFetch(domain:hub.tail1234.ts.net)" in json.loads(path.read_text())["permissions"]["deny"]

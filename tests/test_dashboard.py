@@ -411,3 +411,33 @@ def test_pages_show_each_agents_avatar_in_its_pose(world):
         assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in text and 'status-offline">offline</span>' in text, page
     hub.set_status(agent, "revoked")
     assert f"/ui/avatars/{v}/{s}/" not in hub.client.get("/ui/agents", headers=hub.op_headers()).text
+
+
+def test_operator_device_acts_as_operator_even_tagged_with_an_agent(world):
+    """Opt-in operator_devices: the listed agent machine is the operator (no identity header: it is tagged)."""
+    hub, agent, ids = world
+    node_id = ids["node_id"]
+    machine = {"x-forwarded-for": agent.ip, "sec-fetch-site": "same-origin"}
+    assert hub.client.get("/ui/approvals", headers=machine).status_code == 403
+    hub.state.config.operator_devices = {node_id: OP_LOGIN}
+    listing = hub.client.get("/ui/approvals", headers=machine)
+    assert listing.status_code == 200 and "For the human operator only" in hub.client.get(
+        f"/ui/approvals/{ids['approval_id']}", headers=machine).text
+    # The CSRF and same-origin checks still apply.
+    r = hub.client.post(f"/ui/approvals/{ids['approval_id']}/decide", headers={**machine, "origin": "https://evil.example"},
+                        data={"csrf": hub.csrf(), "decision": "approve"}, follow_redirects=False)
+    assert r.status_code == 403
+    r = hub.client.post(f"/ui/approvals/{ids['approval_id']}/decide", headers=machine,
+                        data={"csrf": hub.csrf(), "decision": "approve"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert approvals.get(hub.conn(), ids["approval_id"])["decided_by"] == f"human:{OP_LOGIN}"
+    # An agent token is still refused there, and other tagged machines stay refused.
+    assert hub.client.get("/ui/approvals", headers=agent.headers).status_code == 403
+    other = hub.enroll("other")
+    assert hub.client.get("/ui/approvals", headers={"x-forwarded-for": other.ip}).status_code == 403
+
+
+def test_operator_device_must_map_to_an_operator(world):
+    hub, agent, ids = world
+    hub.state.config.operator_devices = {ids["node_id"]: "visitor@example.com"}
+    assert hub.client.get("/ui/approvals", headers={"x-forwarded-for": agent.ip}).status_code == 403

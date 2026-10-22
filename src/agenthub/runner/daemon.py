@@ -132,7 +132,7 @@ def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any]) -> 
         + "Coordinate through the agenthub MCP tools: read_inbox/post for messages, ask_agent for direct "
         "questions, board_get/board_put for shared notes, announce intents before large edits if available.\n"
         "Risky shell commands and tools outside your permissions need operator approval: follow the "
-        "instructions the hooks give you.\n" + untrusted.NOTICE
+        "instructions the hooks give you.\n" + untrusted.NOTICE + "\n" + untrusted.HUMAN_ONLY
     )
 
 

@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -21,12 +22,16 @@ agents_app = typer.Typer(help="Manage enrolled agents.", no_args_is_help=True)
 project_app = typer.Typer(help="Manage projects.", no_args_is_help=True)
 approvals_app = typer.Typer(help="Review and decide approvals.", no_args_is_help=True)
 tasks_app = typer.Typer(help="Create, assign, and move tasks as the operator.", no_args_is_help=True)
+operator_devices_app = typer.Typer(
+    help="Agent machines that count as the operator (opt-in; weakens separation of powers).", no_args_is_help=True
+)
 hook_app = typer.Typer(help="Claude Code hooks (invoked by Claude Code) and their installation.", no_args_is_help=True)
 app.add_typer(hub_app, name="hub")
 hub_app.add_typer(agents_app, name="agents")
 hub_app.add_typer(project_app, name="project")
 hub_app.add_typer(approvals_app, name="approvals")
 hub_app.add_typer(tasks_app, name="tasks")
+hub_app.add_typer(operator_devices_app, name="operator-devices")
 app.add_typer(hook_app, name="hook")
 
 
@@ -240,6 +245,81 @@ def agents_projects(agent: str, projects: str) -> None:
     except store.StoreError as exc:
         _fail(str(exc))
     typer.echo(f"{a.name}: {', '.join(a.allowed_projects) or '(none)'}")
+
+
+def _hub_config():
+    from agenthub.config import HubConfig
+
+    try:
+        return HubConfig.load()
+    except FileNotFoundError:
+        _fail(f"no hub config at {paths.hub_config_path()}; run `agenthub hub init` first")
+    except ValueError as exc:
+        _fail(str(exc))
+
+
+def _tailnet_nodes(tailscale: str) -> dict[str, str]:
+    """{StableID: short device name} for this node and the peers it can see."""
+    proc = subprocess.run([tailscale, "status", "--json"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        _fail(f"`tailscale status` failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    data = json.loads(proc.stdout)
+    nodes = [data.get("Self") or {}, *(data.get("Peer") or {}).values()]
+    return {n["ID"]: (n.get("DNSName") or n.get("HostName") or "").split(".")[0] for n in nodes if n.get("ID")}
+
+
+_RESTART = "restart the hub to apply: systemctl --user restart agenthub-hub"
+
+
+@operator_devices_app.command("list")
+def operator_devices_list() -> None:
+    cfg = _hub_config()
+    names = _tailnet_nodes(cfg.tailscale_bin) if cfg.operator_devices else {}
+    for node, login in cfg.operator_devices.items():
+        typer.echo(f"{names.get(node, '?'):<24} {node:<20} {login}")
+
+
+@operator_devices_app.command("add")
+def operator_devices_add(
+    device: Annotated[str, typer.Argument(help="Tailscale device name (e.g. littleboy) or node StableID.")],
+    login: Annotated[str | None, typer.Option(help="Operator login it acts as (default: the only operator).")] = None,
+) -> None:
+    """Let requests from DEVICE act as the operator, even though it is tagged or runs an agent.
+
+    Any process on that machine that sends no agent token, the agents included, can then approve,
+    answer, and prompt. Agents are told the dashboard is for humans, and the guard asks you before
+    one of them fetches it, but neither is a hard boundary.
+    """
+    cfg = _hub_config()
+    if login is None:
+        if len(cfg.operators) != 1:
+            _fail(f"pass --login, one of: {', '.join(cfg.operators) or '(no operators configured)'}")
+        login = cfg.operators[0]
+    if login not in cfg.operators:
+        _fail(f"{login} is not in operators")
+    nodes = _tailnet_nodes(cfg.tailscale_bin)
+    matches = [nid for nid, name in nodes.items() if device in (nid, name)]
+    if len(matches) != 1:
+        _fail(f"no single tailnet device named {device!r}" if not matches
+              else f"{device!r} matches several devices; pass its StableID: {', '.join(matches)}")
+    cfg.operator_devices[matches[0]] = login
+    path = cfg.save()
+    typer.secho(f"{nodes[matches[0]]} ({matches[0]}) now acts as {login}, agents on it included; "
+                f"saved to {path}", fg="yellow")
+    typer.echo(_RESTART)
+
+
+@operator_devices_app.command("remove")
+def operator_devices_remove(device: str) -> None:
+    cfg = _hub_config()
+    names = _tailnet_nodes(cfg.tailscale_bin)
+    matches = [nid for nid in cfg.operator_devices if device in (nid, names.get(nid))]
+    if not matches:
+        _fail(f"{device!r} is not an operator device")
+    for nid in matches:
+        del cfg.operator_devices[nid]
+    cfg.save()
+    typer.echo(f"removed {device}; {_RESTART}")
 
 
 @project_app.command("add")

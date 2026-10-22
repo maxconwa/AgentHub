@@ -1635,3 +1635,11 @@ async def test_transient_hub_error_before_a_prompt_starts_is_retried(live_hub, f
         await stop(main)
     assert failures == [pid, pid, pid] and len(calls()) == 1
     assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
+
+
+def test_system_prompt_says_operator_actions_are_for_humans():
+    from agenthub import untrusted
+    from agenthub.mcp_server import INSTRUCTIONS
+
+    prompt = system_prompt("w", {"id": 7, "project": "p"}, {"role": "", "stage": "works"})
+    assert untrusted.HUMAN_ONLY in prompt and untrusted.HUMAN_ONLY in INSTRUCTIONS

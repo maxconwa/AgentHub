@@ -43,7 +43,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.1"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.0"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
@@ -162,7 +162,7 @@ As the chosen account:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.2.1"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.0"
 claude                                        # log Claude Code in once as this account
 ```
 
@@ -231,6 +231,36 @@ sessions from it. So:
   no key is needed, so list only the dedicated agent account in `users`. If you
   also list your own account, any agent can open a shell as you on every other
   agent machine.
+
+### Operating from agent machines (opt-in)
+
+If you work at your agent machines alongside the agents, you can let chosen
+ones use the dashboard as you, even though they're tagged and run agents:
+
+```bash
+agenthub hub operator-devices add littleboy     # on the hub; resolves the name to its node StableID
+systemctl --user restart agenthub-hub
+agenthub hub operator-devices list              # or: remove littleboy
+```
+
+This writes `[operator_devices]` in `hub.toml`, mapping the node's StableID
+(which renaming the device doesn't change) to your operator login.
+
+**This gives up separation of powers on those machines.** A tagged machine
+sends no user identity, so the hub can't tell your browser from an agent on
+the same machine: any process there that sends no agent token is the operator,
+agents included. What's left are speed bumps:
+- Every agent is told, in its MCP instructions and every headless session, that
+  the dashboard and every operator action are for humans only.
+- The approval forms say so too.
+- The guard treats an agent's command that fetches a tailnet `/ui` page as
+  risky (rule `hub-dashboard`).
+- `join` adds a Claude Code deny rule for WebFetch of the hub. For an agent
+  enrolled before 0.3.0, run `agenthub hook install` to add it.
+
+An agent that's been prompt-injected, or simply confused, can still approve
+its own requests from such a machine. Run agents there under a separate
+account if you can, and keep their credentials narrow.
 
 ### 4. Backups
 
@@ -376,6 +406,7 @@ can configure in `~/.config/agenthub/guard.toml` (see
 - pushes or merges to main or master
 - `gh pr merge`
 - `git reset --hard` on shared branches
+- fetching the hub's dashboard (a tailnet address followed by `/ui`)
 
 A risky command is blocked, and an approval is filed with an id. Once you
 approve it, that exact command from that directory may run **once**, within one
@@ -488,8 +519,9 @@ way.
   `tailscale whois` (cached for 30 s), that it comes from the Tailscale device
   recorded at enrollment (matched by node StableID). Revocation takes effect on
   the very next request and closes the agent's WebSocket within about a second.
-- **Operator identity.** A request can perform operator actions only if all of
-  these hold:
+- **Operator identity.** Unless its device is in `operator_devices` (see
+  [Operating from agent machines](#operating-from-agent-machines-opt-in)), a
+  request can perform operator actions only if all of these hold:
   - its `Tailscale-User-Login` header matches the hub's own whois result for
     the device;
   - the device is untagged;
@@ -497,7 +529,9 @@ way.
   - the device has no enrolled agent;
   - the request carries no `Authorization` header.
 
-  Posts also need a CSRF token and must be same-origin; the operator WebSocket
+  A request from an `operator_devices` machine is the operator login it maps
+  to, whatever its tags or agents; it still must carry no `Authorization`
+  header. Posts also need a CSRF token and must be same-origin; the operator WebSocket
   checks `Origin`. `--insecure-dev` disables operator access completely.
 - **Separation of powers.** No agent endpoint can approve, reject, enroll,
   reassign, or revoke. A test walks every operator route and confirms that

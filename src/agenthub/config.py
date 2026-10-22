@@ -25,7 +25,12 @@ def _toml_value(value: Any) -> str:
 
 
 def dump_toml(data: dict[str, Any]) -> str:
-    return "".join(f"{k} = {_toml_value(v)}\n" for k, v in data.items() if v is not None)
+    """Scalars and lists as keys, dicts of scalars as tables (after the keys, as TOML requires)."""
+    out = "".join(f"{k} = {_toml_value(v)}\n" for k, v in data.items() if v is not None and not isinstance(v, dict))
+    for k, v in data.items():
+        if isinstance(v, dict) and v:
+            out += f"\n[{k}]\n" + "".join(f"{_toml_value(sk)} = {_toml_value(sv)}\n" for sk, sv in v.items())
+    return out
 
 
 def write_private(path: Path, content: str) -> None:
@@ -72,6 +77,10 @@ class HubConfig:
     # A group prompt's discussion ends after this long; recipients that haven't claimed or declined time out.
     # 1 to 1440 (a day). A v0.1.0 hub rejects this key: remove it from hub.toml before rolling back.
     prompt_discussion_minutes: int = 30
+    # Opt-in, and it weakens separation of powers: tagged (agent) machines whose requests count as the
+    # operator, as {Tailscale node StableID: operator login}. Any process on such a machine that sends no
+    # agent token is the operator there, agents included. Manage with `agenthub hub operator-devices`.
+    operator_devices: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:
@@ -82,6 +91,11 @@ class HubConfig:
         if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:
             raise ValueError(f"prompt_discussion_minutes must be a whole number of minutes from 1 to 1440, "
                              f"not {minutes!r}")
+        if not isinstance(cfg.operator_devices, dict):
+            raise ValueError("operator_devices must be a table of node StableID = operator login")
+        for node, login in cfg.operator_devices.items():
+            if login not in cfg.operators:
+                raise ValueError(f"operator_devices: {node} maps to {login!r}, which is not in operators")
         return cfg
 
     def save(self, path: Path | None = None) -> Path:

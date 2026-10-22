@@ -21,7 +21,10 @@ import shlex
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+from agenthub import paths
+from agenthub.config import AgentConfig
 from agenthub.hooks import guard
 
 HOOK_TIMEOUT_SECONDS = 30
@@ -113,11 +116,19 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _hub_host(config_dir: Path) -> str | None:
+    """The enrolled hub's hostname, or None before `join` has written agent.toml."""
+    try:
+        return urlsplit(AgentConfig.load(config_dir / "agent.toml").hub_url).hostname
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def install(scope: str, *, exe: str, config_dir: Path, project_dir: Path | None = None) -> Path:
     path = settings_path(scope, project_dir)
     cfg = guard.load_guard_config()
     merged = merge_settings(_load(path), exe=exe, config_dir=config_dir,
-                            deny_rules=guard.default_deny_rules(cfg.protected_branches))
+                            deny_rules=guard.default_deny_rules(cfg.protected_branches, _hub_host(config_dir)))
     _write(path, merged)
     return path
 
@@ -125,5 +136,6 @@ def install(scope: str, *, exe: str, config_dir: Path, project_dir: Path | None 
 def uninstall(scope: str, *, project_dir: Path | None = None) -> Path:
     path = settings_path(scope, project_dir)
     cfg = guard.load_guard_config()
-    _write(path, remove_from_settings(_load(path), deny_rules=guard.default_deny_rules(cfg.protected_branches)))
+    rules = guard.default_deny_rules(cfg.protected_branches, _hub_host(paths.config_dir()))
+    _write(path, remove_from_settings(_load(path), deny_rules=rules))
     return path
