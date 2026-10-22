@@ -178,12 +178,11 @@ async def test_role_text_is_labeled_operator(mcp_pair, dev_hub):
     tid = _two_agent_task(dev_hub)
     async with Client(mcp_pair[0]) as a:
         out = text(await a.call_tool("list_tasks", {"project": "proj"}))
-    header, _, rest = out.partition(f"task #{tid}")
-    assert "Implementer" not in header
-    task_text = rest
+    task_text = out.partition(f"task #{tid}")[2]
     start = task_text.index("<untrusted-content")
     end = task_text.index("</untrusted-content>")
     outside = task_text[:start] + task_text[end:]
     inside = task_text[start:end]
+    assert "roles set by the operator" in outside and "roles set by the operator" not in inside
     assert "(Implementer, works)" in outside and "Implementer" not in inside
     assert "Build it" in inside

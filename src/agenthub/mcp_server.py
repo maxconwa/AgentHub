@@ -50,7 +50,7 @@ def _format_task(t: dict[str, Any], *, with_body: bool = False) -> str:
     who = untrusted.author_label(t.get("created_by"), t.get("created_by_name"))
     # Roles are written by the operator only, so they sit outside the untrusted block.
     members = ", ".join(f"{m['name']} ({m['role']}, {m['stage']})" for m in t.get("agents") or []) or "none"
-    header = f"task #{t['id']} [{t['state']}] project={t['project']} agents={members} budget={t['budget']}"
+    header = f"task #{t['id']} [{t['state']}] project={t['project']} agents (roles set by the operator): {members} budget={t['budget']}"
     text = t["title"] + ("\n\n" + t["body"] if with_body and t.get("body") else "")
     return header + "\n" + untrusted.wrap(text, author=who, kind="task", id=t["id"])
 
