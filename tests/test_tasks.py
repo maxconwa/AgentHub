@@ -513,3 +513,59 @@ def test_mine_filter_uses_membership(hub):
     add_member(hub, t["id"], "a")
     r = hub.client.get("/api/v1/projects/proj/tasks?mine=true", headers=a.headers)
     assert [x["id"] for x in r.json()["tasks"]] == [t["id"]]
+
+
+# --- runner support: concurrent implementers, per-agent runs, finish notes ----------
+
+def test_each_implementer_may_have_one_active_run(hub):
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = in_progress_task(hub, "a", "b")
+    ra = hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=a.headers)
+    rb = hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=b.headers)
+    assert ra.status_code == 201 and rb.status_code == 201
+    assert ra.json()["number"] == 1 and rb.json()["number"] == 1  # each agent counts its own runs
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=a.headers).status_code == 409
+
+
+def test_run_number_counts_own_runs_without_usage_limit(hub):
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = in_progress_task(hub, "a", "b")
+    _run(hub, t["id"], a.id)
+    _run(hub, t["id"], a.id, outcome="usage_limit")
+    _run(hub, t["id"], b.id)
+    conn = hub.conn()
+    with db.transaction(conn):
+        assert tasks.start_run(conn, t["id"], store.find_agent(conn, "a"))["number"] == 2
+
+
+def test_runs_endpoint_filters_usage_by_agent(hub):
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = in_progress_task(hub, "a", "b")
+    _run(hub, t["id"], a.id, turns=4)
+    _run(hub, t["id"], b.id, turns=2)
+    whole = hub.client.get(f"/api/v1/tasks/{t['id']}/runs", headers=a.headers).json()
+    assert whole["usage"]["turns"] == 6 and len(whole["runs"]) == 2
+    mine = hub.client.get(f"/api/v1/tasks/{t['id']}/runs", params={"agent": b.id}, headers=a.headers).json()
+    assert mine["usage"]["turns"] == 2 and mine["usage"]["runs"] == 1
+
+
+def test_budget_approval_for_removed_agent_changes_nothing(hub):
+    a, _r, t = _impl_and_reviewer(hub)
+    resp = hub.client.post("/api/v1/approvals", headers=a.headers, json={
+        "kind": "budget_exceeded", "details": {"task_id": t["id"], "limit": "max_turns"}})
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.remove_agent(conn, t["id"], a.id, actor=OPERATOR)
+    assert decide(hub, resp.json()["id"])["status"] == "approved"
+    assert task_agents.member(tasks.get_task(hub.conn(), t["id"]), a.id) is None
+    assert not hub.conn().execute("SELECT 1 FROM events WHERE type = 'task.budget_extended'").fetchone()
+
+
+def test_finish_keeps_the_implementers_note(hub):
+    hub.enroll("a"), hub.enroll("b")
+    t = in_progress_task(hub, "a", "b")
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.finish(conn, t["id"], store.find_agent(conn, "a"), note="did the API")
+    got = {m["name"]: m["finish_note"] for m in tasks.get_task(hub.conn(), t["id"])["agents"]}
+    assert got == {"a": "did the API", "b": ""}

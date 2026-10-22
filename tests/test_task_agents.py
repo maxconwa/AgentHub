@@ -151,7 +151,7 @@ def test_assignee_column_is_dead():
     ``create_task`` and ``assign``. Later tasks extend this to the remaining functions
     and modules.
     """
-    for name in ("task_agents.py", "bus.py"):
+    for name in ("task_agents.py", "bus.py", "../runner/daemon.py"):
         assert "assignee" not in _strip_comments((SRC / name).read_text()), name
     # app.py: the request model field ``assignee`` of CreateTaskRequest is the one wire-format use.
     assert "assignee" not in _strip_comments((SRC / "app.py").read_text()).replace(

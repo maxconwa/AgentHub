@@ -329,8 +329,11 @@ def _apply(conn: sqlite3.Connection, approval: dict[str, Any], approve: bool, ac
         if agent.status == "pending":
             store.set_agent_status(conn, agent.id, "active" if approve else "revoked", actor=actor)
     elif kind == "budget_exceeded" and approve:
-        tasks.extend_budget(conn, details["task_id"], details["agent_id"], details["limit"], details["extend_to"],
-                            actor=actor)
+        task = tasks.get_task(conn, details["task_id"])
+        # An agent removed since it asked gets nothing: there is no budget left to extend.
+        if task_agents.member(task, details["agent_id"]) is not None:
+            tasks.extend_budget(conn, details["task_id"], details["agent_id"], details["limit"],
+                                details["extend_to"], actor=actor)
     # command, tool_permission, rejected budgets: the requester acts on the decision itself.
 
 

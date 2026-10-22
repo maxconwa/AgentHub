@@ -23,7 +23,7 @@ MAX_ROLE_CHARS = 200
 
 _COLUMNS = (
     "ta.agent_id AS agent_id, a.name AS name, a.status AS status, ta.role AS role, ta.stage AS stage, "
-    "ta.budget AS budget, ta.finished_at AS finished_at, ta.verdict AS verdict, "
+    "ta.budget AS budget, ta.finished_at AS finished_at, ta.finish_note AS finish_note, ta.verdict AS verdict, "
     "ta.verdict_notes AS verdict_notes, ta.paused_until AS paused_until, ta.added_by AS added_by, "
     "ta.added_at AS added_at"
 )
@@ -166,8 +166,9 @@ def finish(
     the hub moves the task to ``review``; revoked or pending ones do not block it."""
     task = _state_membership(conn, task_id, agent, "works", "in_progress")
     conn.execute(
-        "UPDATE task_agents SET finished_at = COALESCE(finished_at, ?) WHERE task_id = ? AND agent_id = ?",
-        (now_iso(), task_id, agent.id),
+        "UPDATE task_agents SET finished_at = COALESCE(finished_at, ?), finish_note = ? "
+        "WHERE task_id = ? AND agent_id = ?",
+        (now_iso(), note, task_id, agent.id),
     )
     fresh = tasks.get_task(conn, task_id)
     events.emit(

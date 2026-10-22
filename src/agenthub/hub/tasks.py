@@ -334,12 +334,18 @@ def start_run(conn: sqlite3.Connection, task_id: int, agent: Agent, *, device: s
     needed = "review" if m["stage"] == "reviews" else "in_progress"
     if task["state"] != needed:
         raise Conflict(f"task {task_id} must be {needed} to start a run (it is {task['state']})")
-    if conn.execute("SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL", (task_id,)).fetchone():
-        raise Conflict(f"task {task_id} already has an active run")
+    # One active run per (task, agent): several implementers may run on one task at once.
+    if conn.execute("SELECT 1 FROM task_runs WHERE task_id = ? AND agent_id = ? AND ended_at IS NULL",
+                    (task_id, agent.id)).fetchone():
+        raise Conflict(f"you already have an active run on task {task_id}")
     cur = conn.execute(
         "INSERT INTO task_runs (task_id, agent_id, started_at) VALUES (?, ?, ?)", (task_id, agent.id, now_iso())
     )
-    number = conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()[0]
+    # This agent's run number; runs stopped by the usage limit don't count (as in usage()).
+    number = conn.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND agent_id = ? AND outcome IS NOT 'usage_limit'",
+        (task_id, agent.id),
+    ).fetchone()[0]
     events.emit(conn, type="task.run_started", actor=agent.id, project=task["project"], device=device,
                 payload={"task_id": task_id, "run_id": cur.lastrowid, "number": number,
                          "agents": _member_ids(task)})

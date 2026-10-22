@@ -262,6 +262,10 @@ MIGRATIONS: list[str] = [
         SELECT id, assignee, '', 'works', budget, 'migration', updated_at FROM tasks WHERE assignee IS NOT NULL;
     UPDATE tasks SET assignee = NULL;
     """,
+    # 6: the note an implementer gave when it finished its part (shown to reviewers)
+    """
+    ALTER TABLE task_agents ADD COLUMN finish_note TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

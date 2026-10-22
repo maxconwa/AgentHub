@@ -131,8 +131,10 @@ class HubClient:
     async def pause_task(self, task_id: int, until: str | None) -> dict[str, Any]:
         return await self._request("POST", f"/tasks/{task_id}/pause", json={"until": until})
 
-    async def task_runs(self, task_id: int) -> dict[str, Any]:
-        return await self._request("GET", f"/tasks/{task_id}/runs")
+    async def task_runs(self, task_id: int, agent: str | None = None) -> dict[str, Any]:
+        """All runs of the task; ``usage`` is ``agent``'s own when given, else the whole task's."""
+        params = {"agent": agent} if agent else None
+        return await self._request("GET", f"/tasks/{task_id}/runs", params=params)
 
     async def start_run(self, task_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/tasks/{task_id}/runs")

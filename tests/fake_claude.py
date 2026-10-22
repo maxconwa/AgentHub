@@ -1,6 +1,8 @@
 """A stand-in for `claude -p --output-format stream-json` used by runner tests.
 
-Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail.
+Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail | review_approve.
+review_approve records an ``approve`` verdict on $AGENTHUB_TASK_ID through the hub at $FAKE_HUB_URL with
+the agent token in $FAKE_TOKEN (as the real session would through the MCP tool), then succeeds.
 Each invocation appends {"argv", "stdin", "env"} as a JSON line to FAKE_CLAUDE_LOG.
 """
 
@@ -8,6 +10,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 import uuid
 
 
@@ -44,6 +47,12 @@ def main():
         emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "session_id": session,
               "num_turns": max_turns, "total_cost_usd": 0.01})
         sys.exit(1)
+    if mode == "review_approve":
+        req = urllib.request.Request(
+            f"{os.environ['FAKE_HUB_URL']}/api/v1/tasks/{os.environ['AGENTHUB_TASK_ID']}/verdict",
+            data=json.dumps({"verdict": "approve", "notes": "looks good"}).encode(), method="POST",
+            headers={"Authorization": f"Bearer {os.environ['FAKE_TOKEN']}", "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
     emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 2,
           "total_cost_usd": 0.02, "result": "Implemented the change and ran the tests."})
 

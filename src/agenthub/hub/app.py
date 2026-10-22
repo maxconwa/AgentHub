@@ -398,9 +398,9 @@ def create_app(state: HubState) -> FastAPI:
             return task_agents.pause(conn, task_id, caller.agent, until=body.until, device=caller.device.name)
 
     @app.get(f"{api}/tasks/{{task_id}}/runs")
-    def task_runs(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+    def task_runs(task_id: int, caller: Caller, conn: Conn, agent: str | None = None) -> dict[str, Any]:
         visible_task(caller, conn, task_id)
-        return {"runs": tasks.list_runs(conn, task_id), "usage": tasks.usage(conn, task_id)}
+        return {"runs": tasks.list_runs(conn, task_id), "usage": tasks.usage(conn, task_id, agent)}
 
     @app.post(f"{api}/tasks/{{task_id}}/runs", status_code=201)
     def start_run(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
