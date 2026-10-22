@@ -29,12 +29,12 @@ def test_migration_13_applies_to_an_existing_database(tmp_path):
     conn.execute("INSERT INTO messages (project, channel_id, author, body, ts) VALUES ('proj', 1, 'h', 'kept', 'x')")
     conn.close()
     new = db.connect(path)
-    assert db.migrate(new) == len(db.MIGRATIONS) == 13
+    assert db.migrate(new) == len(db.MIGRATIONS)
     assert NEW_INDEXES <= indexes(new)
     assert [r[0] for r in new.execute("SELECT body FROM messages")] == ["kept"]
     # Running it again (or over indexes made by hand) changes nothing.
-    new.execute("PRAGMA user_version = 12")
-    assert db.migrate(new) == 13 and NEW_INDEXES <= indexes(new)
+    new.executescript(db.MIGRATIONS[12])
+    assert NEW_INDEXES <= indexes(new)
 
 
 @pytest.mark.parametrize("sql,index", [

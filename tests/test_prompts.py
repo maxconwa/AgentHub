@@ -1,0 +1,559 @@
+"""Prompts: the operator wakes agents (hub model, agent API, events)."""
+
+import json
+import sqlite3
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+
+from agenthub.config import HubConfig
+from agenthub.hub import bus, db, private, prompts, store, task_agents, tasks
+from agenthub.hub.app import expire_prompts
+from agenthub.hub.dashboard import event_summary
+from agenthub.hub.notify import build_notification
+
+from .conftest import OPERATOR
+
+SECRET = "SECRET-PROMPT-TEXT"
+CFG = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="ops-x1")
+
+
+def online(hub, *agents, connected=True):
+    conn = hub.conn()
+    with db.transaction(conn):
+        for a in agents:
+            conn.execute("UPDATE agents SET connected = ? WHERE id = ?", (int(connected), a.id))
+
+
+def same_device(hub, node, *agents):
+    """Move agents onto one machine (in the database and in whois, so their tokens still verify)."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        for a in agents:
+            conn.execute("UPDATE agents SET device_node_id = ?, device_name = 'box' WHERE id = ?", (node, a.id))
+            hub.whois.add(a.ip, node_id=node, name="box")
+
+
+def mk_task(hub, *agents, project="proj", title="t"):
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, project, actor=OPERATOR)
+        t = tasks.create_task(conn, actor=OPERATOR, project=project, title=title)
+        for a in agents:
+            task_agents.add_agent(conn, t["id"], a.id, role="", stage="works", actor=OPERATOR)
+    return t
+
+
+def create(hub, target, body=f"Please look at this. {SECRET}", actor=OPERATOR):
+    conn = hub.conn()
+    with db.transaction(conn):
+        return prompts.create(conn, target=target, body=body, actor=actor)
+
+
+def api(hub, agent, method, path, **kw):
+    return hub.client.request(method, f"/api/v1/prompts{path}", headers=agent.headers, **kw)
+
+
+def prompt_events(hub, pid=None):
+    rows = hub.conn().execute("SELECT * FROM events WHERE type LIKE 'prompt.%' ORDER BY id").fetchall()
+    out = [{"type": r["type"], "payload": json.loads(r["payload"]), "actor": r["actor"], "project": r["project"],
+            "id": r["id"], "ts": r["ts"], "device": r["device"]} for r in rows]
+    return [e for e in out if pid is None or e["payload"]["prompt_id"] == pid]
+
+
+@pytest.fixture
+def trio(hub):
+    a, b, c = hub.enroll("alice"), hub.enroll("bob"), hub.enroll("carol")
+    return hub, a, b, c
+
+
+# --- schema ----------------------------------------------------------------------------------------
+
+
+def test_migration_14_creates_prompt_tables(hub):
+    conn = hub.conn()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 14
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompts)")}
+    assert cols == {"id", "target", "body", "mode", "project", "thread", "status", "created_by", "created_at",
+                    "finished_at"}
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompt_recipients)")}
+    assert cols == {"prompt_id", "agent_id", "status", "task_id", "note", "updated_at"}
+    indexed = {tuple(r[2] for r in conn.execute(f"PRAGMA index_info({ix['name']})"))
+               for ix in conn.execute("PRAGMA index_list(prompt_recipients)")}
+    assert ("agent_id", "status") in indexed and ("status", "id") in {
+        tuple(r[2] for r in conn.execute(f"PRAGMA index_info({ix['name']})"))
+        for ix in conn.execute("PRAGMA index_list(prompts)")}
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO prompts (target, body, mode, status, created_by, created_at) "
+                     "VALUES ('agent:x', 'b', 'many', 'pending', 'h', 'x')")
+
+
+# --- create ------------------------------------------------------------------------------------------
+
+
+def test_single_prompt_to_one_live_agent(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    assert (p["mode"], p["status"], p["thread"], p["project"]) == ("single", "pending", None, None)
+    assert p["created_by"] == OPERATOR and SECRET in p["body"]
+    assert [(r["agent_id"], r["status"]) for r in p["recipients"]] == [(a.id, "pending")]
+    ev = prompt_events(hub, p["id"])
+    assert [e["type"] for e in ev] == ["prompt.created"]
+    assert ev[0]["payload"]["agents"] == [a.id] and ev[0]["payload"]["mode"] == "single"
+
+
+def test_body_is_stripped_and_bounded(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    with pytest.raises(store.Invalid):
+        create(hub, f"agent:{a.id}", body="   \n ")
+    with pytest.raises(store.Invalid):
+        create(hub, f"agent:{a.id}", body="x" * 8001)
+    assert create(hub, f"agent:{a.id}", body="  hi  ")["body"] == "hi"
+    assert create(hub, f"agent:{a.id}", body="y" * 8000)["status"] == "pending"
+
+
+def test_unknown_or_malformed_target(trio):
+    hub, a, b, c = trio
+    for target in ("agent:nobody", "task:999", "project:nope", "device:nope", "bogus", "task:x"):
+        with pytest.raises(store.NotFound):
+            create(hub, target)
+
+
+def test_only_a_human_operator_creates_prompts(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    with pytest.raises(store.Forbidden):
+        create(hub, f"agent:{a.id}", actor=a.id)
+
+
+def test_no_agent_route_creates_prompts(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    for method, path in (("POST", ""), ("POST", "/"), ("PUT", ""), ("POST", "/new")):
+        r = api(hub, a, method, path, json={"target": f"agent:{a.id}", "body": "do it"})
+        assert r.status_code in (404, 405), (method, path, r.status_code)
+    assert hub.conn().execute("SELECT COUNT(*) FROM prompts").fetchone()[0] == 0
+
+
+def test_group_prompt_to_a_task_opens_a_channel_thread(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, b)  # carol is offline
+    p = create(hub, f"task:{t['id']}")
+    assert (p["mode"], p["status"], p["project"]) == ("group", "discussing", "proj")
+    assert p["thread"] == f"board:ch-proj~prompt-{p['id']}"
+    statuses = {r["agent_id"]: r["status"] for r in p["recipients"]}
+    assert statuses == {a.id: "pending", b.id: "pending", c.id: "skipped"}
+    assert [r["name"] for r in p["recipients"] if r["status"] == "skipped"] == ["carol"]
+    msgs = store.recent_messages(hub.conn(), project="proj", channel=f"prompt-{p['id']}")
+    assert [(m["author"], m["body"]) for m in msgs] == [(OPERATOR, p["body"])]
+    ev = prompt_events(hub, p["id"])[0]
+    assert sorted(ev["payload"]["agents"]) == sorted([a.id, b.id]) and ev["payload"]["skipped"] == [c.id]
+    assert ev["payload"]["mode"] == "group"
+
+
+def test_group_prompt_to_a_project_targets_agents_on_its_live_tasks(trio):
+    hub, a, b, c = trio
+    mk_task(hub, a)
+    mk_task(hub, b)
+    online(hub, a, b, c)
+    p = create(hub, "project:proj")
+    assert p["mode"] == "group" and {r["agent_id"] for r in p["recipients"]} == {a.id, b.id}
+    assert p["thread"] == f"board:ch-proj~prompt-{p['id']}" and p["project"] == "proj"
+
+
+def test_group_prompt_to_a_device_uses_the_device_board(trio):
+    hub, a, b, c = trio
+    same_device(hub, "nbox", a, b)
+    online(hub, a, b)
+    p = create(hub, "device:nbox")
+    assert (p["mode"], p["status"], p["project"], p["thread"]) == ("group", "discussing", None, "device:nbox")
+    notes = hub.conn().execute("SELECT author, body FROM device_messages WHERE node_id = 'nbox'").fetchall()
+    assert [(n["author"], n["body"]) for n in notes] == [(OPERATOR, f"Prompt #{p['id']}: {p['body']}")]
+
+
+def test_long_device_prompt_is_truncated_on_the_board_with_a_pointer(trio):
+    hub, a, b, c = trio
+    same_device(hub, "nbox", a, b)
+    online(hub, a, b)
+    p = create(hub, "device:nbox", body="z" * 8000)
+    note = hub.conn().execute("SELECT body FROM device_messages").fetchone()["body"]
+    assert len(note) <= 4000 and f"prompt_id={p['id']}" in note
+
+
+def test_single_live_recipient_of_a_task_is_single_mode(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a)
+    p = create(hub, f"task:{t['id']}")
+    assert (p["mode"], p["status"], p["project"], p["thread"]) == ("single", "pending", "proj", None)
+    assert {r["agent_id"]: r["status"] for r in p["recipients"]} == {a.id: "pending", b.id: "skipped"}
+
+
+def test_all_offline_fails_at_once(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    assert p["status"] == "failed" and p["finished_at"]
+    assert {r["status"] for r in p["recipients"]} == {"skipped"}
+    assert hub.conn().execute("SELECT COUNT(*) FROM private_messages").fetchone()[0] == 0
+    ev = prompt_events(hub, p["id"])[0]
+    assert ev["payload"]["agents"] == [] and ev["payload"]["status"] == "failed"
+    msg = build_notification(ev, {a.id: "alice", b.id: "bob"}, CFG)
+    assert msg["title"].startswith(f"Prompt #{p['id']}:") and "alice" in msg["message"] + msg["title"]
+
+
+def test_revoked_or_pending_agents_are_not_recipients(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    hub.set_status(b, "revoked")
+    p = create(hub, f"task:{t['id']}")
+    assert [r["agent_id"] for r in p["recipients"]] == [a.id] and p["mode"] == "single"
+
+
+def test_private_chat_copy_for_each_live_recipient(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    for agent in (a, b):
+        chat = private.thread(hub.conn(), agent.id)
+        assert [(m["author"], m["body"]) for m in chat] == [(OPERATOR, f"Prompt #{p['id']}: {p['body']}")]
+    assert private.thread(hub.conn(), c.id) == []
+
+
+def test_long_private_copy_is_truncated_with_a_pointer(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}", body="q" * 8000)
+    body = private.thread(hub.conn(), a.id)[0]["body"]
+    assert len(body) <= private.MAX_BODY_CHARS and body.startswith(f"Prompt #{p['id']}: ")
+    assert f"prompt_status with prompt_id={p['id']}" in body
+
+
+def test_events_carry_no_body(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    api(hub, a, "POST", f"/{p['id']}/start")
+    api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "my part", "body": "details"})
+    api(hub, b, "POST", f"/{p['id']}/decline", json={"reason": "busy"})
+    evs = prompt_events(hub, p["id"])
+    assert [e["type"] for e in evs] == ["prompt.created", "prompt.updated", "prompt.updated", "prompt.updated"]
+    for e in evs:
+        assert SECRET not in json.dumps(e["payload"])
+        assert SECRET not in event_summary(e, {})
+        note = build_notification(e, {}, CFG)
+        assert note is None or SECRET not in json.dumps(note)
+
+
+# --- the agent API -------------------------------------------------------------------------------
+
+
+def test_pending_start_finish_single(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    got = api(hub, a, "GET", "/pending").json()["prompts"]
+    assert [(x["id"], x["mode"], x["my_status"], x["body"]) for x in got] == [(p["id"], "single", "pending", p["body"])]
+    assert api(hub, b, "GET", "/pending").json()["prompts"] == []
+    r = api(hub, a, "POST", f"/{p['id']}/start")
+    assert r.status_code == 200 and r.json()["status"] == "running" and r.json()["my_status"] == "running"
+    assert api(hub, a, "POST", f"/{p['id']}/start").status_code == 409
+    assert [x["my_status"] for x in api(hub, a, "GET", "/pending").json()["prompts"]] == ["running"]  # resumable
+    r = api(hub, a, "POST", f"/{p['id']}/finish", json={"ok": True, "note": "did it"})
+    assert r.status_code == 200 and r.json()["status"] == "done" and r.json()["my_status"] == "done"
+    full = prompts.get(hub.conn(), p["id"])
+    assert full["finished_at"] and full["recipients"][0]["note"] == "did it"
+    assert api(hub, a, "GET", "/pending").json()["prompts"] == []
+
+
+def test_single_recipient_failing_fails_the_prompt(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    api(hub, a, "POST", f"/{p['id']}/start")
+    r = api(hub, a, "POST", f"/{p['id']}/finish", json={"ok": False, "note": "no checkout configured for proj"})
+    assert r.json()["status"] == "failed" and r.json()["my_status"] == "failed"
+    ev = prompt_events(hub, p["id"])[-1]
+    msg = build_notification(ev, {a.id: "alice"}, CFG)
+    assert msg["title"] == f"Prompt #{p['id']}: alice failed" and msg["click"].endswith(f"/ui/prompts/{p['id']}")
+    assert "checkout" not in json.dumps(msg)  # names only
+
+
+def test_other_agents_cannot_see_or_act_on_a_prompt(trio):
+    hub, a, b, c = trio
+    online(hub, a, b)
+    p = create(hub, f"agent:{a.id}")
+    for method, path, body in (("GET", f"/{p['id']}", None), ("POST", f"/{p['id']}/start", None),
+                               ("POST", f"/{p['id']}/finish", {"ok": True}),
+                               ("POST", f"/{p['id']}/claim", {"title": "x"}),
+                               ("POST", f"/{p['id']}/decline", {"reason": "no"}),
+                               ("GET", "/9999", None)):
+        assert api(hub, b, method, path, json=body).status_code == 404, (method, path)
+    assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
+
+
+def test_pending_agent_cannot_use_the_api(hub):
+    p = hub.enroll("newbie", approve=False)
+    assert api(hub, p, "GET", "/pending").status_code == 403
+
+
+def test_recipient_view_shows_body_thread_and_co_recipients(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c, title="Visible task")
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "secret", actor=OPERATOR)
+        store.set_agent_projects(conn, b.id, ["proj", "secret"], actor=OPERATOR)
+    mk_task(hub, b, project="secret", title="Hidden elsewhere")
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    view = api(hub, a, "GET", f"/{p['id']}").json()
+    assert view["body"] == p["body"] and view["mode"] == "group" and view["status"] == "discussing"
+    assert view["thread"] == {"kind": "channel", "project": "proj", "channel": f"prompt-{p['id']}",
+                              "key": f"board:ch-proj~prompt-{p['id']}"}
+    others = {r["name"]: r for r in view["recipients"]}
+    assert set(others) == {"alice", "bob", "carol"} and others["carol"]["status"] == "skipped"
+    assert others["bob"]["device"] == "bob-host.example.ts.net" and others["bob"]["connected"] is True
+    assert [x["title"] for x in others["bob"]["tasks"]] == ["Visible task"]  # not other projects' tasks
+    assert view["my_status"] == "pending"
+
+
+def test_device_thread_view(trio):
+    hub, a, b, c = trio
+    same_device(hub, "nbox", a, b)
+    online(hub, a, b)
+    p = create(hub, "device:nbox")
+    view = api(hub, b, "GET", f"/{p['id']}").json()
+    assert view["thread"] == {"kind": "device", "node_id": "nbox", "key": "device:nbox"}
+
+
+# --- claim and decline -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def group(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, b, c)
+    return hub, a, b, c, create(hub, f"task:{t['id']}")
+
+
+def test_claim_creates_one_approved_task_for_the_agent(group):
+    hub, a, b, c, p = group
+    before = hub.conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "  Write the parser ", "body": "Only the parser."})
+    assert r.status_code == 201, r.text
+    task = r.json()
+    assert (task["title"], task["body"], task["state"], task["project"]) == (
+        "Write the parser", "Only the parser.", "open", "proj")
+    assert task["created_by"] == OPERATOR and task["approval_id"] is None
+    assert [(m["agent_id"], m["role"], m["stage"], m["budget"]) for m in task["agents"]] == [
+        (a.id, f"Share of prompt #{p['id']}", "works", tasks.DEFAULT_BUDGET)]
+    assert hub.conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before + 1
+    rec = {r["agent_id"]: r for r in prompts.get(hub.conn(), p["id"])["recipients"]}
+    assert rec[a.id]["status"] == "claimed" and rec[a.id]["task_id"] == task["id"]
+    assert rec[a.id]["task_title"] == "Write the parser"
+
+
+def test_second_claim_by_the_same_agent_is_refused(group):
+    hub, a, b, c, p = group
+    first = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "part one"}).json()
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "part two"})
+    assert r.status_code == 409
+    assert hub.conn().execute("SELECT COUNT(*) FROM tasks WHERE title LIKE 'part%'").fetchone()[0] == 1
+    rec = {r["agent_id"]: r for r in prompts.get(hub.conn(), p["id"])["recipients"]}
+    assert rec[a.id]["task_id"] == first["id"]
+    assert api(hub, a, "POST", f"/{p['id']}/decline", json={"reason": "changed my mind"}).status_code == 409
+
+
+def test_two_agents_claim_overlapping_shares_each_get_one_task(group):
+    hub, a, b, c, p = group
+    ta = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "the parser"}).json()
+    tb = api(hub, b, "POST", f"/{p['id']}/claim", json={"title": "the parser"}).json()
+    assert ta["id"] != tb["id"]
+    assert [m["agent_id"] for m in ta["agents"]] == [a.id] and [m["agent_id"] for m in tb["agents"]] == [b.id]
+
+
+def test_claim_validates_title_and_body(group):
+    hub, a, b, c, p = group
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "   "}).status_code == 422
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x" * 201}).status_code == 422
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "body": "b" * 16001}).status_code == 422
+    assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
+
+
+def test_single_prompts_have_no_shares(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x"}).status_code == 409
+    assert api(hub, a, "POST", f"/{p['id']}/decline", json={"reason": "x"}).status_code == 409
+
+
+def test_skipped_recipient_cannot_claim(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    assert api(hub, c, "POST", f"/{p['id']}/claim", json={"title": "x"}).status_code == 409
+
+
+def test_decline_and_done_when_all_decided(group):
+    hub, a, b, c, p = group
+    api(hub, a, "POST", f"/{p['id']}/start")
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "mine"}).status_code == 201
+    r = api(hub, b, "POST", f"/{p['id']}/decline", json={"reason": "my machine has no GPU"})
+    assert r.status_code == 200 and r.json()["my_status"] == "declined" and r.json()["status"] == "discussing"
+    # finishing the session after claiming keeps the claim
+    assert api(hub, a, "POST", f"/{p['id']}/finish", json={"ok": True}).json()["my_status"] == "claimed"
+    r = api(hub, c, "POST", f"/{p['id']}/decline", json={"reason": "nothing left"})
+    assert r.json()["status"] == "done"
+    full = prompts.get(hub.conn(), p["id"])
+    assert full["status"] == "done" and full["finished_at"]
+    assert {r["agent_id"]: r["note"] for r in full["recipients"]}[b.id] == "my machine has no GPU"
+    last = prompt_events(hub, p["id"])[-1]
+    assert last["payload"]["status"] == "done"
+    msg = build_notification(last, {}, CFG)
+    assert msg["title"] == f"Prompt #{p['id']}: done"
+
+
+def test_device_prompt_claim_picks_a_project(hub):
+    a, b = hub.enroll("alice", projects=("proj", "other")), hub.enroll("bob", projects=("other",))
+    same_device(hub, "nbox", a, b)
+    online(hub, a, b)
+    mk_task(hub, b, project="other")
+    p = create(hub, "device:nbox")
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "nope"}).status_code == 403
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "other"})
+    assert r.status_code == 201 and r.json()["project"] == "other"
+    r = api(hub, b, "POST", f"/{p['id']}/claim", json={"title": "y"})  # its current task's project
+    assert r.status_code == 201 and r.json()["project"] == "other"
+
+
+def test_project_must_match_the_prompts_project(group):
+    hub, a, b, c, p = group
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "else"}).status_code == 422
+
+
+# --- expiry -----------------------------------------------------------------------------------------
+
+
+def test_expiry_marks_undecided_recipients_timed_out(group):
+    hub, a, b, c, p = group
+    api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "mine"})
+    api(hub, b, "POST", f"/{p['id']}/start")
+    conn = hub.conn()
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=29), minutes=30) == []
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=31), minutes=30) == [p["id"]]
+    full = prompts.get(conn, p["id"])
+    assert {r["agent_id"]: r["status"] for r in full["recipients"]} == {a.id: "claimed", b.id: "timed_out",
+                                                                       c.id: "timed_out"}
+    assert full["status"] == "done"
+    ev = prompt_events(hub, p["id"])[-1]
+    assert sorted(ev["payload"]["timed_out"]) == sorted([b.id, c.id]) and ev["actor"] == "system:hub"
+    msg = build_notification(ev, {b.id: "bob", c.id: "carol"}, CFG)
+    assert "timed out" in msg["title"] and "bob" in msg["title"] and "carol" in msg["title"]
+    # late moves are refused, and a late finish changes nothing
+    assert api(hub, b, "POST", f"/{p['id']}/claim", json={"title": "late"}).status_code == 409
+    assert api(hub, b, "POST", f"/{p['id']}/finish", json={"ok": True}).json()["my_status"] == "timed_out"
+
+
+def test_expiry_leaves_single_prompts_alone_but_fails_revoked_recipients(trio):
+    hub, a, b, c = trio
+    online(hub, a, b)
+    pa, pb = create(hub, f"agent:{a.id}"), create(hub, f"agent:{b.id}")
+    hub.set_status(b, "revoked")
+    conn = hub.conn()
+    with db.transaction(conn):
+        prompts.expire(conn, datetime.now(UTC) + timedelta(days=1), minutes=30)
+    assert prompts.get(conn, pa["id"])["status"] == "pending"
+    got = prompts.get(conn, pb["id"])
+    assert got["status"] == "failed" and got["recipients"][0]["status"] == "failed"
+
+
+def test_hub_loop_runs_expiry(tmp_path):
+    from .conftest import make_hub
+
+    hub = make_hub(tmp_path)
+    hub.state.config.prompt_discussion_minutes = 0
+    hub.state.prompt_expiry_seconds = 0.02
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    import time
+
+    with TestClient(hub.client.app, client=("127.0.0.1", 40000)):
+        deadline = time.monotonic() + 5
+        while prompts.get(hub.conn(), p["id"])["status"] != "done" and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert prompts.get(hub.conn(), p["id"])["status"] == "done"
+
+
+def test_expire_prompts_helper_uses_the_configured_minutes(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}")
+    expire_prompts(hub.state)
+    assert prompts.get(hub.conn(), p["id"])["status"] == "discussing"
+    hub.state.config.prompt_discussion_minutes = 0
+    expire_prompts(hub.state)
+    assert prompts.get(hub.conn(), p["id"])["status"] == "done"
+
+
+def test_config_default():
+    assert HubConfig().prompt_discussion_minutes == 30
+
+
+# --- routing and summaries -------------------------------------------------------------------------
+
+
+def test_bus_routes_prompt_events_to_recipients(group):
+    hub, a, b, c, p = group
+    conn = hub.conn()
+    created = prompt_events(hub, p["id"])[0]
+    assert bus.recipients(created, conn) == {a.id, b.id, c.id}
+    note = bus._notification(created, a.id)
+    assert note["event"]["data"]["prompt_id"] == p["id"] and note["event"]["data"]["mode"] == "group"
+    api(hub, a, "POST", f"/{p['id']}/decline", json={"reason": "no"})
+    updated = prompt_events(hub, p["id"])[-1]
+    assert updated["type"] == "prompt.updated" and bus.recipients(updated, conn) == {a.id, b.id, c.id}
+
+
+def test_bus_skips_offline_recipients_of_created(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b)
+    online(hub, a)
+    p = create(hub, f"task:{t['id']}")
+    assert bus.recipients(prompt_events(hub, p["id"])[0], hub.conn()) == {a.id}
+
+
+def test_skipped_recipients_notify_the_operator(trio):
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a)
+    p = create(hub, f"task:{t['id']}")
+    msg = build_notification(prompt_events(hub, p["id"])[0], {b.id: "bob", c.id: "carol"}, CFG)
+    assert msg["title"].startswith(f"Prompt #{p['id']}:") and "bob" in msg["title"] and "carol" in msg["title"]
+    online(hub, b, c)
+    p2 = create(hub, f"task:{t['id']}")
+    assert build_notification(prompt_events(hub, p2["id"])[0], {}, CFG) is None
+
+
+def test_event_summaries(group):
+    hub, a, b, c, p = group
+    names = {a.id: "alice", b.id: "bob", c.id: "carol"}
+    created = prompt_events(hub, p["id"])[0]
+    assert event_summary(created, names) == f"prompt #{p['id']} to alice, bob, carol (group)"
+    api(hub, b, "POST", f"/{p['id']}/decline", json={"reason": "no"})
+    assert event_summary(prompt_events(hub, p["id"])[-1], names) == f"prompt #{p['id']}: bob declined"

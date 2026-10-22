@@ -26,3 +26,7 @@ ntfy_token_file = ""            # e.g. /home/HUB_USER/.config/agenthub/ntfy.toke
 # Notifications go to a third party, so by default they carry only the
 # approval id, kind and requester, never commands or task text.
 ntfy_include_details = false
+
+# A group prompt's discussion ends after this many minutes; recipients that
+# haven't claimed a share or declined by then are marked timed out.
+prompt_discussion_minutes = 30

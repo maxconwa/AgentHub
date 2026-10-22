@@ -81,11 +81,40 @@ def build_notification(
         return {"title": f"Work overlap in {event['project']}", "message": f"{agents} plan overlapping changes "
                 f"and are coordinating.", "priority": 3, "tags": ["handshake"],
                 "click": f"{base}/ui/activity?project={event['project']}" if base else None}
+    if etype in ("prompt.created", "prompt.updated"):
+        return _prompt_notification(etype, p, names, base)
     if etype == "task.transitioned" and p.get("to") in ("review", "blocked"):
         return {"title": f"Task #{p['task_id']} is {p['to']}", "message": f"{who} moved it to {p['to']}.",
                 "priority": 3, "tags": ["white_check_mark" if p["to"] == "review" else "construction"],
                 "click": f"{base}/ui/tasks/{p['task_id']}" if base else None}
     return None
+
+
+def _prompt_notification(etype: str, p: dict[str, Any], names: dict[str, str], base: str) -> dict[str, Any] | None:
+    """"Prompt #N: …" when recipients were skipped, failed or timed out, or a group prompt is done (names only)."""
+    def listed(ids: list[str]) -> str:
+        return ", ".join(names.get(i, i) for i in ids)
+
+    parts = []
+    if etype == "prompt.created":
+        if p.get("skipped"):
+            parts.append(f"{listed(p['skipped'])} offline, skipped")
+        if p.get("status") == "failed":
+            parts.append("nobody was online")
+    failed = list(p.get("failed") or ())
+    if p.get("recipient_status") == "failed" and p.get("agent_id"):
+        failed.append(p["agent_id"])
+    if failed:
+        parts.append(f"{listed(failed)} failed")
+    if p.get("timed_out"):
+        parts.append(f"{listed(p['timed_out'])} timed out")
+    if etype == "prompt.updated" and p.get("status") == "done" and p.get("mode") == "group":
+        parts.append("done")
+    if not parts:
+        return None
+    title = f"Prompt #{p['prompt_id']}: " + "; ".join(parts)
+    return {"title": title, "message": title, "priority": 3, "tags": ["incoming_envelope"],
+            "click": f"{base}/ui/prompts/{p['prompt_id']}" if base else None}
 
 
 class Notifier:

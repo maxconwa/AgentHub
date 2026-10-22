@@ -42,7 +42,8 @@ class Socket(Protocol):
 def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     p = event["payload"]
     keep = ("message_id", "channel", "task_id", "approval_id", "ask_id", "kind", "status", "from", "to",
-            "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key", "node_id")
+            "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key", "node_id",
+            "prompt_id", "mode")
     data = {k: p[k] for k in keep if k in p}
     if event["type"] in ("message.posted", "device.message_posted"):
         data["addressed_to_me"] = p.get("to") == recipient
@@ -60,6 +61,8 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
         rows = conn.execute("SELECT id, allowed_projects FROM agents WHERE status = 'active'").fetchall()
         return {r["id"] for r in rows if project in json.loads(r["allowed_projects"])} - {event["actor"]}
     if etype.startswith("task."):
+        return set(p.get("agents") or ())
+    if etype in ("prompt.created", "prompt.updated"):  # created: the live recipients; updated: all but skipped
         return set(p.get("agents") or ())
     if etype in ("approval.decided", "approval.discussed", "approval.consumed"):
         if "requester" in p:

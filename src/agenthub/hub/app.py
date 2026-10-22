@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import ipaddress
 import json
+import logging
 import mimetypes
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -17,7 +21,7 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, db, device_board, events, intents, private, questions, store, task_agents, tasks,
+    approvals, asks, db, device_board, events, intents, private, prompts, questions, store, task_agents, tasks,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -33,6 +37,8 @@ mimetypes.add_type("font/woff2", ".woff2")
 MAX_MESSAGE_CHARS = 16_000
 MAX_BOARD_VALUE_CHARS = 32_000
 MAX_COMMAND_CHARS = 8_000
+
+log = logging.getLogger("agenthub.hub")
 
 
 class BindError(Exception):
@@ -69,6 +75,7 @@ class HubState:
     insecure_dev: bool = False
     whois: Whois = field(default=None)  # type: ignore[assignment]
     bus_poll_seconds: float = 0.5
+    prompt_expiry_seconds: float = 60.0
     csrf_secret: bytes = b""
     bus: EventBus = field(init=False)
     agent_limiter: RateLimiter = field(init=False)
@@ -99,6 +106,25 @@ class HubState:
 
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.config.db_path)
+
+
+def expire_prompts(state: HubState) -> list[int]:
+    """Time out group prompt discussions older than ``prompt_discussion_minutes`` (see :func:`prompts.expire`)."""
+    conn = state.connect()
+    try:
+        with db.transaction(conn):
+            return prompts.expire(conn, datetime.now(UTC), minutes=state.config.prompt_discussion_minutes)
+    finally:
+        conn.close()
+
+
+async def _expire_prompts_forever(state: HubState) -> None:
+    while True:
+        await asyncio.sleep(state.prompt_expiry_seconds)
+        try:
+            await asyncio.to_thread(expire_prompts, state)
+        except Exception:  # noqa: BLE001 - keep the loop alive
+            log.exception("prompt expiry failed")
 
 
 # --- request models -----------------------------------------------------------
@@ -215,6 +241,21 @@ class DiscussionRequest(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
+class PromptFinishRequest(BaseModel):
+    ok: bool
+    note: str = Field(default="", max_length=4000)
+
+
+class PromptClaimRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=tasks.MAX_TITLE_CHARS)
+    body: str = Field(default="", max_length=tasks.MAX_BODY_CHARS)
+    project: str | None = Field(default=None, max_length=64)
+
+
+class PromptDeclineRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class CommandApprovalRequest(BaseModel):
     command: str = Field(min_length=1, max_length=MAX_COMMAND_CHARS)
     cwd: str = Field(min_length=1, max_length=4096)
@@ -239,9 +280,13 @@ def create_app(state: HubState) -> FastAPI:
         conn.execute("UPDATE agents SET connected = 0")
         conn.close()
         state.bus.start()
+        expiry = asyncio.create_task(_expire_prompts_forever(state), name="agenthub-prompt-expiry")
         try:
             yield
         finally:
+            expiry.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await expiry
             await state.bus.stop()
 
     app = FastAPI(title="agenthub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -384,6 +429,37 @@ def create_app(state: HubState) -> FastAPI:
     def withdraw_question(question_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
         with db.transaction(conn):
             return questions.withdraw(conn, question_id, caller.agent)
+
+    # --- prompts from the operator (agents act on their own; none can create one) ---
+
+    @app.get(f"{api}/prompts/pending")
+    def pending_prompts(caller: Caller, conn: Conn) -> dict[str, Any]:
+        return {"prompts": prompts.pending_for(conn, caller.agent)}
+
+    @app.get(f"{api}/prompts/{{prompt_id}}")
+    def get_prompt(prompt_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        return prompts.get_for_agent(conn, prompt_id, caller.agent)
+
+    @app.post(f"{api}/prompts/{{prompt_id}}/start")
+    def start_prompt(prompt_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return prompts.start(conn, prompt_id, caller.agent)
+
+    @app.post(f"{api}/prompts/{{prompt_id}}/finish")
+    def finish_prompt(prompt_id: int, body: PromptFinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return prompts.finish(conn, prompt_id, caller.agent, ok=body.ok, note=body.note)
+
+    @app.post(f"{api}/prompts/{{prompt_id}}/claim", status_code=201)
+    def claim_share(prompt_id: int, body: PromptClaimRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return prompts.claim(conn, prompt_id, caller.agent, title=body.title, body=body.body,
+                                 project=body.project)
+
+    @app.post(f"{api}/prompts/{{prompt_id}}/decline")
+    def decline_share(prompt_id: int, body: PromptDeclineRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return prompts.decline(conn, prompt_id, caller.agent, reason=body.reason)
 
     # --- board ---------------------------------------------------------------
 

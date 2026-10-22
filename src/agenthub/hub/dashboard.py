@@ -142,6 +142,16 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
         return f"task #{p.get('task_id')} {snippet(p.get('title') or p.get('outcome') or '')}".strip()
     if t.startswith("approval."):
         return f"approval #{p.get('approval_id')} {p.get('kind') or ''} {p.get('status') or ''} {snippet(p.get('body'))}"
+    if t == "prompt.created":  # prompt events never carry the text
+        to = ", ".join(who(a, names) for a in p.get("agents") or []) or "nobody online"
+        skipped = ", ".join(who(a, names) for a in p.get("skipped") or [])
+        return f"prompt #{p.get('prompt_id')} to {to} ({p.get('mode')})" + (f"; skipped {skipped}" if skipped else "")
+    if t == "prompt.updated":
+        if p.get("agent_id"):
+            return f"prompt #{p.get('prompt_id')}: {who(p.get('agent_id'), names)} {p.get('recipient_status')}"
+        late = [f"{', '.join(who(a, names) for a in p.get(k) or [])} {k.replace('_', ' ')}"
+                for k in ("timed_out", "failed") if p.get(k)]
+        return f"prompt #{p.get('prompt_id')} {p.get('status')}" + (f": {'; '.join(late)}" if late else "")
     if t.startswith("question."):
         return f"question #{p.get('question_id')} {t.split('.')[1]} ({who(p.get('agent_id'), names)})"
     if t.startswith("ask."):

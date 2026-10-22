@@ -69,6 +69,8 @@ class HubConfig:
     # Off by default: notifications go to an external service, so they carry
     # only the approval id, kind and requester, not commands or task text.
     ntfy_include_details: bool = False
+    # A group prompt's discussion ends after this long; recipients that haven't claimed or declined time out.
+    prompt_discussion_minutes: int = 30
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:

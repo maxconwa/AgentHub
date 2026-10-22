@@ -332,6 +332,34 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS messages_to_agent ON messages(to_agent, author, id) WHERE to_agent IS NOT NULL;
     CREATE INDEX IF NOT EXISTS private_messages_unread ON private_messages(agent_id) WHERE read_at IS NULL;
     """,
+    # 14: the operator's prompts, which wake agents now, and one row per recipient
+    """
+    CREATE TABLE prompts (
+        id          INTEGER PRIMARY KEY,
+        target      TEXT NOT NULL,
+        body        TEXT NOT NULL,
+        mode        TEXT NOT NULL CHECK (mode IN ('single', 'group')),
+        project     TEXT REFERENCES projects(name),
+        thread      TEXT,
+        status      TEXT NOT NULL CHECK (status IN ('pending', 'running', 'discussing', 'done', 'failed')),
+        created_by  TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        finished_at TEXT
+    );
+    CREATE INDEX prompts_status ON prompts(status, id);
+
+    CREATE TABLE prompt_recipients (
+        prompt_id  INTEGER NOT NULL REFERENCES prompts(id),
+        agent_id   TEXT NOT NULL REFERENCES agents(id),
+        status     TEXT NOT NULL CHECK (status IN ('pending', 'running', 'done', 'claimed', 'declined',
+                                                   'skipped', 'timed_out', 'failed')),
+        task_id    INTEGER REFERENCES tasks(id),
+        note       TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (prompt_id, agent_id)
+    );
+    CREATE INDEX prompt_recipients_agent ON prompt_recipients(agent_id, status);
+    """,
 ]
 
 
