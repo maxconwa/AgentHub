@@ -302,7 +302,11 @@ class Runner:
                 log.warning("no local directory configured for project %s; skipping task %s",
                             task["project"], task_id)
             return
+        # The prompt this loop's first run needs. It becomes "extended" only once a run in this loop was cut
+        # short (max_turns / wall_clock): a budget pause before any run here must not replace a new review
+        # round's prompt or the operator's send-back note with "continue where you left off".
         resume_reason = "returned" if me["stage"] == "works" and task["state"] == "in_progress" else None
+        entry_task = task  # its last_note is the send-back note; a budget pause overwrites the task's
         if me["stage"] == "works":
             await self._begin_work(task)
         elif await self._reviewed_this_round(task):
@@ -323,9 +327,8 @@ class Runner:
                     if me["stage"] == "reviews":  # declined: don't ask again this round
                         self._review_rounds_done.add((task_id, task["updated_at"]))
                     return
-                resume_reason = "extended"
                 continue
-            result = await self._run_session(task, me, usage, project_dir, resume_reason)
+            result = await self._run_session(task, me, usage, project_dir, resume_reason, entry_task=entry_task)
             if result.outcome == "success":
                 await self._after_success(task_id, me["stage"], result)
                 return
@@ -386,7 +389,7 @@ class Runner:
                 await self.client.end_run(task_id, run["id"], outcome="runner_restart")
 
     async def _run_session(self, task: dict[str, Any], me: dict[str, Any], usage: dict[str, Any], project_dir,
-                           resume_reason: str | None) -> SessionResult:
+                           resume_reason: str | None, *, entry_task: dict[str, Any] | None = None) -> SessionResult:
         budget = me["budget"]
         remaining_turns = max(budget["max_turns"] - usage["turns"], 1)
         remaining_seconds = max(budget["wall_clock_minutes"] - usage["wall_clock_minutes"], 0) * 60
@@ -395,7 +398,8 @@ class Runner:
             # Each review round starts from the review prompt; only a budget continuation just continues.
             prompt = resume_prompt(task, "extended") if resume_reason == "extended" else review_prompt(task, me)
         elif resume_session:
-            prompt = resume_prompt(task, resume_reason or "continue")
+            source = entry_task if resume_reason == "returned" and entry_task is not None else task
+            prompt = resume_prompt(source, resume_reason or "continue")
         else:
             prompt = first_prompt(task)
         cmd = build_command(self.cfg.claude_bin, max_turns=remaining_turns,

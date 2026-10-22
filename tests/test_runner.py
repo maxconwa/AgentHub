@@ -488,6 +488,74 @@ async def test_reviewer_budget_pause_asks_once(live_hub, fake_claude, tmp_path, 
     assert live_hub.task(task_id)["state"] == "review"
 
 
+def _past_run(hub: LiveHub, task_id: int, agent: str, session_id: str, turns: int) -> None:
+    conn = hub.conn()
+    with db.transaction(conn):
+        a = store.find_agent(conn, agent)
+        run = tasks.start_run(conn, task_id, a)
+        tasks.end_run(conn, task_id, run["id"], a, outcome="success", session_id=session_id, num_turns=turns,
+                      cost_usd=None)
+
+
+def _send_back(hub: LiveHub, task_id: int, note: str) -> None:
+    conn = hub.conn()
+    with db.transaction(conn):
+        tasks.transition(conn, task_id, "in_progress", actor=OPERATOR, role="operator", note=note)
+
+
+async def _approve_budget_then_wait_for_call(hub: LiveHub, calls) -> dict:
+    await wait_for(lambda: approvals.list_approvals(hub.conn()))
+    (pending,) = approvals.list_approvals(hub.conn())
+    assert pending["kind"] == "budget_exceeded" and calls() == []
+    conn = hub.conn()
+    with db.transaction(conn):
+        approvals.decide(conn, pending["id"], approve=True, actor=OPERATOR)
+    await wait_for(lambda: len(calls()) == 1)
+    return calls()[0]
+
+
+async def test_reviewer_over_budget_at_round_start_still_gets_review_prompt(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    reviewer, _ = runner_for(live_hub, tmp_path, claude_bin, name="rev")
+    live_hub.agent("impl", tmp_path)
+    task_id = live_hub.op_task("t", assignee="impl", budget={"max_turns": 3})
+    live_hub.add(task_id, "rev", stage="reviews")
+    live_hub.move(task_id, "claimed", "in_progress", "review")
+    _past_run(live_hub, task_id, "rev", "rev-round-1", turns=3)  # round 1 used the whole budget
+    _send_back(live_hub, task_id, "reviewer wanted changes")
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        task_agents.finish(conn, task_id, store.find_agent(conn, "impl"), note="round two fixes")
+    main = asyncio.create_task(reviewer.run_forever())
+    try:
+        call = await _approve_budget_then_wait_for_call(live_hub, calls)
+    finally:
+        await stop(main)
+    assert call["argv"][call["argv"].index("--resume") + 1] == "rev-round-1"
+    assert "Reviewer" in call["stdin"] and "round two fixes" in call["stdin"]
+    assert "Continue where you left off" not in call["stdin"]
+
+
+async def test_implementer_over_budget_after_send_back_keeps_operator_note(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, _ = runner_for(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("t", assignee="worker", budget={"max_turns": 3})
+    live_hub.move(task_id, "claimed", "in_progress")
+    _past_run(live_hub, task_id, "worker", "impl-1", turns=3)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        task_agents.finish(conn, task_id, store.find_agent(conn, "worker"), note="first try")
+    _send_back(live_hub, task_id, "please also handle HEAD requests")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        call = await _approve_budget_then_wait_for_call(live_hub, calls)
+    finally:
+        await stop(main)
+    assert call["argv"][call["argv"].index("--resume") + 1] == "impl-1"
+    assert "please also handle HEAD requests" in call["stdin"] and "human:" in call["stdin"]
+    assert "Continue where you left off" not in call["stdin"]
+
+
 async def test_removed_member_gets_no_more_runs(live_hub, fake_claude, tmp_path, monkeypatch):
     """Review Focus 2: removal is caught by re-verification, without any websocket push."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "max_turns_then_success")
