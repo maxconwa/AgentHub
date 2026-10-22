@@ -28,13 +28,31 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
         open_tasks.setdefault(r["agent_id"], []).append(
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
              "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
-    cols = "id, name, status, device_name, connected, last_heartbeat, checkouts, current_dir FROM agents "
+    cols = "id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir FROM agents "
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
             else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
-    return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"],
+    return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"], "device_node_id": r["device_node_id"],
              "connected": bool(r["connected"]), "last_heartbeat": r["last_heartbeat"],
              "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
              "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
+
+
+def devices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Machines that host a non-revoked agent, one entry per ``device_node_id``.
+
+    ``name`` is the device name of the agent that heartbeat most recently; ``online`` is true
+    if any agent on it is connected; ``last_seen`` is the latest heartbeat. Online devices
+    come first, then by name.
+    """
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    for a in agent_rows(conn):
+        by_node.setdefault(a["device_node_id"], []).append(a)
+    out = []
+    for node_id, agents in by_node.items():
+        latest = max(agents, key=lambda a: a["last_heartbeat"] or "")
+        out.append({"node_id": node_id, "name": latest["device"], "online": any(a["connected"] for a in agents),
+                    "last_seen": latest["last_heartbeat"], "agents": agents})
+    return sorted(out, key=lambda d: (not d["online"], d["name"].lower(), d["node_id"]))
 
 
 def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:

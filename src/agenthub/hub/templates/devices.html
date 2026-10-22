@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chip, avatar %}
+{% block title %}Devices{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+<p class="lead">The machines your agents run on. CPU, GPU, memory and subscription usage arrive in the devices-and-usage plan.</p>
+{% endblock %}
+{% block live %}
+<ul class="device-grid">
+  {% for d in devices %}
+  <li class="card device-card" id="device-{{ d.node_id }}">
+    <div class="row"><span class="name">{{ d.name }}</span>
+      <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></div>
+    <div class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</div>
+    <ul class="device-agents">
+      {% for a in d.agents %}
+      <li>{{ avatar(a.avatar, 32) }} <a class="name" href="/ui/agents/{{ a.id }}">{{ a.name }}</a> {{ chip(a.status) }}
+        <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span></li>
+      {% endfor %}
+    </ul></li>
+  {% endfor %}
+</ul>
+{% if not devices %}<p class="empty">No devices yet. They appear when an agent enrolls.</p>{% endif %}
+{% endblock %}

@@ -377,3 +377,40 @@ def test_revoked_agent_page_renders_read_only(busy):
     assert "chip-revoked" in html and "gone" in html
     assert "/ui/avatars/" not in html and "<form" not in html.split("<h1>", 1)[1]  # read-only
     assert "gone" not in get(hub, "/ui/agents").text
+
+
+# --- Devices page -----------------------------------------------------------------
+
+def place(hub, agent, node, device, connected, heartbeat):
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET device_node_id = ?, device_name = ?, connected = ?, last_heartbeat = ? "
+                     "WHERE id = ?", (node, device, int(connected), heartbeat, agent.id))
+
+
+def test_two_agents_on_one_device_form_one_card_online_if_any_connected(hub):
+    a, b = hub.enroll("alpha"), hub.enroll("beta")
+    place(hub, a, "n1", "laptop", False, "2026-01-01T00:00:00.000Z")
+    place(hub, b, "n1", "laptop", True, "2026-01-01T00:05:00.000Z")
+    devs = views.devices(hub.conn())
+    assert len(devs) == 1 and devs[0]["online"] and devs[0]["last_seen"] == "2026-01-01T00:05:00.000Z"
+    assert [x["name"] for x in devs[0]["agents"]] == ["alpha", "beta"]
+    html = get(hub, "/ui/devices").text
+    assert html.count('class="card device-card"') == 1 and "laptop" in html
+    assert "alpha" in html and "beta" in html and "last seen" not in html
+
+
+def test_offline_device_shows_last_seen_and_sorts_after_online(hub):
+    a, b = hub.enroll("alpha"), hub.enroll("beta")
+    place(hub, a, "n1", "aaa-box", False, "2026-01-01T00:00:00.000Z")
+    place(hub, b, "n2", "zzz-box", True, "2026-01-01T00:00:00.000Z")
+    assert [d["name"] for d in views.devices(hub.conn())] == ["zzz-box", "aaa-box"]
+    html = get(hub, "/ui/devices").text
+    assert "last seen" in html and "ago" in html and "arrive in the devices-and-usage plan" in html
+
+
+def test_revoked_only_device_hidden_and_empty_state(hub):
+    assert "No devices yet" in get(hub, "/ui/devices").text
+    a = hub.enroll("alpha")
+    hub.set_status(a, "revoked")
+    assert views.devices(hub.conn()) == [] and "No devices yet" in get(hub, "/ui/devices").text

@@ -65,7 +65,7 @@ dd { margin: 0 0 6px; overflow-wrap: anywhere; }
 .chip { display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: var(--chip);
   color: var(--muted); font-weight: 600; vertical-align: middle; }
 .chip-pending, .chip-awaiting_approval, .chip-blocked, .chip-waiting { color: var(--warn); }
-.chip-approved, .chip-active, .chip-done, .chip-review { color: var(--ok); }
+.chip-approved, .chip-active, .chip-online, .chip-done, .chip-review { color: var(--ok); }
 .chip-rejected, .chip-revoked, .chip-cancelled { color: var(--bad); }
 .chip-in_progress, .chip-claimed, .chip-open, .chip-reply { color: var(--accent); }
 
@@ -184,3 +184,12 @@ header.top nav::-webkit-scrollbar { display: none; }
 .plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
 .agent-head .info { min-width: 0; }
 .agent-head h1 { overflow-wrap: anywhere; }
+
+/* Devices */
+.device-grid { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.device-card { display: grid; gap: 6px; }
+.device-card .name { font-weight: 700; overflow-wrap: anywhere; }
+.device-agents { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.device-agents li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.device-agents .name { overflow-wrap: anywhere; }

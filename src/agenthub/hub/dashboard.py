@@ -405,6 +405,10 @@ def build_router() -> APIRouter:
         results = events.search(conn, q[:500], projects=None, limit=50) if q.strip() else []
         return render(request, operator, "search.html", conn, q=q, results=results)
 
+    @router.get("/devices", response_class=HTMLResponse)
+    def devices_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "devices.html", conn, nav="devices", devices=views.devices(conn))
+
     # agents -------------------------------------------------------------------------
 
     def render_agents(request: Request, operator: Operator, conn: sqlite3.Connection, new_code: dict | None) -> HTMLResponse:
