@@ -1,0 +1,107 @@
+"""Questions an agent asks the operator (the ``ask_operator`` tool).
+
+A pending question waits in the approval queue; the operator's answer goes back
+to the asking agent as a private operator message. Unlike private chat text,
+questions are not secret, but ``question.*`` events carry ids only (the page
+reads the table), the same as private messages.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from typing import Any
+
+from agenthub.hub import events, private, tasks
+from agenthub.hub.db import now_iso
+from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, get_agent
+
+MAX_CHARS = 4000
+MAX_PENDING_PER_AGENT = 5
+
+_SELECT = "SELECT q.*, a.name AS agent_name FROM questions q LEFT JOIN agents a ON a.id = q.agent_id "
+
+
+def _payload(q: dict[str, Any]) -> dict[str, Any]:
+    return {"question_id": q["id"], "agent_id": q["agent_id"], "project": q["project"], "task_id": q["task_id"]}
+
+
+def get(conn: sqlite3.Connection, qid: int) -> dict[str, Any]:
+    row = conn.execute(_SELECT + "WHERE q.id = ?", (qid,)).fetchone()
+    if row is None:
+        raise NotFound(f"no question {qid}")
+    return dict(row)
+
+
+def get_own(conn: sqlite3.Connection, qid: int, agent: Agent) -> dict[str, Any]:
+    """The question, or NotFound when another agent asked it (its existence isn't revealed)."""
+    q = get(conn, qid)
+    if q["agent_id"] != agent.id:
+        raise NotFound(f"no question {qid}")
+    return q
+
+
+def pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Unanswered questions, newest first."""
+    return [dict(r) for r in conn.execute(_SELECT + "WHERE q.status = 'pending' ORDER BY q.id DESC")]
+
+
+def recently_answered(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    rows = conn.execute(_SELECT + "WHERE q.status = 'answered' ORDER BY q.answered_at DESC, q.id DESC LIMIT ?",
+                        (limit,))
+    return [dict(r) for r in rows]
+
+
+def pending_count(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM questions WHERE status = 'pending'").fetchone()[0]
+
+
+def ask(
+    conn: sqlite3.Connection, agent: Agent, *, project: str, question: str, task_id: int | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
+    if project not in agent.allowed_projects:
+        raise Forbidden(f"no access to project {project!r}")
+    if not question.strip() or len(question) > MAX_CHARS:
+        raise Invalid(f"a question must be 1 to {MAX_CHARS} characters")
+    if task_id is not None and tasks.get_task(conn, task_id)["project"] != project:
+        raise Invalid(f"task {task_id} is not in project {project!r}")
+    open_ones = conn.execute("SELECT COUNT(*) FROM questions WHERE agent_id = ? AND status = 'pending'",
+                             (agent.id,)).fetchone()[0]
+    if open_ones >= MAX_PENDING_PER_AGENT:
+        raise Conflict(f"you already have {MAX_PENDING_PER_AGENT} unanswered questions; wait or withdraw one")
+    cur = conn.execute(
+        "INSERT INTO questions (project, agent_id, task_id, question, status, created_at) "
+        "VALUES (?, ?, ?, ?, 'pending', ?)", (project, agent.id, task_id, question, now_iso()))
+    q = get(conn, cur.lastrowid)
+    events.emit(conn, type="question.asked", actor=agent.id, project=project, device=device, payload=_payload(q))
+    return q
+
+
+def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> dict[str, Any]:
+    if not actor.startswith("human:"):
+        raise Forbidden("only a human operator can answer questions")
+    if not answer.strip() or len(answer) > MAX_CHARS:
+        raise Invalid(f"an answer must be 1 to {MAX_CHARS} characters")
+    q = get(conn, qid)
+    cur = conn.execute("UPDATE questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? "
+                       "WHERE id = ? AND status = 'pending'", (answer, actor, now_iso(), qid))
+    if cur.rowcount == 0:
+        raise Conflict(f"question {qid} is already {q['status']}")
+    events.emit(conn, type="question.answered", actor=actor, project=q["project"], payload=_payload(q))
+    agent = get_agent(conn, q["agent_id"])
+    if agent is not None and agent.status != "revoked":  # a revoked agent's chat is read-only
+        prefix = f"Answer to your question #{qid}: "
+        text = prefix + answer
+        if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
+            note = f"… [truncated; full answer: GET /questions/{qid}]"
+            text = text[: private.MAX_BODY_CHARS - len(note)] + note
+        private.send(conn, agent.id, author=actor, body=text)
+    return get(conn, qid)
+
+
+def withdraw(conn: sqlite3.Connection, qid: int, agent: Agent) -> dict[str, Any]:
+    q = get_own(conn, qid, agent)
+    cur = conn.execute("UPDATE questions SET status = 'withdrawn' WHERE id = ? AND status = 'pending'", (qid,))
+    if cur.rowcount == 0:
+        raise Conflict(f"question {qid} is already {q['status']}")
+    return get(conn, qid)

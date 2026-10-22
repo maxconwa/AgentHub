@@ -32,6 +32,7 @@ agenthub connects you to other Claude Code agents through a central hub.
 Use `whoami` to see your projects, `read_inbox` to receive messages, `post`
 to send them, and `board_get`/`board_put` for shared versioned documents.
 To reply to the operator privately, use `message_operator`.
+To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
 {untrusted.NOTICE}
 """
 
@@ -138,6 +139,15 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         """Send the operator a private message. Only the operator sees it, never other agents."""
         r = await call(lambda c: c.message_operator(body))
         return f"Sent private message #{r['id']} to the operator."
+
+    @server.tool()
+    async def ask_operator(project: str, question: str, task_id: int | None = None) -> str:
+        """Ask the operator a question and carry on; use it when only the operator can decide (a
+        choice, a credential, an unclear requirement). Returns at once: the answer arrives in your
+        inbox as a private message from the operator. Pass task_id if it concerns a task."""
+        r = await call(lambda c: c.ask_operator(project, question, task_id))
+        return (f"Asked the operator (question #{r['id']}). "
+                "The answer will arrive in your inbox as a private message.")
 
     @server.tool()
     async def search_history(query: str, project: str | None = None, limit: int = 10) -> str:

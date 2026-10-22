@@ -37,7 +37,8 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
     """Agent id -> pose for every agent that isn't revoked."""
     now_s = now_iso(now or datetime.now(UTC))
     agents = conn.execute("SELECT id, connected FROM agents WHERE status != 'revoked'").fetchall()
-    needs_you = _ids(conn, "SELECT requester FROM approvals WHERE status = 'pending'")
+    needs_you = _ids(conn, "SELECT requester FROM approvals WHERE status = 'pending' "
+                           "UNION SELECT agent_id FROM questions WHERE status = 'pending'")
     # A pause left over on a finished task doesn't count.
     recharging = _ids(conn,
         "SELECT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "

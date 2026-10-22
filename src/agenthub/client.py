@@ -86,6 +86,18 @@ class HubClient:
     async def message_operator(self, body: str) -> dict[str, Any]:
         return await self._request("POST", "/private", json={"body": body})
 
+    # --- questions to the operator -------------------------------------------
+
+    async def ask_operator(self, project: str, question: str, task_id: int | None = None) -> dict[str, Any]:
+        return await self._request("POST", f"/projects/{quote(project)}/questions",
+                                   json={"question": question, "task_id": task_id})
+
+    async def get_question(self, question_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/questions/{question_id}")
+
+    async def withdraw_question(self, question_id: int) -> dict[str, Any]:
+        return await self._request("POST", f"/questions/{question_id}/withdraw")
+
     # --- board -----------------------------------------------------------------
 
     async def board_list(self, project: str, prefix: str = "") -> list[dict[str, Any]]:

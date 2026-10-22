@@ -43,10 +43,11 @@ def world(hub):
     a = hub.enroll("worker")
     ap = hub.client.post("/api/v1/approvals/command", json={"command": "git push -f origin x", "cwd": "/w"},
                          headers=a.headers).json()
+    q = hub.client.post("/api/v1/projects/proj/questions", json={"question": "which?"}, headers=a.headers).json()
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
-    return hub, a, {"approval_id": ap["id"], "task_id": t["id"], "agent_id": a.id,
+    return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id,
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
@@ -124,7 +125,7 @@ def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/feed", "/ui/feed?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
-                 f"/ui/approvals/{ids['approval_id']}/thread", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
+                 f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
                  "/ui/badge/chats"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path

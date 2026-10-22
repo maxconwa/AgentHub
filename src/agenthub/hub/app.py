@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, asks, db, events, intents, private, store, task_agents, tasks
+from agenthub.hub import approvals, asks, db, events, intents, private, questions, store, task_agents, tasks
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
@@ -111,6 +111,11 @@ class PostMessageRequest(BaseModel):
 
 class PrivateMessageRequest(BaseModel):
     body: str = Field(min_length=1, max_length=private.MAX_BODY_CHARS)
+
+
+class QuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=questions.MAX_CHARS)
+    task_id: int | None = None
 
 
 class BoardPutRequest(BaseModel):
@@ -329,6 +334,24 @@ def create_app(state: HubState) -> FastAPI:
         """Write to the operator in the caller's own private chat."""
         with db.transaction(conn):
             return private.send(conn, caller.agent.id, author=caller.agent.id, body=body.body)
+
+    # --- questions to the operator -------------------------------------------
+
+    @app.post(f"{api}/projects/{{project}}/questions", status_code=201)
+    def ask_operator(project: str, body: QuestionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        require_project(caller, project)
+        with db.transaction(conn):
+            return questions.ask(conn, caller.agent, project=project, question=body.question,
+                                 task_id=body.task_id, device=caller.device.name)
+
+    @app.get(f"{api}/questions/{{question_id}}")
+    def get_question(question_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        return questions.get_own(conn, question_id, caller.agent)
+
+    @app.post(f"{api}/questions/{{question_id}}/withdraw")
+    def withdraw_question(question_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return questions.withdraw(conn, question_id, caller.agent)
 
     # --- board ---------------------------------------------------------------
 

@@ -293,6 +293,22 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX private_messages_agent_id ON private_messages(agent_id, id);
     """,
+    # 11: questions agents ask the operator (answered through a private message)
+    """
+    CREATE TABLE questions (
+        id          INTEGER PRIMARY KEY,
+        project     TEXT NOT NULL REFERENCES projects(name),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        task_id     INTEGER REFERENCES tasks(id),
+        question    TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('pending', 'answered', 'withdrawn')),
+        answer      TEXT,
+        answered_by TEXT,
+        created_at  TEXT NOT NULL,
+        answered_at TEXT
+    );
+    CREATE INDEX questions_status ON questions(status, id);
+    """,
 ]
 
 

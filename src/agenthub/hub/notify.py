@@ -35,12 +35,13 @@ KIND_LABELS = {
 
 
 def build_notification(
-    event: dict[str, Any], names: dict[str, str], cfg: HubConfig, *, private_body: str | None = None
+    event: dict[str, Any], names: dict[str, str], cfg: HubConfig, *, private_body: str | None = None,
+    question_text: str | None = None,
 ) -> dict[str, Any] | None:
     """Turn an event into an ntfy message, or None if the operator needn't be pinged.
 
     ``private_body`` is the text of a ``private.sent`` message (its event carries none); it is
-    used only with ``ntfy_include_details``.
+    used only with ``ntfy_include_details``, as is ``question_text`` for ``question.asked``.
     """
     p, etype, base = event["payload"], event["type"], cfg.public_url.rstrip("/")
     who = names.get(event["actor"], event["actor"])
@@ -63,6 +64,13 @@ def build_notification(
             details = p.get("details", {})
             text = details.get("command") or details.get("title") or details.get("tool_name") or ""
             msg["message"] += f"\n{text}"[:500]
+        return msg
+    if etype == "question.asked":
+        msg = {"title": f"Question · #{p['question_id']}", "message": f"{who} is waiting for your answer.",
+               "priority": 4, "tags": ["question"],
+               "click": f"{base}/ui/questions/{p['question_id']}" if base else None}
+        if cfg.ntfy_include_details and question_text:
+            msg["message"] += f"\n{question_text}"[:500]
         return msg
     if etype == "approval.discussed" and not event["actor"].startswith("human:"):
         return {"title": f"Reply on approval #{p['approval_id']}", "message": f"{who} answered you.",
@@ -93,17 +101,21 @@ class Notifier:
         return Path(self.cfg.ntfy_token_file).expanduser().read_text().strip() or None
 
     def message_for(self, event: dict[str, Any], names: dict[str, str]) -> dict[str, Any] | None:
-        body = None
+        body = question = None
         p = event["payload"]
-        if event["type"] == "private.sent" and p.get("from") == "agent" and self.cfg.ntfy_include_details:
-            from agenthub.hub import db, private
+        wants_private = event["type"] == "private.sent" and p.get("from") == "agent"
+        if (wants_private or event["type"] == "question.asked") and self.cfg.ntfy_include_details:
+            from agenthub.hub import db, private, questions
 
             conn = db.connect(self.cfg.db_path)
             try:
-                body = private.body(conn, event["payload"]["message_id"])
+                if wants_private:
+                    body = private.body(conn, p["message_id"])
+                else:
+                    question = questions.get(conn, p["question_id"])["question"]
             finally:
                 conn.close()
-        return build_notification(event, names, self.cfg, private_body=body)
+        return build_notification(event, names, self.cfg, private_body=body, question_text=question)
 
     def submit(self, event: dict[str, Any], names: dict[str, str]) -> None:
         """Fire and forget, so a slow ntfy server never delays the event bus."""

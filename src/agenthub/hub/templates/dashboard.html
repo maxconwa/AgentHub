@@ -6,14 +6,21 @@
 <p class="lead">What needs you, and what every agent is doing right now.</p>
 {% endblock %}
 {% block live %}
-<div class="section-head"><h2>Waiting on you{% if pending %} <span class="count">{{ pending|length }}</span>{% endif %}</h2><a href="/ui/approvals">All approvals</a></div>
-{% if not pending %}<p class="empty">Nothing needs you right now.</p>{% endif %}
+{% set total = pending|length + questions|length %}
+<div class="section-head"><h2>Waiting on you{% if total %} <span class="count">{{ total }}</span>{% endif %}</h2><a href="/ui/approvals">All approvals</a></div>
+{% if not total %}<p class="empty">Nothing needs you right now.</p>{% endif %}
 <ul class="cards">
   {% for a in pending %}
   <li class="card"><a class="card-link approval-card" href="/ui/approvals/{{ a.id }}">{{ avatar(avatars.get(a.requester), 40) }}
     <div class="body"><div class="row"><span class="kind">{{ a.kind.replace('_', ' ') }}</span><span class="muted small">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
       <div class="summary">{{ approval_summary(a) }}</div>
       <div class="muted small">from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</div></div></a></li>
+  {% endfor %}
+  {% for q in questions %}
+  <li class="card"><a class="card-link approval-card" href="/ui/questions/{{ q.id }}">{{ avatar(avatars.get(q.agent_id), 40) }}
+    <div class="body"><div class="row"><span class="kind">Question</span><span class="muted small">#{{ q.id }} · {{ ago(q.created_at) }}</span></div>
+      <div class="summary">{{ q.question|truncate(140) }}</div>
+      <div class="muted small">from {{ q.agent_name or q.agent_id }} · {{ q.project }}</div></div></a></li>
   {% endfor %}
 </ul>
 <div class="section-head"><h2>Agents <span class="count">{{ agents|length }}</span></h2><a href="/ui/agents">All agents</a></div>

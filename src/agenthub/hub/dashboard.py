@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, avatar_art, avatars, db, events, private, store, task_agents, tasks, views
+from agenthub.hub import approvals, avatar_art, avatars, db, events, private, questions, store, task_agents, tasks, views
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -130,6 +130,8 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
         return f"task #{p.get('task_id')} {snippet(p.get('title') or p.get('outcome') or '')}".strip()
     if t.startswith("approval."):
         return f"approval #{p.get('approval_id')} {p.get('kind') or ''} {p.get('status') or ''} {snippet(p.get('body'))}"
+    if t.startswith("question."):
+        return f"question #{p.get('question_id')} {t.split('.')[1]} ({who(p.get('agent_id'), names)})"
     if t.startswith("ask."):
         return f"ask #{p.get('ask_id')} {snippet(p.get('question') or p.get('answer'))}"
     if t == "intent.announced":
@@ -157,8 +159,14 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
 templates.globals.update(ago=ago, who=who, event_summary=event_summary)
 
 
+def pending_total(conn: sqlite3.Connection) -> int:
+    """What the red badge counts: pending approvals plus pending questions to the operator."""
+    return conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0] \
+        + questions.pending_count(conn)
+
+
 def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connection, **ctx: Any) -> HTMLResponse:
-    pending = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0]
+    pending = pending_total(conn)
     html = templates.get_template(name).render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
         pending_count=pending, chat_unread=sum(private.unread_counts(conn).values()),
@@ -223,7 +231,7 @@ def build_router() -> APIRouter:
         tally_chips = [{"pose": p, "count": n, "label": avatar_art.POSE_LABELS[p]}
                        for p, n in sorted(tally.items(), key=lambda kv: avatar_art.POSES.index(kv[0]))]
         return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
-                      tally=tally_chips)
+                      tally=tally_chips, questions=questions.pending(conn))
 
     @router.get("/projects", response_class=HTMLResponse)
     def projects_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -262,7 +270,7 @@ def build_router() -> APIRouter:
 
     @router.get("/badge", response_class=HTMLResponse)
     def badge(operator: Op, conn: Conn) -> HTMLResponse:
-        n = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0]
+        n = pending_total(conn)
         return HTMLResponse(f'<span class="badge">{n}</span>' if n else "", headers=SECURITY_HEADERS)
 
     @router.get("/badge/chats", response_class=HTMLResponse)
@@ -362,7 +370,21 @@ def build_router() -> APIRouter:
     def approvals_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         pending = list(reversed(approvals.list_approvals(conn, status="pending")))
         recent = [a for a in approvals.list_approvals(conn, status=None, limit=40) if a["status"] != "pending"][:20]
-        return render(request, operator, "approvals.html", conn, nav="approvals", pending=pending, recent=recent)
+        return render(request, operator, "approvals.html", conn, nav="approvals", pending=pending, recent=recent,
+                      questions=questions.pending(conn), answered=questions.recently_answered(conn))
+
+    @router.get("/questions/{qid}", response_class=HTMLResponse)
+    def question_page(qid: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        q = questions.get(conn, qid)
+        task = tasks.get_task(conn, q["task_id"]) if q["task_id"] else None
+        return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task)
+
+    @router.post("/questions/{qid}/answer")
+    def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
+                        answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)]) -> Response:
+        with db.transaction(conn):
+            questions.answer(conn, qid, answer=answer, actor=operator.actor)
+        return done(request, f"/ui/questions/{qid}")
 
     @router.get("/approvals/{approval_id}", response_class=HTMLResponse)
     def approval_page(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
