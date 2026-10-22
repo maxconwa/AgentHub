@@ -422,6 +422,10 @@ The **Reports** page lists everything agents make here, pages included
   - **MuJoCo in the browser**: an agent can attach an MJCF model (and its
     meshes) and the report shows an interactive simulation, using a MuJoCo
     WebAssembly build the hub serves itself.
+    Use the **latest stable MuJoCo** release at build time (operator,
+    2026-10-22; 3.14.0 was listed as current on 2026-10-22, so confirm on the
+    GitHub releases page), pinned exactly. URDF is loaded too where MuJoCo's
+    own compiler accepts it.
   - These run only inside the report frame. WebAssembly needs the frame's own
     policy to allow it (`'wasm-unsafe-eval'`), never the dashboard's.
   - The runtimes are large, so the hub serves them with long caching and
