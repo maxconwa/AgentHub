@@ -131,6 +131,15 @@ class HubClient:
             payload["stale"] = True
         return await self._request("POST", f"/prompts/{prompt_id}/finish", json=payload)
 
+    async def report_prompt_run(
+        self, prompt_id: int, *, outcome: str, seconds: float, session_id: str | None = None,
+        num_turns: int | None = None, cost_usd: float | None = None, project: str | None = None,
+    ) -> dict[str, Any]:
+        """One session this runner ran on the prompt, for the Usage page."""
+        payload = {"outcome": outcome, "seconds": seconds, "session_id": session_id, "num_turns": num_turns,
+                   "cost_usd": cost_usd, "project": project}
+        return await self._request("POST", f"/prompts/{prompt_id}/runs", json=payload)
+
     async def claim_share(self, prompt_id: int, title: str, body: str = "", project: str | None = None
                           ) -> dict[str, Any]:
         payload = {"title": title, "body": body, "project": project}

@@ -868,6 +868,10 @@ def _prompt_row(hub: LiveHub, pid: int) -> dict:
     return hub_prompts.get(hub.conn(), pid)
 
 
+def _prompt_runs(hub: LiveHub, pid: int) -> list[dict]:
+    return [dict(r) for r in hub.conn().execute("SELECT * FROM prompt_runs WHERE prompt_id = ? ORDER BY id", (pid,))]
+
+
 def _left_running(hub: LiveHub, agent_id: str, body: str = "Rotate the logs.") -> int:
     """A prompt this agent's previous runner process started and never finished."""
     conn = hub.conn()
@@ -1081,6 +1085,11 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert runner.prompts.store.get(pid) is None  # nothing left to resume
     assert not runner._session_dirs
     assert runner._heartbeat_frame()["model"] == "claude-test-model"  # what the session's init line said
+    # The session's usage reached the hub (the Usage page), counted in the checkout's project.
+    (run,) = _prompt_runs(live_hub, pid)
+    assert (run["agent_id"], run["outcome"], run["num_turns"], run["cost_usd"], run["project"]) == (
+        agent_cfg.agent_id, "success", 2, 0.02, "proj")
+    assert run["session_id"] == call["session"] and run["started_at"] <= run["ended_at"]
 
 
 async def test_old_pending_prompts_still_run(live_hub, fake_claude, tmp_path):
@@ -1293,6 +1302,8 @@ async def test_usage_limit_during_a_prompt_waits_and_resumes(live_hub, fake_clau
     assert _arg(second, "--resume") == first["session"] and "usage limit has reset" in second["stdin"]
     assert "--fork-session" not in second["argv"]
     assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
+    # Each session is reported: the one the limit stopped (a limit hit on the Usage page), then the resumed one.
+    assert [(r["outcome"], r["num_turns"]) for r in _prompt_runs(live_hub, pid)] == [("usage_limit", 1), ("success", 2)]
 
 
 

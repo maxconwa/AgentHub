@@ -26,7 +26,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agenthub.hub import (
     approvals, avatar_art, avatars, db, device_board, events, markdown, private, prompts, questions, store, task_agents,
-    tasks, views,
+    tasks, usage, views,
 )
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
@@ -388,6 +388,10 @@ def build_router() -> APIRouter:
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         return render(request, operator, "reports.html", conn, nav="reports")
+
+    @router.get("/usage", response_class=HTMLResponse)
+    def usage_page(request: Request, operator: Op, conn: Conn, window: str = usage.DEFAULT_WINDOW) -> HTMLResponse:
+        return render(request, operator, "usage.html", conn, nav="usage", u=usage.summary(conn, window))
 
     @router.get("/badge", response_class=HTMLResponse)
     def badge(operator: Op, conn: Conn) -> HTMLResponse:

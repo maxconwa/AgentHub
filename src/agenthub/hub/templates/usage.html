@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% set has_live = true %}
+{% from "_macros.html" import chip, open_attrs %}
+{% block title %}Usage{% endblock %}
+
+{% macro duration(m) -%}
+{%- set n = m|round|int -%}
+{%- if m == 0 %}0m{% elif n < 1 %}&lt;1m{% elif n < 60 %}{{ n }}m{% else %}{{ n // 60 }}h {{ n % 60 }}m{% endif -%}
+{%- endmacro %}
+
+{% macro cost(c, costed=1) -%}
+{%- if not costed %}–{% elif c < 0.01 and c > 0 %}&lt;$0.01{% else %}${{ '%.2f'|format(c) }}{% endif -%}
+{%- endmacro %}
+
+{# One kind's totals in one cell: runs · turns · wall-clock · est. cost, and its limit hits #}
+{% macro brief(t) -%}
+{%- if not t.runs %}<span class="muted">–</span>{% else -%}
+{{ t.runs }} run{{ 's' if t.runs != 1 }} · {{ t.turns }} turn{{ 's' if t.turns != 1 }} · {{ duration(t.minutes) }} · {{ cost(t.cost, t.costed) }}
+{%- if t.limit_hits %} · <span class="limit-hit">{{ t.limit_hits }} limit hit{{ 's' if t.limit_hits != 1 }}</span>{% endif -%}
+{%- if t.running %} · {{ t.running }} running{% endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro breakdown(rows, what, link) -%}
+{% if not rows %}<p class="empty">Nothing in this window.</p>{% else %}
+<div class="table-scroll"><table class="runs usage-table">
+  <thead><tr><th scope="col">{{ what }}</th><th scope="col"><span class="swatch swatch-task" aria-hidden="true"></span>Tasks</th><th scope="col"><span class="swatch swatch-prompt" aria-hidden="true"></span>Prompts</th><th scope="col" class="num">Est. cost</th></tr></thead>
+  <tbody>
+  {% for g in rows %}<tr><th scope="row">{{ link(g) }}</th><td>{{ brief(g.task) }}</td><td>{{ brief(g.prompt) }}</td><td class="num">{{ cost(g.all.cost, g.all.costed) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+{%- endmacro %}
+
+{% macro agent_link(g) %}<a {{ open_attrs('agent:' ~ g.agent_id, '/ui/agents/' ~ g.agent_id) }}>{{ g.label }}</a>{% endmacro %}
+{% macro project_link(g) %}{% if g.project %}<a {{ open_attrs('project:' ~ g.project, '/ui/projects/' ~ g.project) }}>{{ g.project }}</a>{% else %}<span class="muted">{{ g.label }}</span>{% endif %}{% endmacro %}
+{% macro task_link(g) %}<a {{ open_attrs('task:' ~ g.task_id, '/ui/tasks/' ~ g.task_id) }}>#{{ g.task_id }}{% if g.title %} <span class="task-title">{{ g.title }}</span>{% endif %}</a>{% if g.project %} <span class="by-label">{{ g.project }}</span>{% endif %}{% endmacro %}
+
+{% block content %}
+<h1>Usage</h1>
+<p class="lead">What your agents' task runs and prompt sessions used: runs, turns, wall-clock and Claude Code's estimated cost. Sessions stopped by the usage limit count as limit hits.</p>
+<nav class="filters seg" aria-label="Time window">
+  {% for w in u.windows %}<a href="/ui/usage?window={{ w }}"{% if w == u.window %} class="active" aria-current="page"{% endif %}>{{ u.labels[w] }}</a>{% endfor %}
+</nav>
+{% endblock %}
+
+{% block live %}
+{% set t = u.totals %}
+<h2>{{ u.label }}</h2>
+<div class="table-scroll"><table class="runs usage-table usage-totals">
+  <thead><tr><th scope="col"></th><th scope="col" class="num">Runs</th><th scope="col" class="num">Limit hits</th><th scope="col" class="num">Turns</th><th scope="col" class="num">Wall-clock</th><th scope="col" class="num">Est. cost</th></tr></thead>
+  <tbody>
+  {% for key, label in [("task", "Tasks"), ("prompt", "Prompts"), ("all", "Total")] %}{% set k = t[key] %}
+  <tr{% if key == "all" %} class="total"{% endif %}><th scope="row">{% if key != "all" %}<span class="swatch swatch-{{ key }}" aria-hidden="true"></span>{% endif %}{{ label }}</th><td class="num">{{ k.runs }}{% if k.running %} <span class="muted small">({{ k.running }} running)</span>{% endif %}</td><td class="num">{% if k.limit_hits %}<span class="limit-hit">{{ k.limit_hits }}</span>{% else %}0{% endif %}</td><td class="num">{{ k.turns }}</td><td class="num">{{ duration(k.minutes) }}</td><td class="num">{{ cost(k.cost, k.costed) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2>Per day</h2>
+<p class="small-line">Turns on each of the last {{ u.days|length }} days (UTC). Hover a day for its numbers.</p>
+<div class="strip-legend small-line"><span><span class="swatch swatch-task" aria-hidden="true"></span>Tasks</span><span><span class="swatch swatch-prompt" aria-hidden="true"></span>Prompts</span></div>
+{% set n = u.days|length %}
+<svg class="usage-strip" viewBox="0 0 {{ n * 10 }} 100" preserveAspectRatio="none" role="img" aria-label="Turns per day, tasks and prompts; the table below has the numbers">
+  {% for d in u.days %}{% set x = loop.index0 * 10 %}{% set ht = d.height.task * 0.96 %}{% set hp = d.height.prompt * 0.96 %}
+  <g class="day"><title>{{ d.day }}&#10;Tasks: {{ d.task.runs }} runs, {{ d.task.turns }} turns, {{ cost(d.task.cost, d.task.costed) }}&#10;Prompts: {{ d.prompt.runs }} runs, {{ d.prompt.turns }} turns, {{ cost(d.prompt.cost, d.prompt.costed) }}</title>
+    <rect class="hit" x="{{ x }}" y="0" width="10" height="100"></rect>
+    {% if d.task.turns %}<rect class="bar-task" x="{{ x + 2 }}" y="{{ 100 - ht }}" width="6" height="{{ ht }}"></rect>{% endif %}
+    {% if d.prompt.turns %}<rect class="bar-prompt" x="{{ x + 2 }}" y="{{ 100 - ht - hp - (2 if d.task.turns else 0) }}" width="6" height="{{ hp }}"></rect>{% endif %}
+  </g>
+  {% endfor %}
+</svg>
+<div class="strip-days small-line"><span>{{ u.days[0].day[5:] }}</span><span>{{ u.days[-1].day[5:] }}</span></div>
+<details class="strip-table">
+  <summary>Per day as a table</summary>
+  <div class="table-scroll"><table class="runs usage-table">
+    <thead><tr><th scope="col">Day (UTC)</th><th scope="col">Tasks</th><th scope="col">Prompts</th></tr></thead>
+    <tbody>{% for d in u.days|reverse %}<tr><th scope="row">{{ d.day }}</th><td>{{ brief(d.task) }}</td><td>{{ brief(d.prompt) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+</details>
+
+<h2>By agent</h2>
+{{ breakdown(u.by_agent, "Agent", agent_link) }}
+<h2>By project</h2>
+{{ breakdown(u.by_project, "Project", project_link) }}
+<h2>By task</h2>
+<p class="small-line">A prompt about a task counts on that task's line, under Prompts.</p>
+{{ breakdown(u.by_task, "Task", task_link) }}
+
+<h2>Recent runs</h2>
+{% if not u.recent %}<p class="empty">No runs in this window.</p>{% else %}
+<div class="table-scroll"><table class="runs usage-table">
+  <thead><tr><th scope="col">Started</th><th scope="col">Run</th><th scope="col">Agent</th><th scope="col">Outcome</th><th scope="col" class="num">Turns</th><th scope="col" class="num">Wall-clock</th><th scope="col" class="num">Est. cost</th></tr></thead>
+  <tbody>
+  {% for r in u.recent %}
+  <tr{% if r.limit_hit %} class="limit-row"{% endif %}>
+    <td>{{ ago(r.started_at) }}</td>
+    <td><span class="swatch swatch-{{ r.kind }}" aria-hidden="true"></span>{% if r.kind == "task" %}<a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>Task #{{ r.task_id }}</a>{% else %}<a href="/ui/prompts/{{ r.prompt_id }}">Prompt #{{ r.prompt_id }}</a>{% endif %}{% if r.project %} <span class="by-label">{{ r.project }}</span>{% endif %}</td>
+    <td><a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.agent }}</a></td>
+    <td>{% if r.limit_hit %}<span class="chip chip-usage_limit">usage limit</span>{% else %}{{ chip(r.outcome or 'running') }}{% endif %}</td>
+    <td class="num">{{ r.num_turns if r.num_turns is not none else '–' }}</td>
+    <td class="num">{% if r.ended_at %}{{ duration(r.minutes) }}{% else %}–{% endif %}</td>
+    <td class="num">{% if r.cost_usd is not none %}{{ cost(r.cost_usd) }}{% else %}–{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+{% endblock %}

@@ -39,6 +39,7 @@ TOO_OLD = "runner too old for prompts"
 STALE_HOURS = 6  # a runner that starts up fails pending prompts older than this instead of running them
 STALE = "too old when the runner picked it up"
 WITHDRAWN = "withdrawn by the operator"
+MAX_RUN_SECONDS = 7 * 24 * 3600
 
 
 def _labeled(pid: int, body: str, limit: int) -> str:
@@ -243,6 +244,30 @@ def finish(
     _set_recipient(conn, pid, agent.id, status, note=note, by_hub=stale)
     _emit(conn, _settle(conn, pid), actor=agent.id, agent_id=agent.id, recipient_status=status)
     return get_for_agent(conn, pid, agent)
+
+
+def record_run(
+    conn: sqlite3.Connection, pid: int, agent: Agent, *, outcome: str, seconds: float, session_id: str | None = None,
+    num_turns: int | None = None, cost_usd: float | None = None, project: str | None = None,
+) -> dict[str, Any]:
+    """``agent``'s runner ran one session on the prompt: it ended now, after ``seconds`` (the hub's clock places it,
+    not the runner's). Shown on the Usage page. The prompt's project counts it, else ``project`` (where an agent or
+    device prompt ran) if ``agent`` may see that project. Conflict for a recipient that never started. No cap on how
+    many: a prompt waits out the usage limit as often as it's hit, and each resume is one more session."""
+    p, mine = _own(conn, pid, agent)
+    if mine["status"] in ("pending", "skipped"):
+        raise Conflict(f"prompt {pid} was never started by you")
+    if p["project"] is None and project is not None:
+        known = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
+        project = project if known and project in agent.allowed_projects else None
+    now = datetime.now(UTC)
+    started = now - timedelta(seconds=min(max(seconds, 0.0), MAX_RUN_SECONDS))
+    cur = conn.execute(
+        "INSERT INTO prompt_runs (prompt_id, agent_id, project, session_id, started_at, ended_at, outcome, num_turns, "
+        "cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (pid, agent.id, p["project"] or project, session_id, now_iso(started), now_iso(now), outcome, num_turns,
+         cost_usd))
+    return {"id": cur.lastrowid}
 
 
 def _share_project(conn: sqlite3.Connection, p: dict[str, Any], agent: Agent, project: str | None) -> str:

@@ -9,7 +9,7 @@ from agenthub.hub import approvals, db, private, store, task_agents, tasks, view
 
 from .conftest import OP_LOGIN, OPERATOR
 
-LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Board", "Reports"]
+LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Board", "Reports", "Usage"]
 
 
 def get(hub, path):

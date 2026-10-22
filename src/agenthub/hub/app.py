@@ -251,6 +251,15 @@ class PromptFinishRequest(BaseModel):
     stale: bool = False
 
 
+class PromptRunRequest(BaseModel):
+    outcome: str = Field(min_length=1, max_length=64)
+    seconds: float = Field(ge=0, le=prompts.MAX_RUN_SECONDS)
+    session_id: str | None = Field(default=None, max_length=128)
+    num_turns: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+    project: str | None = Field(default=None, max_length=64)
+
+
 class PromptClaimRequest(BaseModel):
     title: str = Field(min_length=1, max_length=tasks.MAX_TITLE_CHARS)
     body: str = Field(default="", max_length=tasks.MAX_BODY_CHARS)
@@ -460,6 +469,13 @@ def create_app(state: HubState) -> FastAPI:
     def finish_prompt(prompt_id: int, body: PromptFinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
         with db.transaction(conn):
             return prompts.finish(conn, prompt_id, caller.agent, ok=body.ok, note=body.note, stale=body.stale)
+
+    @app.post(f"{api}/prompts/{{prompt_id}}/runs", status_code=201)
+    def prompt_run(prompt_id: int, body: PromptRunRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return prompts.record_run(conn, prompt_id, caller.agent, outcome=body.outcome, seconds=body.seconds,
+                                      session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
+                                      project=body.project)
 
     @app.post(f"{api}/prompts/{{prompt_id}}/claim", status_code=201)
     def claim_share(prompt_id: int, body: PromptClaimRequest, caller: Caller, conn: Conn) -> dict[str, Any]:

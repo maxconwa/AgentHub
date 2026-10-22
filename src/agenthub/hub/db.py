@@ -387,6 +387,25 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE agents ADD COLUMN model TEXT;
     """,
+    # 19: one row per prompt session a runner ran (its turns, est. cost and duration), for the Usage page; a prompt
+    # paused by the usage limit and resumed has two
+    """
+    CREATE TABLE prompt_runs (
+        id          INTEGER PRIMARY KEY,
+        prompt_id   INTEGER NOT NULL REFERENCES prompts(id),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        project     TEXT REFERENCES projects(name),
+        session_id  TEXT,
+        started_at  TEXT NOT NULL,
+        ended_at    TEXT NOT NULL,
+        outcome     TEXT NOT NULL,
+        num_turns   INTEGER,
+        cost_usd    REAL
+    );
+    CREATE INDEX prompt_runs_started ON prompt_runs(started_at);
+    CREATE INDEX prompt_runs_prompt ON prompt_runs(prompt_id, id);
+    CREATE INDEX IF NOT EXISTS task_runs_started ON task_runs(started_at);
+    """,
 ]
 
 

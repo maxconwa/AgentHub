@@ -15,8 +15,9 @@
 * No limit by default: a prompt session runs until it's done, unless runner.toml sets ``prompt_max_turns`` or
   ``prompt_wall_clock_minutes``. The subscription usage limit pauses the prompt until the reset, then resumes the
   same session, as often as the limit is hit, unless the prompt was settled meanwhile; the hub's prompt stays
-  ``running`` meanwhile. Prompt sessions record no task runs: the outcome is reported with
-  ``finish``. A transient hub error before the prompt started leaves it for the next sync.
+  ``running`` meanwhile. Prompt sessions record no task runs: the outcome is reported with ``finish``, and each
+  session's turns, est. cost and duration with ``report_prompt_run`` (the Usage page). A transient hub error
+  before the prompt started leaves it for the next sync.
 * Each prompt's claude session id is kept on disk (:class:`PromptSessions`): a prompt a previous runner process
   left ``running`` is resumed once after a restart (started afresh with a note if its session id was never
   seen). If the runner restarts again, or the resumed session fails, the prompt is finished as failed.
@@ -328,10 +329,12 @@ class PromptRunner:
                 result = await self._session(p, text, resume=resume, fork=fork, cwd=cwd, project=project,
                                              task_id=task_id, turns=turns, seconds=seconds)
                 fork = False
+            elapsed = time.monotonic() - began
+            await self._report_run(pid, result, elapsed, project)
             if turns is not None:
                 turns -= result.num_turns or 0
             if seconds is not None:
-                seconds -= time.monotonic() - began
+                seconds -= elapsed
             resume = result.session_id or resume
             if result.outcome == "usage_limit":
                 self.runner.slots.queue(pid)  # no new task session starts meanwhile; this prompt goes first after
@@ -344,6 +347,16 @@ class PromptRunner:
                 continue
             break
         await self._finish(p, result)
+
+    async def _report_run(self, pid: int, result: SessionResult, seconds: float, project: str | None) -> None:
+        """Tell the hub what one session on the prompt used (the Usage page). Best effort: a report the hub doesn't
+        take is logged and dropped, never retried, and never changes how the prompt goes on."""
+        try:
+            await self.runner.client.report_prompt_run(
+                pid, outcome=result.outcome, seconds=round(seconds, 3), session_id=result.session_id,
+                num_turns=result.num_turns, cost_usd=result.cost_usd, project=project)
+        except (HubError, httpx.HTTPError) as exc:
+            log.warning("prompt %s: could not report its session's usage: %s", pid, exc)
 
     async def _start(self, pid: int) -> bool:
         try:

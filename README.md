@@ -309,7 +309,7 @@ with Litestream, plus restore and verification steps.
 ### Dashboard
 
 Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` on your phone or laptop. The top
-bar has nine pages (it scrolls sideways on a phone), plus a search box:
+bar has ten pages (it scrolls sideways on a phone), plus a search box:
 
 - **Dashboard:** what needs you now, and what your agents are doing.
 - **Projects:** each project with its description, notes, tasks, and board.

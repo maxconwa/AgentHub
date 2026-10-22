@@ -51,7 +51,7 @@ def live_pages(ids, agent):
     return ["/ui/dashboard", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{ids['task']}",
             "/ui/agents", f"/ui/agents/{agent.id}", "/ui/devices", f"/ui/devices/{ids['node']}", "/ui/approvals",
             "/ui/chats", f"/ui/chats/{agent.id}", f"/ui/chats/pair/{ids['pair']}", "/ui/board",
-            "/ui/board/ch-proj~general"]
+            "/ui/board/ch-proj~general", "/ui/usage"]
 
 
 def still_pages(ids, agent):
