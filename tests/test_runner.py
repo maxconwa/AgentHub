@@ -946,3 +946,45 @@ async def test_transport_error_while_clearing_pause_does_not_block(live_hub, fak
     assert "blocked" not in [e["to"] for e in live_hub.events("task.transitioned")]
     assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None
     assert len(calls()) == 2
+
+
+class _FakeWs:
+    def __init__(self):
+        self.frames = []
+
+    async def send(self, raw):
+        self.frames.append(json.loads(raw))
+
+
+async def test_heartbeat_frame_reports_checkouts_and_newest_running_session_dir(live_hub, fake_claude, tmp_path):
+    runner, _ = runner_for(live_hub, tmp_path, fake_claude[0])
+    assert runner._heartbeat_frame() == {"type": "heartbeat", "checkouts": {"proj": str(tmp_path / "checkout")},
+                                         "current_dir": None}
+    first, second = object(), object()
+    runner._session_dirs[first] = "/a"
+    runner._session_dirs[second] = "/b"
+    assert runner._heartbeat_frame()["current_dir"] == "/b"
+    del runner._session_dirs[second]
+    assert runner._heartbeat_frame()["current_dir"] == "/a"
+    fake = _FakeWs()
+    beat = asyncio.create_task(runner._heartbeat(fake))
+    await wait_for(lambda: fake.frames)
+    beat.cancel()
+    assert fake.frames[0]["current_dir"] == "/a" and fake.frames[0]["checkouts"]["proj"]
+
+
+async def test_runner_heartbeat_reaches_hub_and_session_dir_is_cleared(live_hub, fake_claude, tmp_path):
+    runner, agent_cfg = runner_for(live_hub, tmp_path, fake_claude[0])
+    workdir = str(tmp_path / "checkout")
+    task_id = live_hub.op_task("Add health check", assignee="worker", role="Backend implementer")
+    seen = []
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+        row = lambda: live_hub.conn().execute(
+            "SELECT checkouts, current_dir FROM agents WHERE id = ?", (agent_cfg.agent_id,)).fetchone()
+        await wait_for(lambda: json.loads(row()["checkouts"]) == {"proj": workdir})
+        await wait_for(lambda: row()["current_dir"] is None)
+        assert not runner._session_dirs
+    finally:
+        await stop(main)

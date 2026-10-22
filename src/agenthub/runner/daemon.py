@@ -197,6 +197,8 @@ class Runner:
         self._stopping = False
         # task id -> the paused_until this runner already waited out (the hub may still show it if clearing failed)
         self._waited_out: dict[int, datetime] = {}
+        # Working directories of the sessions running now, oldest first (dicts keep insertion order).
+        self._session_dirs: dict[Session, str] = {}
 
     # --- main loop ---------------------------------------------------------------
 
@@ -239,9 +241,15 @@ class Runner:
             if ws.close_code == CLOSE_REVOKED:
                 raise Revoked(ws.close_reason or "revoked")
 
+    def _heartbeat_frame(self) -> dict[str, Any]:
+        """Tells the hub where this runner's checkouts are and where its newest running session works."""
+        dirs = list(self._session_dirs.values())
+        return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
+                "current_dir": dirs[-1] if dirs else None}
+
     async def _heartbeat(self, ws) -> None:
         while True:
-            await ws.send(json.dumps({"type": "heartbeat"}))
+            await ws.send(json.dumps(self._heartbeat_frame()))
             await asyncio.sleep(self.cfg.heartbeat_seconds)
 
     async def _on_message(self, msg: dict[str, Any]) -> None:
@@ -477,12 +485,14 @@ class Runner:
                 },
             )
             self.work[task["id"]].session = session
+            self._session_dirs[session] = str(project_dir)
             flusher = asyncio.create_task(periodic_flush())
             try:
                 result = await session.run()
             finally:
                 flusher.cancel()
                 self.work[task["id"]].session = None
+                self._session_dirs.pop(session, None)
             await flush()
             if me["stage"] == "reviews":  # however it ended, don't relaunch this reviewer for this round
                 self._review_rounds_done.add((task["id"], task["updated_at"]))

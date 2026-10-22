@@ -276,6 +276,11 @@ MIGRATIONS: list[str] = [
     """
     CREATE INDEX task_runs_agent ON task_runs(agent_id, id);
     """,
+    # 9: where each agent's runner has its project checkouts and where its newest session is running
+    """
+    ALTER TABLE agents ADD COLUMN checkouts TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE agents ADD COLUMN current_dir TEXT;
+    """,
 ]
 
 

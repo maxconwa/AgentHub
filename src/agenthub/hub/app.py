@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -570,6 +571,21 @@ def create_app(state: HubState) -> FastAPI:
             events.emit(conn, type="agent.connected" if delta > 0 else "agent.disconnected",
                         actor=agent_id, device=device)
 
+    def _store_checkouts(conn: sqlite3.Connection, agent_id: str, message: dict[str, Any]) -> None:
+        """Keep the runner's reported checkouts and current directory; a frame with anything invalid changes neither."""
+        if "checkouts" not in message and "current_dir" not in message:
+            return  # an older runner's plain heartbeat
+        checkouts, current = message.get("checkouts", {}), message.get("current_dir")
+        valid = (
+            isinstance(checkouts, dict) and len(checkouts) <= 50
+            and all(isinstance(k, str) and store.NAME_RE.fullmatch(k) and isinstance(v, str) and len(v) <= 500
+                    for k, v in checkouts.items())
+            and (current is None or (isinstance(current, str) and len(current) <= 500))
+        )
+        if valid:
+            conn.execute("UPDATE agents SET checkouts = ?, current_dir = ? WHERE id = ?",
+                         (json.dumps(checkouts, separators=(",", ":")), current, agent_id))
+
     async def _agent_socket_loop(websocket: WebSocket, conn: sqlite3.Connection, agent_id: str) -> None:
         while True:
             try:
@@ -588,6 +604,7 @@ def create_app(state: HubState) -> FastAPI:
                 await websocket.close(code=CLOSE_REVOKED, reason="agent is no longer active")
                 return
             conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
+            _store_checkouts(conn, agent_id, message)
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 
     # --- search --------------------------------------------------------------

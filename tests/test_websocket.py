@@ -120,3 +120,62 @@ def test_store_unchanged_by_revoked_reactivation(hub):
     hub.set_status(a, "revoked")
     with pytest.raises(store.Conflict):
         hub.set_status(a, "active")
+
+
+def _agent_dirs(hub, agent_id):
+    row = hub.conn().execute("SELECT checkouts, current_dir FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    return json.loads(row["checkouts"]), row["current_dir"]
+
+
+def _beat(hub, a, *frames):
+    """Send each frame as a heartbeat and wait for its ack."""
+    with ws(hub, a.headers) as conn:
+        conn.receive_json()
+        for frame in frames:
+            conn.send_json({"type": "heartbeat", **frame})
+            assert conn.receive_json()["type"] == "heartbeat_ack"
+
+
+def test_heartbeat_stores_checkouts_and_current_dir(hub):
+    a = hub.enroll("a")
+    assert _agent_dirs(hub, a.id) == ({}, None)
+    _beat(hub, a, {"checkouts": {"web": "/src/web", "api": "/src/api"}, "current_dir": "/src/web"})
+    assert _agent_dirs(hub, a.id) == ({"web": "/src/web", "api": "/src/api"}, "/src/web")
+    raw = hub.conn().execute("SELECT checkouts FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
+    assert " " not in raw.replace("/src/web", "").replace("/src/api", "")  # compact JSON
+    _beat(hub, a, {"checkouts": {"web": "/src/web"}, "current_dir": None})
+    assert _agent_dirs(hub, a.id) == ({"web": "/src/web"}, None)
+
+
+def test_old_style_heartbeat_keeps_stored_checkouts(hub):
+    a = hub.enroll("a")
+    _beat(hub, a, {"checkouts": {"web": "/w"}, "current_dir": "/w"}, {})
+    assert _agent_dirs(hub, a.id) == ({"web": "/w"}, "/w")
+
+
+@pytest.mark.parametrize("bad", [
+    {"checkouts": {f"p{i}": "/x" for i in range(51)}, "current_dir": "/new"},
+    {"checkouts": {"web": "/" + "x" * 500}, "current_dir": "/new"},
+    {"checkouts": {"web": 5}, "current_dir": "/new"},
+    {"checkouts": {"Bad Name": "/x"}, "current_dir": "/new"},
+    {"checkouts": {"web": "/new"}, "current_dir": "/" + "x" * 500},
+    {"checkouts": {"web": "/new"}, "current_dir": 7},
+    {"checkouts": ["web"], "current_dir": "/new"},
+])
+def test_invalid_checkouts_keep_old_values_but_count_as_heartbeat(hub, bad):
+    a = hub.enroll("a")
+    _beat(hub, a, {"checkouts": {"web": "/w"}, "current_dir": "/w"})
+    with ws(hub, a.headers) as conn:
+        conn.receive_json()
+        hub.conn().execute("UPDATE agents SET last_heartbeat = NULL WHERE id = ?", (a.id,))
+        conn.send_json({"type": "heartbeat", **bad})
+        assert conn.receive_json()["type"] == "heartbeat_ack"
+        assert hub.conn().execute("SELECT last_heartbeat FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
+    assert _agent_dirs(hub, a.id) == ({"web": "/w"}, "/w")
+
+
+def test_exactly_50_checkouts_and_500_char_paths_are_accepted(hub):
+    a = hub.enroll("a")
+    full = {f"p{i}": "/" + "x" * 499 for i in range(50)}
+    _beat(hub, a, {"checkouts": full, "current_dir": "/" + "y" * 499})
+    assert _agent_dirs(hub, a.id) == (full, "/" + "y" * 499)
