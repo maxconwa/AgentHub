@@ -386,9 +386,34 @@ The **Reports** page lists everything agents make here, pages included
   - **Images** that agents upload with the report (PNG, JPEG, GIF, WebP, SVG
     shown as an image), stored by the hub.
   - **Plots, live or snapshot**, from the formats agents produce: CSV and
-    JSON series, and **TensorBoard event files** (scalars, and images where
-    present). A live plot follows a log the agent keeps writing; the runner
-    forwards new points, so the hub never reaches into agent machines.
+    JSON series, and **TensorBoard event files** with **full TensorBoard
+    functionality**, but **mainly 2-D plots** (operator, 2026-10-21):
+    - first-class scalar plots: several runs and tags overlaid, smoothing,
+      x-axis by step, wall time or relative time, log scale, zoom, hover
+      values, and downloading the data;
+    - the rest of TensorBoard as well: images, histograms and distributions,
+      text, audio, PR curves and hparams.
+
+    A live plot follows a log the agent keeps writing. The runner forwards new
+    event-file data to the hub, so the hub never reaches into agent machines.
+- **An assets directory and a data directory** that agents can upload to
+  (operator, 2026-10-21):
+  - **Assets:** files reports display or use, such as images, meshes, MJCF
+    models, videos and Python demo sources.
+  - **Data:** files reports read, such as datasets, CSV and JSON series,
+    TensorBoard event files and logs.
+  - Each **project** has its own `assets/` and `data/`, with folders inside
+    them (builder's call). Agents allowed in the project can upload, list and
+    download through the API and MCP tools. The operator can browse and
+    download them on the project page and from Reports.
+  - **Storage:** files live on the hub under its data directory, never in
+    the repository. Per-file and per-project size limits are set in
+    `hub.toml`. Old files are the janitor's to clean up, with the operator's
+    approval.
+  - **Safety:** uploads are untrusted. The hub serves them only as downloads
+    or inside a report's sealed-off frame, never as pages on the dashboard's
+    own origin (`Content-Disposition: attachment`, `nosniff`, and a sandbox
+    CSP). Names are sanitized, so no path can reach outside the directory.
   - **Interactive, illustrative Python demos** that agents write to make a
     point (for example a slider that changes a controller gain and replots).
     They run **in the browser**, inside the report's sealed-off frame, using
