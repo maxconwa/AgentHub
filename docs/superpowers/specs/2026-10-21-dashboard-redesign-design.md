@@ -81,11 +81,20 @@ All views update live, the way the feed does now.
 
   | state | pose | when |
   |---|---|---|
-  | idle | sleeping | nothing to do |
-  | working | mining | a session is running for it |
-  | needs you | sitting at a desk, hand raised | an approval is pending, or the operator hasn't answered a question it asked |
-  | waiting on an agent | standing in line | blocked on another agent: an unanswered ask, an open coordination thread |
-  | offline / revoked | greyed out | no live connection, or revoked |
+  | idle | sleeping on a cushion | nothing to do |
+  | working | mining | an implementer session is running |
+  | reviewing | inspecting with a magnifying glass | a reviewer session is running |
+  | needs you | sitting at a desk, hand raised | anything waiting on the operator: an approval (command, budget, permission, new agent) or an unanswered question |
+  | waiting on an agent | standing in line | blocked on another agent: an unanswered ask |
+  | talking it over | speech bubbles | discussing with other agents: splitting a multi-agent prompt, or an open coordination thread |
+  | part done | thumbs up | an implementer has finished its part and the task waits for review |
+  | recharging | sitting by a charging battery | paused at the subscription usage limit; the card shows when it resumes |
+  | something went wrong | under a rain cloud | its session crashed or errored, so the operator should look |
+  | offline | greyed out | no live connection |
+  | janitor at work | sweeping | the janitor's working pose (instead of mining) |
+
+  Revoked agents are hidden from the views rather than given a pose. Brief
+  states such as reconnecting don't get their own pose.
 
 ### Detail pages
 
@@ -325,8 +334,8 @@ is the janitor's job, below.
    runner starts a reviewer's session when the task enters `review`. When
    several agents have the "works" stage, the task moves to `review` only after
    **each of them** has marked its part finished.
-2. **Usage-limit pause.** No new pose; a paused-for-limit agent shows the
-   *sleeping* pose with a small clock badge, and its card says when it resumes.
+2. **Usage-limit pause.** Shown with the *recharging* pose (operator-approved
+   2026-10-21), and the card says when it resumes.
 3. **Where the look lives.** A look is stored as `(generator_version, seed)`
    per agent. Rerolling picks a new seed. The generator is versioned, so a
    later change to the art doesn't silently change every agent. Old versions
