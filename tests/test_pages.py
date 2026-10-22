@@ -287,3 +287,11 @@ def test_task_page_shows_each_agents_own_budget_and_use(busy):
     html = get(hub, f"/ui/tasks/{t['id']}").text
     assert "4 / 7" in html and "3 / 9" in html and "1 / 2" in html
     assert "0 / 50" in html  # worker: default budget, no runs
+
+
+def test_task_page_keeps_activity_outside_live(busy):
+    hub, a, b, ap, t = busy
+    html = get(hub, f"/ui/tasks/{t['id']}").text
+    before, live = html.split('id="live"')
+    assert "<h2>Activity</h2>" in before and "Activity" not in live
+    assert f"task #{t['id']}" in before.split("<h2>Activity</h2>")[1]

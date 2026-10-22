@@ -91,6 +91,9 @@
   <label>Note <textarea name="body" rows="3" maxlength="4000" required placeholder="Post a note to the agents on this task"></textarea></label>
   <button type="submit">Post note</button>
 </form>
+
+<h2>Activity</h2>
+<ul class="events">{% for e in history %}{% include "_event_row.html" %}{% endfor %}</ul>
 {% endblock %}
 {% block live %}
 {{ board(messages, names) }}
