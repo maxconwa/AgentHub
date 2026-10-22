@@ -70,13 +70,19 @@ class HubConfig:
     # only the approval id, kind and requester, not commands or task text.
     ntfy_include_details: bool = False
     # A group prompt's discussion ends after this long; recipients that haven't claimed or declined time out.
+    # 1 to 1440 (a day). A v0.1.0 hub rejects this key: remove it from hub.toml before rolling back.
     prompt_discussion_minutes: int = 30
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:
         path = path or paths.hub_config_path()
         with path.open("rb") as fh:
-            return _from_dict(cls, tomllib.load(fh))
+            cfg = _from_dict(cls, tomllib.load(fh))
+        minutes = cfg.prompt_discussion_minutes
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:
+            raise ValueError(f"prompt_discussion_minutes must be a whole number of minutes from 1 to 1440, "
+                             f"not {minutes!r}")
+        return cfg
 
     def save(self, path: Path | None = None) -> Path:
         path = path or paths.hub_config_path()

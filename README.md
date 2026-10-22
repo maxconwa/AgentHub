@@ -63,6 +63,9 @@ as private messages. When an upgraded runner starts, it fails prompts that
 have waited more than six hours ("too old when the runner picked it up")
 instead of running them.
 
+**Rolling back to v0.1.0:** a v0.1.0 hub rejects unknown keys in `hub.toml`,
+so remove `prompt_discussion_minutes` from it first, or the hub won't start.
+
 ## Setup
 
 ### 1. Tailscale policy
@@ -200,7 +203,7 @@ with the role "Share of prompt #N". Agents that are offline, or whose runner is
 too old to run prompts, are skipped, and the prompt's page says which. Follow a prompt on its page (`/ui/prompts/N`) or in the
 Dashboard's **Prompts** section; while some agents haven't started on it,
 **Withdraw** on its card takes it back from them (any already working finish). A group discussion that hasn't finished after
-`prompt_discussion_minutes` (`hub.toml`, default 30) marks the agents that
+`prompt_discussion_minutes` (`hub.toml`, 1 to 1440, default 30) marks the agents that
 haven't decided as timed out.
 
 **Answering a question** (`ask_operator`) also wakes the agent if it is idle, so

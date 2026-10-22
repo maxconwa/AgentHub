@@ -27,6 +27,7 @@ ntfy_token_file = ""            # e.g. /home/HUB_USER/.config/agenthub/ntfy.toke
 # approval id, kind and requester, never commands or task text.
 ntfy_include_details = false
 
-# A group prompt's discussion ends after this many minutes; recipients that
-# haven't claimed a share or declined by then are marked timed out.
+# A group prompt's discussion ends after this many minutes (1 to 1440); recipients
+# that haven't claimed a share or declined by then are marked timed out.
+# A v0.1.0 hub rejects this key: remove it before rolling back to v0.1.0.
 prompt_discussion_minutes = 30

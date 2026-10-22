@@ -877,6 +877,21 @@ def test_config_default():
     assert HubConfig().prompt_discussion_minutes == 30
 
 
+@pytest.mark.parametrize("value", ["0", "1441", "-5", "true", '"30"', "2.5"])
+def test_discussion_minutes_are_checked_when_the_config_loads(tmp_path, value):
+    path = tmp_path / "hub.toml"
+    path.write_text(f"prompt_discussion_minutes = {value}\n")
+    with pytest.raises(ValueError, match="prompt_discussion_minutes"):
+        HubConfig.load(path)
+
+
+def test_discussion_minutes_bounds_load(tmp_path):
+    path = tmp_path / "hub.toml"
+    for value in (1, 1440):
+        path.write_text(f"prompt_discussion_minutes = {value}\n")
+        assert HubConfig.load(path).prompt_discussion_minutes == value
+
+
 # --- routing and summaries -------------------------------------------------------------------------
 
 
