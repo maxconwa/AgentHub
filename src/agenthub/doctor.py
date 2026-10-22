@@ -94,6 +94,38 @@ def _settings_files(cwd: Path) -> list[Path]:
     return [base / "settings.json", cwd / ".claude" / "settings.json", cwd / ".claude" / "settings.local.json"]
 
 
+def check_api_billing(cwd: Path, project_dirs: list[Path] | tuple[Path, ...] = ()) -> Check:
+    """Fail if anything would make Claude Code bill API credits instead of the operator's subscription.
+
+    That is a billing variable in this environment (interactive ``claude`` would use it; the runner removes
+    them from its sessions), or ``apiKeyHelper`` or a billing variable in an ``env`` block of a Claude Code
+    settings file for this directory or a runner project checkout (those reach a session past the runner).
+    """
+    from agenthub.runner.session import BILLING_ENV_VARS
+
+    found = [name for name in BILLING_ENV_VARS if name in os.environ]
+    seen: set[Path] = set()
+    for base in (cwd, *project_dirs):
+        for path in _settings_files(Path(base).expanduser()):
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if "apiKeyHelper" in data:
+                found.append(f"apiKeyHelper in {path}")
+            env = data.get("env") if isinstance(data.get("env"), dict) else {}
+            found += [f"{name} in {path}" for name in BILLING_ENV_VARS if name in env]
+    if found:
+        return Check("API billing", FAIL,
+                     f"{', '.join(found)} would make Claude Code bill API credits instead of your subscription")
+    return Check("API billing", OK, "no API key, gateway or cloud provider settings found")
+
+
 def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
     from agenthub.hooks import guard
 
@@ -174,6 +206,11 @@ def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
     if os.geteuid() == 0:
         out.append(Check("user", FAIL, "running as root; run agents as a dedicated non-root user"))
     out += check_tailscale(run, "tag:agent")
+    try:
+        project_dirs = [Path(d) for d in load_runner_config().projects.values()]
+    except RunnerConfigError:
+        project_dirs = []  # an invalid runner.toml is the "runner config" check's to report
+    out.append(check_api_billing(cwd, project_dirs))
     out.append(check_private(config_dir, "config dir", 0o700))
     out.append(check_private(paths.agent_config_path(), "agent.toml", 0o600))
     try:

@@ -20,6 +20,13 @@
   filed (an implementer also moves the task to ``blocked``) and the runner
   waits: approved -> the hub raises this agent's limit and the session
   resumes; rejected -> the task is left for the operator.
+* Subscription only: sessions never get a variable that would bill API credits
+  (``session.BILLING_ENV_VARS``). When a session hits the subscription usage
+  limit, the run ends as ``usage_limit`` (it doesn't count as a run), this agent
+  sets its ``paused_until`` on the task to the reset time plus a minute (or
+  ``LIMIT_FALLBACK_SECONDS`` from now when the time can't be read), waits, clears
+  it and resumes the session. The task's state is left alone: it neither fails
+  nor blocks. A pause left by a previous runner process is waited out too.
 * Streams progress (assistant text snippets and tool calls) to the hub as
   ``task.progress`` events.
 """
@@ -32,6 +39,7 @@ import json
 import logging
 import random
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -54,6 +62,15 @@ LAUNCHABLE = {"works": ("open", "claimed", "in_progress"), "reviews": ("review",
 RUN_STATE = {"works": "in_progress", "reviews": "review"}
 # A reviewer run that ended like this is this review round's run; the reviewer is not relaunched for it.
 REVIEW_DONE_OUTCOMES = ("success", "error")
+# Pause this long after the usage-limit message when its reset time can't be read.
+LIMIT_FALLBACK_SECONDS = 1800
+# ... and this long past a reset time that could be read.
+LIMIT_MARGIN_SECONDS = 60
+
+
+async def wait_until(until: datetime) -> None:
+    """Sleep until ``until`` (aware). Cancelling the waiting task cancels the sleep."""
+    await asyncio.sleep(max((until - datetime.now(UTC)).total_seconds(), 0))
 
 
 class Revoked(Exception):
@@ -155,6 +172,8 @@ def resume_prompt(task: dict[str, Any], reason: str) -> str:
                 + f"\nAddress it, then call finish_task(task_id={task['id']}, note=...) again.")
     if reason == "extended":
         return f"The operator extended the budget for task #{task['id']}. Continue where you left off."
+    if reason == "limit":
+        return f"The usage limit has reset. Continue working on task #{task['id']} where you left off."
     return f"Continue working on task #{task['id']} where you left off."
 
 
@@ -320,6 +339,10 @@ class Runner:
             task, me = verified
             if task["state"] != RUN_STATE[me["stage"]]:
                 return
+            if me.get("paused_until"):  # left by a previous runner process that stopped while paused
+                await self._wait_out_pause(task_id, datetime.fromisoformat(me["paused_until"]))
+                resume_reason = "limit"
+                continue
             usage = (await self.client.task_runs(task_id, agent=self.agent.agent_id))["usage"]
             limit = exceeded_limit(me["budget"], usage)
             if limit:
@@ -335,6 +358,10 @@ class Runner:
             if result.outcome in ("max_turns", "wall_clock"):
                 resume_reason = "extended"
                 continue  # the budget check at the top pauses the task
+            if result.outcome == "usage_limit":
+                await self._pause_for_limit(task_id, result.resets_at)
+                resume_reason = "limit"
+                continue
             if result.outcome == "stopped":
                 return
             note = "; ".join(result.errors) or "session failed"
@@ -396,7 +423,8 @@ class Runner:
         resume_session = usage["last_session_id"]  # this agent's own last session
         if me["stage"] == "reviews":
             # Each review round starts from the review prompt; only a budget continuation just continues.
-            prompt = resume_prompt(task, "extended") if resume_reason == "extended" else review_prompt(task, me)
+            continuing = resume_reason in ("extended", "limit")
+            prompt = resume_prompt(task, resume_reason) if continuing else review_prompt(task, me)
         elif resume_session:
             source = entry_task if resume_reason == "returned" and entry_task is not None else task
             prompt = resume_prompt(source, resume_reason or "continue")
@@ -460,6 +488,26 @@ class Runner:
                 # e.g. this agent was removed from the task during the run; the next check drops the task
                 log.warning("could not record the end of run %s of task %s: %s", run["id"], task["id"], exc)
         return result
+
+    async def _pause_for_limit(self, task_id: int, resets_at: datetime | None) -> None:
+        """The subscription usage limit was hit: pause until it resets, without touching the task's state."""
+        if resets_at is not None:
+            until = resets_at + timedelta(seconds=LIMIT_MARGIN_SECONDS)
+        else:
+            until = datetime.now(UTC) + timedelta(seconds=LIMIT_FALLBACK_SECONDS)
+        local = until.astimezone()
+        when = f"{local:%H:%M}" if local.date() == datetime.now().astimezone().date() else f"{local:%a %H:%M}"
+        with contextlib.suppress(HubError):  # e.g. removed from the task meanwhile; the next check drops it
+            await self.client.pause_task(task_id, until.isoformat())
+            await self.client.progress(task_id, [{"kind": "limit",
+                                                  "text": f"paused for the usage limit until {when}"}])
+        log.info("task %s: usage limit reached; paused until %s", task_id, local.isoformat(timespec="minutes"))
+        await self._wait_out_pause(task_id, until)
+
+    async def _wait_out_pause(self, task_id: int, until: datetime) -> None:
+        await wait_until(until)
+        with contextlib.suppress(HubError):
+            await self.client.pause_task(task_id, None)
 
     async def _pause_for_budget(self, task: dict[str, Any], me: dict[str, Any], limit: str,
                                 usage: dict[str, Any]) -> bool:

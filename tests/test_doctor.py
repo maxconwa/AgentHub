@@ -106,3 +106,50 @@ def test_cli_exits_nonzero_on_failure(tmp_path, monkeypatch):
 
 def test_cli_with_nothing_configured():
     assert CliRunner().invoke(app, ["doctor"]).exit_code == 1
+
+
+def test_doctor_flags_api_billing(tmp_path, monkeypatch):
+    from agenthub.runner.session import BILLING_ENV_VARS
+
+    for name in BILLING_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+
+    def billing(cwd=project, projects=()):
+        check = doctor.check_api_billing(cwd, projects)
+        assert check.name == "API billing"
+        return check
+
+    assert billing().status == "ok"
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    check = billing()
+    assert check.status == "fail"
+    assert check.detail == "ANTHROPIC_API_KEY would make Claude Code bill API credits instead of your subscription"
+    # agent_checks reports it even before the agent config exists
+    rows = {c.name: c for c in doctor.agent_checks(fake_run({}), cwd=project)}
+    assert rows["API billing"].status == "fail"
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+
+    (claude_dir / "settings.json").write_text(json.dumps({"apiKeyHelper": "/bin/get-key"}))
+    check = billing()
+    assert check.status == "fail" and check.detail.startswith("apiKeyHelper")
+    assert "would make Claude Code bill API credits instead of your subscription" in check.detail
+    (claude_dir / "settings.json").write_text(json.dumps({"model": "haiku"}))
+    assert billing().status == "ok"
+
+    # a settings file's env block reaches the session past the runner's scrub
+    (project / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"CLAUDE_CODE_USE_BEDROCK": "1"}}))
+    assert billing().status == "fail" and "CLAUDE_CODE_USE_BEDROCK" in billing().detail
+    (project / ".claude" / "settings.local.json").unlink()
+
+    # the runner's project checkouts are checked too, not only the current directory
+    other = tmp_path / "other"
+    (other / ".claude").mkdir(parents=True)
+    (other / ".claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": "echo k"}))
+    assert billing().status == "ok"
+    assert billing(projects=[other]).status == "fail"

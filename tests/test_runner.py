@@ -8,7 +8,9 @@ import socket
 import sys
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import uvicorn
@@ -17,11 +19,12 @@ from agenthub.client import HubClient
 from agenthub.config import AgentConfig, HubConfig
 from agenthub.hub import approvals, db, store, task_agents, tasks
 from agenthub.hub.app import HubState, create_app
+from agenthub.runner import daemon
 from agenthub.runner.config import RunnerConfig
 from agenthub.runner.daemon import (
-    Revoked, Runner, exceeded_limit, first_prompt, review_prompt, system_prompt,
+    Revoked, Runner, exceeded_limit, first_prompt, resume_prompt, review_prompt, system_prompt,
 )
-from agenthub.runner.session import Session, parse_line
+from agenthub.runner.session import BILLING_ENV_VARS, Session, parse_limit, parse_line, result_from, session_env
 
 from .conftest import OPERATOR
 
@@ -651,3 +654,199 @@ async def test_runner_rechecks_approval_even_if_task_looks_open(live_hub, fake_c
         task, _ = approvals.agent_create_task(conn, other, project="proj", title="sneaky", body="x", assignee="worker")
     conn.execute("UPDATE tasks SET state = 'open' WHERE id = ?", (task["id"],))  # simulate tampering
     assert await runner._verified_task(task["id"]) is None
+
+
+# --- subscription safeguards ---------------------------------------------------------
+
+def test_billing_env_vars_cover_documented_switches():
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                 "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+        assert name in BILLING_ENV_VARS
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in BILLING_ENV_VARS  # that one is the subscription's own token
+
+
+def test_session_env_unit(monkeypatch):
+    for name in BILLING_ENV_VARS:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("SOME_TOOL_SETTING", "kept")
+    env = session_env({"AGENTHUB_TASK_ID": "7", "ANTHROPIC_API_KEY": "sneaked-in"})
+    assert not set(BILLING_ENV_VARS) & set(env)
+    assert env["SOME_TOOL_SETTING"] == "kept" and env["AGENTHUB_TASK_ID"] == "7"
+
+
+async def test_session_env_strips_billing_vars(fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    for name in BILLING_ENV_VARS:
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    claude_bin, calls = fake_claude
+
+    async def nothing(_):
+        pass
+
+    session = Session([claude_bin, "-p", "--max-turns", "5"], prompt="x", cwd=tmp_path,
+                      env={"AGENTHUB_TASK_ID": "1"}, timeout_seconds=30, on_progress=nothing, on_session=nothing)
+    assert (await session.run()).outcome == "success"
+    (call,) = calls()
+    logged_env = call["env_names"]
+    assert "ANTHROPIC_API_KEY" not in logged_env
+    assert not set(BILLING_ENV_VARS) & set(logged_env)
+    assert "FAKE_CLAUDE_LOG" in logged_env and call["env"]["AGENTHUB_TASK_ID"] == "1"
+
+
+async def test_runner_sessions_never_see_api_key(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    claude_bin, calls = fake_claude
+    runner, _ = runner_for(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("t", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert "ANTHROPIC_API_KEY" not in call["env_names"]
+
+
+def test_parse_limit():
+    now = datetime(2026, 10, 21, 14, 0)  # a Wednesday, local time
+    assert parse_limit("You've hit your session limit · resets 3:45pm", now) == (True, datetime(2026, 10, 21, 15, 45))
+    assert parse_limit("You've hit your session limit · resets 1:30pm", now) == (True, datetime(2026, 10, 22, 13, 30))
+    assert parse_limit("You've hit your session limit · resets 2pm", now) == (True, datetime(2026, 10, 22, 14, 0))
+    assert parse_limit("You've hit your weekly limit · resets Mon 12:00am", now) == (True, datetime(2026, 10, 26, 0, 0))
+    assert parse_limit("You've hit your weekly limit · resets Wed 3pm", now) == (True, datetime(2026, 10, 21, 15, 0))
+    assert parse_limit("You've hit your weekly limit · resets Wed 1pm", now) == (True, datetime(2026, 10, 28, 13, 0))
+    assert parse_limit("You've hit your session limit · resets soon", now) == (True, None)
+    assert parse_limit("You've hit your session limit", now) == (True, None)
+    assert parse_limit("All tests pass.", now) == (False, None)
+    assert parse_limit("", now) == (False, None)
+    # documented variants: per-model limits, a curly apostrophe, 12pm is noon
+    assert parse_limit("You've hit your Opus limit · resets 12pm", now) == (True, datetime(2026, 10, 22, 12, 0))
+    assert parse_limit("You\u2019ve hit your Sonnet limit · resets 11:59pm", now) == (True, datetime(2026, 10, 21, 23, 59))
+    # a spend-limit message is not a window that resets on its own, unless it says so
+    assert parse_limit("You've hit your monthly spend limit · raise it at https://claude.ai/settings/usage", now) \
+        == (False, None)
+    assert parse_limit("You've hit your monthly spend limit · raise it · your session limit resets 3:45pm", now) \
+        == (True, datetime(2026, 10, 21, 15, 45))
+    # an aware "now" gives an aware result in the same zone; a named zone in the message is honored
+    ny = ZoneInfo("America/New_York")
+    aware = datetime(2026, 10, 21, 14, 0, tzinfo=ny)
+    assert parse_limit("You've hit your session limit · resets 3:45pm", aware) == (
+        True, datetime(2026, 10, 21, 15, 45, tzinfo=ny))
+    london = ZoneInfo("Europe/London")  # 14:00 in New York is 19:00 in London
+    assert parse_limit("You've hit your session limit · resets 8pm (Europe/London)", aware) == (
+        True, datetime(2026, 10, 21, 20, 0, tzinfo=london))
+    assert parse_limit("You've hit your session limit · resets 3:45pm (Europe/London)", aware) == (
+        True, datetime(2026, 10, 22, 15, 45, tzinfo=london))
+    assert parse_limit("You've hit your session limit · resets 13:45pm", now) == (True, None)
+    ok, when = parse_limit("You've hit your session limit · resets 8pm (UTC)", now)  # naive in, naive out
+    assert ok and when.tzinfo is None and when.astimezone().astimezone(UTC).hour == 20 and when > now
+
+
+def test_result_from_detects_usage_limit():
+    def res(msg):
+        return result_from(msg, returncode=1, timed_out=False, stopped=False, session_id="s")
+
+    limited = res({"type": "result", "subtype": "success", "is_error": True,
+                   "result": "You've hit your session limit · resets 3:45pm"})
+    assert limited.outcome == "usage_limit" and limited.resets_at is not None
+    assert (limited.resets_at.hour, limited.resets_at.minute) == (15, 45) and limited.resets_at.tzinfo
+    from_errors = res({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                       "errors": ["API Error: You've hit your weekly limit · resets soon"]})
+    assert from_errors.outcome == "usage_limit" and from_errors.resets_at is None
+    # a successful run that merely talks about the message is a success
+    talk = res({"type": "result", "subtype": "success", "is_error": False,
+                "result": "Handled \"You've hit your session limit · resets 3:45pm\" in the parser."})
+    assert talk.outcome == "success" and talk.resets_at is None
+
+
+def test_resume_prompt_after_usage_limit():
+    assert "usage limit" in resume_prompt({"id": 4}, "limit") and "#4" in resume_prompt({"id": 4}, "limit")
+
+
+def _patch_limit_wait(monkeypatch, live_hub, agent_id_of, task_id_of):
+    """Replace the runner's sleep until the reset; record the target and the hub's paused_until meanwhile."""
+    seen: list[tuple[datetime, str | None]] = []
+
+    async def fake_wait(until):
+        seen.append((until, live_hub.member(task_id_of(), agent_id_of())["paused_until"]))
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(daemon, "wait_until", fake_wait)
+    return seen
+
+
+async def test_usage_limit_pauses_and_resumes(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_then_success")
+    monkeypatch.setattr(daemon, "LIMIT_FALLBACK_SECONDS", 0.1)
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+    seen = _patch_limit_wait(monkeypatch, live_hub, lambda: agent_cfg.agent_id, lambda: ids["task"])
+    ids["task"] = task_id = live_hub.op_task("t", assignee="worker")
+    started = datetime.now()
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+
+    assert "blocked" not in [e["to"] for e in live_hub.events("task.transitioned")]
+    ((until, paused_during),) = seen
+    # the fake's reset is its own clock + 2 minutes, to the minute (allow for a minute boundary in between)
+    resets = {(started + timedelta(minutes=m)).replace(second=0, microsecond=0).astimezone() for m in (2, 3)}
+    assert until - timedelta(seconds=60) in resets
+    assert paused_during is not None and datetime.fromisoformat(paused_during) == until
+    assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None  # cleared
+    assert len(live_hub.events("task.agent_paused")) == 2  # set, then cleared
+    _, second = calls()
+    runs = tasks.list_runs(live_hub.conn(), task_id)
+    assert [r["outcome"] for r in runs] == ["usage_limit", "success"]
+    assert second["argv"][second["argv"].index("--resume") + 1] == runs[0]["session_id"]
+    assert "usage limit" in second["stdin"]
+    progress = [i for e in live_hub.events("task.progress") for i in e["items"]]
+    (limit,) = [i for i in progress if i["kind"] == "limit"]
+    assert limit["text"].startswith("paused for the usage limit until ")
+    assert limit["text"].endswith(f"{until.astimezone():%H:%M}")  # "Thu 00:01" only if it's tomorrow
+
+
+async def test_unparseable_limit_uses_fallback(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_then_success")
+    monkeypatch.setenv("FAKE_LIMIT_TEXT", "You've hit your session limit · resets soon")
+    monkeypatch.setattr(daemon, "LIMIT_FALLBACK_SECONDS", 1234)
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+    seen = _patch_limit_wait(monkeypatch, live_hub, lambda: agent_cfg.agent_id, lambda: ids["task"])
+    ids["task"] = task_id = live_hub.op_task("t", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+    ended = datetime.now(UTC)
+    assert "blocked" not in [e["to"] for e in live_hub.events("task.transitioned")]
+    ((until, paused_during),) = seen
+    assert paused_during is not None
+    assert timedelta(seconds=1234 - 30) < until - ended <= timedelta(seconds=1234)
+    assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None
+    assert len(calls()) == 2
+
+
+async def test_runner_waits_out_a_pause_left_by_a_previous_runner(live_hub, fake_claude, tmp_path, monkeypatch):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+    seen = _patch_limit_wait(monkeypatch, live_hub, lambda: agent_cfg.agent_id, lambda: ids["task"])
+    ids["task"] = task_id = live_hub.op_task("t", assignee="worker")
+    until = (datetime.now(UTC) + timedelta(minutes=30)).replace(microsecond=0)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        task_agents.pause(conn, task_id, store.find_agent(conn, "worker"), until=until.isoformat())
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+    assert [w for w, _ in seen] == [until]
+    assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None and len(calls()) == 1

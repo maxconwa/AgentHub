@@ -1,9 +1,13 @@
 """A stand-in for `claude -p --output-format stream-json` used by runner tests.
 
-Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail | review_approve.
+Behavior is chosen by FAKE_CLAUDE_MODE: success | max_turns_then_success | sleep | fail | review_approve |
+limit_then_success.
 review_approve records an ``approve`` verdict on $AGENTHUB_TASK_ID through the hub at $FAKE_HUB_URL with
 the agent token in $FAKE_TOKEN (as the real session would through the MCP tool), then succeeds.
-Each invocation appends {"argv", "stdin", "env"} as a JSON line to FAKE_CLAUDE_LOG.
+limit_then_success: the first call (no --resume) ends with the subscription usage-limit message
+("You've hit your session limit · resets <now+2min>", or $FAKE_LIMIT_TEXT when set); a resumed call succeeds.
+Each invocation appends {"argv", "stdin", "env", "env_names"} as a JSON line to FAKE_CLAUDE_LOG: ``env``
+holds the AGENTHUB_* variables, ``env_names`` the names (never the values) of every variable it got.
 """
 
 import json
@@ -12,6 +16,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from datetime import datetime, timedelta
 
 
 def emit(obj):
@@ -25,7 +30,8 @@ def main():
     if log:
         with open(log, "a") as fh:
             env = {k: v for k, v in os.environ.items() if k.startswith("AGENTHUB_")}
-            fh.write(json.dumps({"argv": argv, "stdin": prompt, "env": env}) + "\n")
+            fh.write(json.dumps({"argv": argv, "stdin": prompt, "env": env,
+                                 "env_names": sorted(os.environ)}) + "\n")
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
     max_turns = int(argv[argv.index("--max-turns") + 1])
     session = resume or str(uuid.uuid4())
@@ -46,6 +52,12 @@ def main():
     if mode == "max_turns_then_success" and resume is None:
         emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "session_id": session,
               "num_turns": max_turns, "total_cost_usd": 0.01})
+        sys.exit(1)
+    if mode == "limit_then_success" and resume is None:
+        reset = (datetime.now() + timedelta(minutes=2)).strftime("%I:%M%p").lstrip("0").lower()
+        text = os.environ.get("FAKE_LIMIT_TEXT") or f"You've hit your session limit · resets {reset}"
+        emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "num_turns": 1,
+              "total_cost_usd": 0, "result": text})
         sys.exit(1)
     if mode == "review_approve":
         req = urllib.request.Request(
