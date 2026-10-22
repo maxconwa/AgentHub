@@ -120,7 +120,8 @@ button.reject { background: var(--bad); border-color: var(--bad); color: #fff; }
 .event.new { animation: flash 1.2s ease-out; }
 @keyframes flash { from { background: var(--mine); } to { background: transparent; } }
 /* failed: a task, agent or prompt keeps a red left edge; on the live swap that turns it failed it gets
-   .failed-new once: a short shake and a red ring that pulses out. Reduced motion: no shake, a brief outline. */
+   .failed-new once: a short shake and a red ring that pulses out. Reduced motion: no shake, a brief outline.
+   A chip (a recipient) is already red and pill-shaped, so it gets no edge and a smaller hit. */
 .is-failed { border-left: 3px solid var(--bad); }
 .failed-new { animation: failed-hit 1.2s ease-out; }
 @keyframes failed-hit {
@@ -130,9 +131,20 @@ button.reject { background: var(--bad); border-color: var(--bad); color: #fff; }
   22.5% { transform: translateX(-3px); }
   30% { transform: translateX(3px); }
   37.5% { transform: translateX(0); }
-  100% { transform: translateX(0); box-shadow: 0 0 0 10px transparent; }
+  100% { transform: translateX(0); box-shadow: 0 0 0 8px transparent; }
 }
-@media (prefers-reduced-motion: reduce) { .failed-new { animation: failed-still 1.2s linear; } }
+.chip.is-failed { border-left: 0; }
+.chip.failed-new { animation: failed-chip-hit 1.2s ease-out; }
+@keyframes failed-chip-hit {
+  0% { transform: translateX(0); box-shadow: 0 0 0 0 var(--bad); }
+  7.5% { transform: translateX(-2px); }
+  15% { transform: translateX(2px); }
+  22.5% { transform: translateX(-1px); }
+  30% { transform: translateX(1px); }
+  37.5% { transform: translateX(0); }
+  100% { transform: translateX(0); box-shadow: 0 0 0 4px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .failed-new, .chip.failed-new { animation: failed-still 1.2s linear; } }
 @keyframes failed-still { from, to { outline: 2px solid var(--bad); outline-offset: 2px; } }
 .live { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
 .live[data-state="live"] { color: var(--ok); }
