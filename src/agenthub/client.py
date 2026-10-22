@@ -86,6 +86,10 @@ class HubClient:
     async def message_operator(self, body: str) -> dict[str, Any]:
         return await self._request("POST", "/private", json={"body": body})
 
+    async def post_device(self, body: str, to: str | None = None) -> dict[str, Any]:
+        """Write on the board of this agent's own machine."""
+        return await self._request("POST", "/device/messages", json={"body": body, "to": to})
+
     # --- questions to the operator -------------------------------------------
 
     async def ask_operator(self, project: str, question: str, task_id: int | None = None) -> dict[str, Any]:

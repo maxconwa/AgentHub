@@ -9,7 +9,7 @@
 <ul class="device-grid">
   {% for d in devices %}
   <li class="card device-card" id="device-{{ d.node_id }}">
-    <div class="row"><span class="name">{{ d.name }}</span>
+    <div class="row"><a class="name" href="/ui/devices/{{ d.node_id|urlencode }}">{{ d.name }}</a>
       <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></div>
     <div class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</div>
     <div class="msg-row">{{ message_button('device:' ~ d.node_id, 'Message the agents on ' ~ d.name, path) }}</div>

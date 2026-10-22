@@ -47,7 +47,8 @@ def world(hub):
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
-    return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id,
+    node_id = store.get_agent(conn, a.id).device_node_id
+    return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id, "node_id": node_id,
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
@@ -126,7 +127,7 @@ def test_pages_render_with_security_headers(world):
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/feed", "/ui/feed?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
-                 "/ui/badge/chats"]:
+                 "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
         assert "default-src 'self'" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "DENY"

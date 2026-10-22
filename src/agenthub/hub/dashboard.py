@@ -23,7 +23,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, avatar_art, avatars, db, events, private, questions, store, task_agents, tasks, views
+from agenthub.hub import (
+    approvals, avatar_art, avatars, db, device_board, events, private, questions, store, task_agents, tasks, views,
+)
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -93,7 +95,8 @@ def ago(ts: str | None) -> str:
 
 
 def agent_names(conn: sqlite3.Connection) -> dict[str, str]:
-    return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+    """Agent id -> name, plus ``device:<node_id>`` -> machine name for device board events."""
+    return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")} | device_board.device_labels(conn)
 
 
 def who(actor: str | None, names: dict[str, str]) -> str:
@@ -114,6 +117,8 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
     if t == "private.sent":  # the event never carries the text
         direction = "to" if p.get("from") == "operator" else "from"
         return f"private message {direction} {who(p.get('agent_id'), names)}"
+    if t == "device.message_posted":  # the event never carries the text
+        return f"device board note on {names.get('device:' + str(p.get('node_id')), p.get('node_id'))}"
     if t == "board.updated":
         return f"board {p.get('key')} v{p.get('version')}"
     if t.startswith("task."):
@@ -188,7 +193,7 @@ def safe_next(next: str) -> str:
 def target_page(target: str) -> str:
     """The page a message target lives on (the target is already known to exist)."""
     kind, _, key = target.partition(":")
-    return "/ui/devices" if kind == "device" else f"/ui/{kind}s/{quote(key)}"
+    return f"/ui/{kind}s/{quote(key)}"
 
 
 def done(request: Request, url: str) -> Response:
@@ -541,6 +546,19 @@ def build_router() -> APIRouter:
     @router.get("/devices", response_class=HTMLResponse)
     def devices_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         return render(request, operator, "devices.html", conn, nav="devices", devices=views.devices(conn))
+
+    @router.get("/devices/{node_id}", response_class=HTMLResponse)
+    def device_page(node_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        device = views.device(conn, node_id)
+        return render(request, operator, "device.html", conn, nav="devices", d=device,
+                      messages=views.device_messages(conn, node_id))
+
+    @router.post("/devices/{node_id}/notes")
+    def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
+                    body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)]) -> Response:
+        with db.transaction(conn):
+            device_board.post(conn, node_id, author=operator.actor, body=body)
+        return done(request, f"/ui/devices/{quote(node_id, safe='')}")
 
     # agents -------------------------------------------------------------------------
 

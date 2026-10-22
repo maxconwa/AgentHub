@@ -309,6 +309,23 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX questions_status ON questions(status, id);
     """,
+    # 12: device boards, shared by the agents on one machine (device_node_id) and the operator
+    """
+    CREATE TABLE device_messages (
+        id       INTEGER PRIMARY KEY,
+        node_id  TEXT NOT NULL,
+        author   TEXT NOT NULL,
+        to_agent TEXT REFERENCES agents(id),
+        body     TEXT NOT NULL,
+        ts       TEXT NOT NULL
+    );
+    CREATE INDEX device_messages_node_id ON device_messages(node_id, id);
+
+    CREATE TABLE device_cursors (
+        agent_id     TEXT PRIMARY KEY REFERENCES agents(id),
+        last_read_id INTEGER NOT NULL DEFAULT 0
+    );
+    """,
 ]
 
 

@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, asks, db, events, intents, private, questions, store, task_agents, tasks
+from agenthub.hub import (
+    approvals, asks, db, device_board, events, intents, private, questions, store, task_agents, tasks,
+)
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
@@ -111,6 +113,11 @@ class PostMessageRequest(BaseModel):
 
 class PrivateMessageRequest(BaseModel):
     body: str = Field(min_length=1, max_length=private.MAX_BODY_CHARS)
+
+
+class DeviceMessageRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=device_board.MAX_BODY_CHARS)
+    to: str | None = Field(default=None, max_length=64)
 
 
 class QuestionRequest(BaseModel):
@@ -313,20 +320,34 @@ def create_app(state: HubState) -> FastAPI:
         peek: bool = False,
         addressed_only: bool = False,
     ) -> dict[str, Any]:
-        """Unread private messages from the operator first (whatever ``project`` is), then channel messages."""
+        """Unread private messages from the operator first, then the caller's device board (both
+        whatever ``project`` is), then channel messages; all of them count toward ``limit``."""
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
         mark = not (peek or addressed_only)
+        agent = caller.agent
         with db.transaction(conn):
-            mine = private.unread_for_agent(conn, caller.agent, mark_read=mark, limit=limit)
-            got = store.read_inbox(conn, caller.agent, projects=projects, limit=limit - len(mine),
+            mine = private.unread_for_agent(conn, agent, mark_read=mark, limit=limit)
+            room = limit - len(mine)
+            near = device_board.unread_for_agent(conn, agent, mark_read=mark, limit=room,
+                                                 addressed_only=addressed_only)
+            got = store.read_inbox(conn, agent, projects=projects, limit=room - len(near),
                                    mark_read=not peek, addressed_only=addressed_only)
             more = got["more"]
-            if len(mine) == limit:  # anything still unread beyond what was just returned?
-                left = private.unread_for_agent(conn, caller.agent, mark_read=False, limit=limit + 1)
+            # Anything still unread beyond what was just returned? (Marked rows are no longer unread.)
+            if len(mine) == limit:
+                left = private.unread_for_agent(conn, agent, mark_read=False, limit=limit + 1)
                 more = more or len(left) > (0 if mark else limit)
+            if len(near) == room:
+                seen = 0 if mark else len(near)
+                left = device_board.unread_for_agent(conn, agent, mark_read=False, limit=seen + 1,
+                                                     addressed_only=addressed_only)
+                more = more or len(left) > seen
         entries = [{"id": m["id"], "kind": "private", "project": None, "channel": "private", "author": m["author"],
-                    "author_name": None, "to_agent": caller.agent.id, "body": m["body"], "ts": m["ts"],
+                    "author_name": None, "to_agent": agent.id, "body": m["body"], "ts": m["ts"],
                     "addressed_to_me": True} for m in mine]
+        entries += [{"id": m["id"], "kind": "device", "project": None, "channel": "device", "author": m["author"],
+                     "author_name": m["author_name"], "to_agent": m["to_agent"], "body": m["body"], "ts": m["ts"],
+                     "addressed_to_me": m["addressed_to_me"]} for m in near]
         return {"messages": entries + got["messages"], "more": more}
 
     @app.post(f"{api}/private", status_code=201)
@@ -334,6 +355,13 @@ def create_app(state: HubState) -> FastAPI:
         """Write to the operator in the caller's own private chat."""
         with db.transaction(conn):
             return private.send(conn, caller.agent.id, author=caller.agent.id, body=body.body)
+
+    @app.post(f"{api}/device/messages", status_code=201)
+    def post_device(body: DeviceMessageRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """Write on the board of the caller's own machine (the device it enrolled from)."""
+        with db.transaction(conn):
+            return device_board.post(conn, caller.agent.device_node_id, author=caller.agent.id, body=body.body,
+                                     to=body.to, device=caller.device.name)
 
     # --- questions to the operator -------------------------------------------
 

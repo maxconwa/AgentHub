@@ -6,8 +6,9 @@ import json
 import re
 import sqlite3
 from typing import Any
+from urllib.parse import quote
 
-from agenthub.hub import avatars, private, store
+from agenthub.hub import avatars, device_board, private, store
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
@@ -54,6 +55,22 @@ def devices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         out.append({"node_id": node_id, "name": latest["device"], "online": any(a["connected"] for a in agents),
                     "last_seen": latest["last_heartbeat"], "agents": agents})
     return sorted(out, key=lambda d: (not d["online"], d["name"].lower(), d["node_id"]))
+
+
+def device(conn: sqlite3.Connection, node_id: str) -> dict[str, Any]:
+    """One :func:`devices` entry; raises store.NotFound if no non-revoked agent runs on ``node_id``."""
+    found = next((d for d in devices(conn) if d["node_id"] == node_id), None)
+    if found is None:
+        raise store.NotFound(f"no device {node_id!r}")
+    return found
+
+
+def device_messages(conn: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
+    """The device board as :func:`board_thread` messages; a note addressed to one agent is labeled ``to <name>``."""
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+    return [{"author": m["author"], "ts": m["ts"], "body": m["body"],
+             "label": f"to {names.get(m['to_agent'], m['to_agent'])}" if m["to_agent"] else None}
+            for m in device_board.recent(conn, node_id, limit=BOARD_LIMIT)]
 
 
 def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -163,10 +180,11 @@ def _ts_key(item: dict[str, Any]) -> str:
 
 
 def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """The Board page's thread list: project boards, task boards, other channels, agent pairs.
+    """The Board page's thread list: project boards, task boards, other channels, agent pairs, device boards.
 
     Each item is ``{key, title, created_by, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
-    None: agent-written snippets stay out of lists, so a row shows who spoke last and when.
+    None: agent-written snippets stay out of lists, so a row shows who spoke last and when. Device items
+    carry ``href`` (their device page) and ``node_id``.
     """
     board = avatars.board(conn)
     task_titles = {(r["project"], r["id"]): (r["title"], r["created_by"])
@@ -201,6 +219,14 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
         out["between_agents"].append({"key": f"pair-{x}-{y}", "title": f"{names[x]} ↔ {names[y]}", "last_body": None,
                                       "last_ts": ts, "avatars": [board[i] for i in (x, y) if i in board],
                                       "agents": [{"id": i, "name": names[i]} for i in (x, y)]})
+    posts = device_board.last_posts(conn)
+    out["devices"] = []
+    for d in devices(conn):  # every machine with a non-revoked agent, so the operator can start its board
+        last = posts.get(d["node_id"], {"ts": None, "authors": []})
+        out["devices"].append({"key": f"dev-{d['node_id']}", "title": d["name"], "last_body": None,
+                               "last_ts": last["ts"], "node_id": d["node_id"],
+                               "href": f"/ui/devices/{quote(d['node_id'], safe='')}",
+                               "avatars": [board[a] for a in last["authors"] if a in board][:3]})
     for g in out.values():
         g.sort(key=_ts_key, reverse=True)
     return out

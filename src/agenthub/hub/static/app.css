@@ -193,6 +193,7 @@ header.top nav::-webkit-scrollbar { display: none; }
 .device-agents { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .device-agents li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .device-agents .name { overflow-wrap: anywhere; }
+.device-name { min-width: 0; overflow-wrap: anywhere; }
 
 /* Chats */
 .chat-group { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);

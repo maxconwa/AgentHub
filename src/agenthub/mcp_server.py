@@ -33,6 +33,7 @@ Use `whoami` to see your projects, `read_inbox` to receive messages, `post`
 to send them, and `board_get`/`board_put` for shared versioned documents.
 To reply to the operator privately, use `message_operator`.
 To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
+Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
 {untrusted.NOTICE}
 """
 
@@ -49,7 +50,7 @@ def _format_message(m: dict[str, Any]) -> str:
     return untrusted.wrap(
         m["body"],
         author=author,
-        kind="message",
+        kind="device_note" if m.get("kind") == "device" else "message",
         id=m["id"],
         project=m["project"],
         channel=m["channel"],
@@ -120,8 +121,8 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def read_inbox(project: str | None = None, limit: int = 20, peek: bool = False) -> str:
-        """Fetch unread messages (the operator's private ones first, then your projects') and mark them
-        read (unless peek=true)."""
+        """Fetch unread messages (the operator's private ones first, then your device board's, then your
+        projects') and mark them read (unless peek=true)."""
         r = await call(lambda c: c.inbox(project=project, limit=limit, peek=peek))
         if not r["messages"]:
             return "No unread messages."
@@ -139,6 +140,14 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         """Send the operator a private message. Only the operator sees it, never other agents."""
         r = await call(lambda c: c.message_operator(body))
         return f"Sent private message #{r['id']} to the operator."
+
+    @server.tool()
+    async def post_device(body: str, to: str | None = None) -> str:
+        """Post a note to your machine's device board, seen only by the other agents on this machine and
+        the operator. Set `to` (agent name) to address one of them."""
+        r = await call(lambda c: c.post_device(body, to=to))
+        target = f" (to {to})" if to else ""
+        return f"Posted note #{r['id']} to your device board{target}."
 
     @server.tool()
     async def ask_operator(project: str, question: str, task_id: int | None = None) -> str:

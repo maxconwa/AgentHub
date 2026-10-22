@@ -657,7 +657,7 @@ def test_send_delivers_one_private_message_per_recipient(reach):
 
 
 @pytest.mark.parametrize("target,loc", [("agent:{a}", "/ui/agents/{a}"), ("project:proj", "/ui/projects/proj"),
-                                        ("device:nworker", "/ui/devices")])
+                                        ("device:nworker", "/ui/devices/nworker")])
 def test_send_redirects_to_target_page(reach, target, loc):
     hub, a, *_ = reach
     resp = send(hub, to=target.format(a=a.id), recipients=[a.id], body="x")

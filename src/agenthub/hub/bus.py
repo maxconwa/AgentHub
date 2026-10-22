@@ -24,6 +24,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from agenthub.hub import device_board
 from agenthub.hub.events import row_to_event
 
 log = logging.getLogger("agenthub.bus")
@@ -41,9 +42,9 @@ class Socket(Protocol):
 def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     p = event["payload"]
     keep = ("message_id", "channel", "task_id", "approval_id", "ask_id", "kind", "status", "from", "to",
-            "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key")
+            "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key", "node_id")
     data = {k: p[k] for k in keep if k in p}
-    if event["type"] == "message.posted":
+    if event["type"] in ("message.posted", "device.message_posted"):
         data["addressed_to_me"] = p.get("to") == recipient
     return {
         "type": "event",
@@ -70,6 +71,9 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
     if etype == "private.sent":  # only the operator's messages, and only to that one agent
         from_operator = p.get("from") == "operator" and event["actor"].startswith("human:")
         return {p["agent_id"]} if from_operator else set()
+    if etype == "device.message_posted":  # the other active agents on that machine
+        rows = conn.execute("SELECT id FROM agents WHERE status = 'active' AND device_node_id = ?", (p["node_id"],))
+        return {r["id"] for r in rows} - {event["actor"]}
     if etype == "intent.conflict":
         rows = conn.execute("SELECT agent_id FROM intents WHERE id IN (?, ?)", tuple(p["intents"])).fetchall()
         return {r["agent_id"] for r in rows}
@@ -160,7 +164,8 @@ class EventBus:
             deliveries: list[tuple[str, dict[str, Any]]] = []
             operator_rows: list[dict[str, Any]] = []
             revoked: list[str] = []
-            names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")} if rows else {}
+            names = ({r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+                     | device_board.device_labels(conn)) if rows else {}
             for row in rows:
                 event = row_to_event(row)
                 self._last_id = event["id"]
