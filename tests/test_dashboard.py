@@ -441,3 +441,34 @@ def test_operator_device_must_map_to_an_operator(world):
     hub, agent, ids = world
     hub.state.config.operator_devices = {ids["node_id"]: "visitor@example.com"}
     assert hub.client.get("/ui/approvals", headers={"x-forwarded-for": agent.ip}).status_code == 403
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+def test_operator_device_with_several_agents_keeps_the_dashboard_and_their_own_status(hub, tagged):
+    """The operator's own computer (one account), running several agents, listed in operator_devices."""
+    from agenthub.hub import avatars
+
+    from .conftest import AgentCreds
+
+    ip = "100.100.0.8"
+    if tagged:
+        hub.whois.add(ip, node_id="ndesk", name="desk.example.ts.net")
+    else:
+        hub.whois.add_user(ip, "ndesk", OP_LOGIN)
+    agents = []
+    for name in ("desk-a", "desk-b", "desk-c"):
+        r = hub.client.post("/api/v1/enroll", json={"code": hub.code(), "name": name}, headers={"x-forwarded-for": ip})
+        assert r.status_code == 201, r.text
+        agent = AgentCreds(id=r.json()["agent"]["id"], name=name, token=r.json()["token"], ip=ip)
+        hub.set_status(agent, "active")
+        agents.append(agent)
+    browser = {"x-forwarded-for": ip, "sec-fetch-site": "same-origin",
+               **({} if tagged else {"tailscale-user-login": OP_LOGIN})}
+    assert hub.client.get("/ui/agents", headers=browser).status_code == 403  # an agent machine, not yet listed
+    hub.state.config.operator_devices = {"ndesk": OP_LOGIN}
+    for page in ("/ui/dashboard", "/ui/agents", "/ui/approvals", "/ui/devices/ndesk"):
+        assert hub.client.get(page, headers=browser).status_code == 200, page
+    with hub.client.websocket_connect("/api/v1/ws", headers=agents[1].headers) as ws:
+        ws.receive_json()
+        poses = avatars.poses(hub.conn())
+        assert [poses[a.id] for a in agents] == ["offline", "idle", "offline"]
