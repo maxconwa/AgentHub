@@ -159,10 +159,13 @@ def check_permission_mode(cfg) -> Check:
     return Check("permission mode", OK, mode)
 
 
+# In hook commands and the MCP registration since 0.3.1: the session's own agent, else the fallback agent.
+SHARED_CONFIG_DIR = "${AGENTHUB_CONFIG_DIR:-"
+
+
 def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
     from agenthub.hooks import guard
 
-    marker = f"AGENTHUB_CONFIG_DIR={config_dir.resolve()}"
     found: dict[str, dict] = {}
     deny: set[str] = set()
     for path in _settings_files(cwd):
@@ -175,10 +178,14 @@ def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
             for entry in entries:
                 for hook in entry.get("hooks", []):
                     cmd = hook.get("command", "")
-                    if marker in cmd and " hook " in cmd:
+                    if "AGENTHUB_CONFIG_DIR=" in cmd and " hook " in cmd:
                         found[event] = hook
     out = []
     pre = found.get("PreToolUse")
+    pinned = [e for e, h in found.items() if SHARED_CONFIG_DIR not in h.get("command", "")]
+    if pinned:
+        out.append(Check("hook identity", WARN, f"{', '.join(pinned)} pinned to one agent's config dir: other "
+                         "agents' runner sessions would act as it; rerun `agenthub hook install`"))
     if pre is None:
         out.append(Check("hook PreToolUse", FAIL, "not installed; run `agenthub hook install`"))
     elif pre.get("onFailure") != "block":
@@ -228,10 +235,10 @@ async def _hub_checks(cfg) -> list[Check]:
     return out
 
 
-def check_launchd(run: Runner) -> Check:
+def check_launchd(run: Runner, inst: str | None = None) -> Check:
     from agenthub.runner import service
 
-    target = f"{service.launchd_domain()}/{service.LAUNCHD_LABEL}"
+    target = f"{service.launchd_domain()}/{service.launchd_label(inst)}"
     proc = run(["launchctl", "print", target])
     if proc.returncode != 0:
         return Check("runner service", WARN, f"{target} is not loaded; rerun `agenthub join --force` from a "
@@ -239,13 +246,13 @@ def check_launchd(run: Runner) -> Check:
     state = next((line.split("=", 1)[1].strip() for line in proc.stdout.splitlines()
                   if line.strip().startswith("state =")), "unknown")
     return Check("runner service", OK if state == "running" else WARN,
-                 state if state == "running" else f"{state}; see ~/Library/Logs/agenthub-runner.log")
+                 state if state == "running" else f"{state}; see {service.launchd_log(inst)}")
 
 
 def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
     from agenthub.config import AgentConfig
-    from agenthub.runner.config import RunnerConfigError, load_runner_config
     from agenthub.runner import service
+    from agenthub.runner.config import RunnerConfigError, load_runner_config
 
     cwd = cwd or Path.cwd()
     config_dir = paths.config_dir()
@@ -273,9 +280,14 @@ def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
         out.append(Check("claude", FAIL, "`claude` not on PATH"))
     else:
         proc = run([claude, "mcp", "get", "agenthub"])
-        out.append(Check("MCP server", OK if proc.returncode == 0 else WARN,
-                         "registered" if proc.returncode == 0 else "not registered here; rerun `agenthub join` "
-                         "or `claude mcp add-json` (local-scope entries only show in their project directory)"))
+        if proc.returncode != 0:
+            out.append(Check("MCP server", WARN, "not registered here; rerun `agenthub hook install` (local-scope "
+                             "entries only show in their project directory)"))
+        elif SHARED_CONFIG_DIR not in proc.stdout:
+            out.append(Check("MCP server", WARN, "registered for one agent's config dir: other agents' runner "
+                             "sessions would act as it; rerun `agenthub hook install`"))
+        else:
+            out.append(Check("MCP server", OK, "registered"))
     try:
         rcfg = load_runner_config()
         out.append(check_permission_mode(rcfg))
@@ -288,10 +300,11 @@ def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
             out.append(Check("runner config", OK, f"{len(rcfg.projects)} project(s) mapped"))
     except RunnerConfigError as exc:
         out.append(Check("runner config", FAIL, str(exc)))
+    inst = service.instance(config_dir, cfg.name)
     if service.use_launchd():
-        out.append(check_launchd(run))
+        out.append(check_launchd(run, inst))
     elif shutil.which("systemctl"):
-        active = run(["systemctl", "--user", "is-active", service.UNIT_NAME]).stdout.strip()
+        active = run(["systemctl", "--user", "is-active", service.unit_name(inst)]).stdout.strip()
         out.append(Check("runner service", OK if active == "active" else WARN, active or "unknown"))
         linger = run(["loginctl", "show-user", getpass.getuser(), "--property=Linger"]).stdout.strip()
         out.append(Check("linger", OK if linger == "Linger=yes" else WARN,

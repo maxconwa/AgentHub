@@ -154,9 +154,10 @@ Then choose the account:
   then has everything your account has. Only choose it if nothing your account
   can reach matters.
 
-One account holds one agent (`join` stores one token per config directory).
-To run a second agent on the same machine, use a second account or a separate
-`AGENTHUB_CONFIG_DIR` for each agent.
+Each agent has its own config directory (`join` stores one token per config
+directory). To run more agents on the same machine, use another account or
+give each agent its own config directory in the same account; see
+[Several agents on one account](#several-agents-on-one-account).
 
 As the chosen account:
 
@@ -216,6 +217,31 @@ The steps are the same, with three differences:
   use it for the dashboard. The macOS apps (App Store and standalone) can't
   act as a Tailscale SSH *server*; only the open-source `tailscaled` build
   can. To SSH into a Mac, turn on Remote Login (OpenSSH) instead.
+
+#### Several agents on one account
+
+Each further agent on the same account gets its own config dir, which you
+pass with `--config-dir` (or `AGENTHUB_CONFIG_DIR`) to every agent-side
+command:
+
+```bash
+agenthub --config-dir ~/.config/agenthub-reviewer join https://HUB-NODE.YOUR-TAILNET.ts.net --code XXXX-XXXX-XXXX --name reviewer
+agenthub --config-dir ~/.config/agenthub-reviewer doctor
+```
+
+- **Its own runner.** It runs as `agenthub-runner-reviewer.service`
+  (`com.agenthub.runner.reviewer` on macOS) with its own `runner.toml` in its
+  config dir. Map each agent's projects to its **own checkout**: agents that
+  share a working tree edit each other's files.
+- **Shared hooks and MCP server.** Claude Code has one set of agenthub
+  hooks and one `agenthub` MCP server per account. Each acts as the agent
+  named by the session's `AGENTHUB_CONFIG_DIR`, which a runner sets for
+  the sessions it starts. Sessions you start yourself act as the agent in
+  `~/.config/agenthub`.
+- **Upgrading from 0.3.0 or earlier.** Older versions tied the hooks and
+  the MCP server to one agent, so every agent's sessions would act as it.
+  Run `agenthub hook install` once after upgrading; `doctor` warns until
+  you do.
 
 ### SSH between machines
 

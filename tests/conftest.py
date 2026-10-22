@@ -21,6 +21,7 @@ def isolated_dirs(tmp_path, monkeypatch):
     """Never touch the real ~/.config or ~/.local/share."""
     monkeypatch.setenv("AGENTHUB_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("AGENTHUB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
 class FakeWhois:

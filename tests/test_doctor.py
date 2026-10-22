@@ -51,7 +51,7 @@ def test_hook_checks_detect_fail_open(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     checks = {c.name: c for c in doctor.check_hooks(paths.config_dir(), tmp_path)}
     assert checks["hook PreToolUse"].status == "fail"
-    path = install.install("user", exe="/bin/agenthub", config_dir=paths.config_dir())
+    path = install.install("user", exe="/bin/agenthub", fallback_dir=paths.config_dir())
     checks = {c.name: c for c in doctor.check_hooks(paths.config_dir(), tmp_path)}
     assert checks["hook PreToolUse"].status == "ok" and checks["deny rules"].status == "ok"
     data = json.loads(path.read_text())
@@ -224,3 +224,17 @@ def test_tailscale_bin_finds_the_macos_app(tmp_path, monkeypatch):
     assert doctor.tailscale_bin() == str(app_cli)
     monkeypatch.setattr(doctor.sys, "platform", "linux")
     assert doctor.tailscale_bin() == "tailscale"
+
+
+def test_hooks_pinned_to_one_agent_are_flagged(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    path = install.install("user", exe="/bin/agenthub", fallback_dir=paths.config_dir())
+    checks = {c.name: c for c in doctor.check_hooks(paths.config_dir(), tmp_path)}
+    assert "hook identity" not in checks
+    data = json.loads(path.read_text())
+    for entries in data["hooks"].values():  # the 0.2.1 form: AGENTHUB_CONFIG_DIR=<dir> agenthub hook ...
+        for e in entries:
+            e["hooks"][0]["command"] = f"AGENTHUB_CONFIG_DIR={paths.config_dir()} /bin/agenthub hook x"
+    path.write_text(json.dumps(data))
+    checks = {c.name: c for c in doctor.check_hooks(paths.config_dir(), tmp_path)}
+    assert checks["hook identity"].status == "warn" and checks["hook PreToolUse"].status == "ok"
