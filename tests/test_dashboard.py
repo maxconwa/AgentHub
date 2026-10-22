@@ -122,7 +122,7 @@ def test_insecure_dev_disables_operator_access(dev_hub):
 
 def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
-    for path in ["/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
+    for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/feed", "/ui/feed?type=task", "/ui/agents", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread"]:
         r = hub.client.get(path, headers=hub.op_headers())

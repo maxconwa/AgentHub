@@ -11,15 +11,21 @@
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'>
   <header class="top">
-    <a class="brand" href="/ui/approvals">agenthub</a>
-    <nav>
-      {% for href, label in [("/ui/approvals", "Approvals"), ("/ui/tasks", "Tasks"), ("/ui/feed", "Feed"), ("/ui/agents", "Agents"), ("/ui/search", "Search")] %}
-      <a href="{{ href }}" class="{{ 'active' if path.startswith(href) else '' }}">{{ label }}{% if href == "/ui/approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% endif %}</a>
+    <a class="brand" href="/ui/dashboard">agenthub</a>
+    <nav aria-label="Pages">
+      {% for key, label in [("dashboard", "Dashboard"), ("projects", "Projects"), ("tasks", "Tasks"), ("agents", "Agents"), ("devices", "Devices"), ("approvals", "Approvals"), ("chats", "Chats"), ("reports", "Reports")] %}
+      <a href="/ui/{{ key }}" class="{{ 'active' if nav == key else '' }}">{{ label }}{% if key == "approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% endif %}</a>
       {% endfor %}
     </nav>
+    <form class="search" role="search" method="get" action="/ui/search"><input type="search" name="q" placeholder="Search everything" aria-label="Search" maxlength="500"></form>
   </header>
   <main>
     {% block content %}{% endblock %}
+    {% if self.live is defined %}
+    <section id="live" hx-get="{{ path }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s">
+      {% block live %}{% endblock %}
+    </section>
+    {% endif %}
   </main>
   <footer>Signed in as {{ operator.login }}</footer>
 </body>

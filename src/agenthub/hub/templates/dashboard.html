@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_macros.html" import approval_summary, avatar %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="lead">What needs you, and what every agent is doing right now.</p>
+{% endblock %}
+{% block live %}
+<div class="section-head"><h2>Waiting on you{% if pending %} <span class="count">{{ pending|length }}</span>{% endif %}</h2><a href="/ui/approvals">All approvals</a></div>
+{% if not pending %}<p class="empty">Nothing needs you right now.</p>{% endif %}
+<ul class="cards">
+  {% for a in pending %}
+  <li class="card"><a class="card-link approval-card" href="/ui/approvals/{{ a.id }}">{{ avatar(avatars.get(a.requester), 40) }}
+    <div class="body"><div class="row"><span class="kind">{{ a.kind.replace('_', ' ') }}</span><span class="muted small">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
+      <div class="summary">{{ approval_summary(a) }}</div>
+      <div class="muted small">from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</div></div></a></li>
+  {% endfor %}
+</ul>
+<div class="section-head"><h2>Agents <span class="count">{{ agents|length }}</span></h2><a href="/ui/agents">All agents</a></div>
+{% if not agents %}<p class="empty">No agents yet. Enroll one from the Agents page.</p>{% endif %}
+<div class="tally">{% for t in tally %}<span class="chip">{{ t.count }} {{ t.label }}</span>{% endfor %}</div>
+<ul class="agent-grid">
+  {% for ag in agents %}
+  <li class="card agent-card">{{ avatar(ag.avatar, 64, scene=True) }}
+    <div class="info"><a class="name" href="/ui/agents#agent-{{ ag.id }}">{{ ag.name }}</a>
+      {% if ag.tasks %}{% set t = ag.tasks[0] %}
+      <div class="small-line"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ t.title }}</a> · {{ t.project }}</div>
+      <div class="small-line">{% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}{% if ag.tasks|length > 1 %} · +{{ ag.tasks|length - 1 }} more{% endif %}</div>
+      {% else %}<div class="small-line">No current task</div>{% endif %}
+      <div class="small-line">on {{ ag.device }}</div></div></li>
+  {% endfor %}
+</ul>
+{% endblock %}

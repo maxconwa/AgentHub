@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, avatar_art, avatars, db, events, store, task_agents, tasks
+from agenthub.hub import approvals, avatar_art, avatars, db, events, store, task_agents, tasks, views
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -191,7 +191,23 @@ def build_router() -> APIRouter:
     @router.get("")
     @router.get("/")
     def home(operator: Op) -> Response:
-        return RedirectResponse("/ui/approvals", status_code=303)
+        return RedirectResponse("/ui/dashboard", status_code=303)
+
+    @router.get("/dashboard", response_class=HTMLResponse)
+    def dashboard_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        pending = list(reversed(approvals.list_approvals(conn, status="pending")))
+        agents = views.agent_rows(conn)
+        tally: dict[str, int] = {}
+        for a in agents:
+            tally[a["avatar"]["pose"]] = tally.get(a["avatar"]["pose"], 0) + 1
+        tally_chips = [{"pose": p, "count": n, "label": avatar_art.POSE_LABELS[p]}
+                       for p, n in sorted(tally.items(), key=lambda kv: avatar_art.POSES.index(kv[0]))]
+        return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
+                      tally=tally_chips)
+
+    @router.get("/reports", response_class=HTMLResponse)
+    def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "reports.html", conn, nav="reports")
 
     @router.get("/badge", response_class=HTMLResponse)
     def badge(operator: Op, conn: Conn) -> HTMLResponse:
@@ -204,13 +220,13 @@ def build_router() -> APIRouter:
     def approvals_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         pending = list(reversed(approvals.list_approvals(conn, status="pending")))
         recent = [a for a in approvals.list_approvals(conn, status=None, limit=40) if a["status"] != "pending"][:20]
-        return render(request, operator, "approvals.html", conn, pending=pending, recent=recent)
+        return render(request, operator, "approvals.html", conn, nav="approvals", pending=pending, recent=recent)
 
     @router.get("/approvals/{approval_id}", response_class=HTMLResponse)
     def approval_page(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         a = approvals.get(conn, approval_id)
         task = tasks.get_task(conn, a["details"]["task_id"]) if a["details"].get("task_id") else None
-        return render(request, operator, "approval.html", conn, a=a, task=task)
+        return render(request, operator, "approval.html", conn, nav="approvals", a=a, task=task)
 
     @router.get("/approvals/{approval_id}/thread", response_class=HTMLResponse)
     def approval_thread(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -240,7 +256,7 @@ def build_router() -> APIRouter:
         rows = tasks.list_tasks(conn, projects=[project] if project else None, limit=500)
         columns = [(s, [t for t in rows if t["state"] == s]) for s in tasks.STATES]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
-        return render(request, operator, "tasks.html", conn, columns=columns, project=project,
+        return render(request, operator, "tasks.html", conn, nav="tasks", columns=columns, project=project,
                       projects=store.list_projects(conn), agents=agents, default_budget=tasks.DEFAULT_BUDGET)
 
     @router.post("/tasks")
@@ -267,7 +283,7 @@ def build_router() -> APIRouter:
             "ORDER BY id DESC LIMIT 100", (task_id,)).fetchall()
         history = [events.row_to_event(r) for r in rows]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active" and t["project"] in a["allowed_projects"]]
-        return render(request, operator, "task.html", conn, t=t, history=history, runs=tasks.list_runs(conn, task_id),
+        return render(request, operator, "task.html", conn, nav="tasks", t=t, history=history, runs=tasks.list_runs(conn, task_id),
                       usage=tasks.usage(conn, task_id), moves=operator_moves(t["state"]), agents=agents,
                       terminal=t["state"] in tasks.TERMINAL)
 
@@ -341,7 +357,7 @@ def build_router() -> APIRouter:
     def agents_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         rows = conn.execute("SELECT id, connected FROM agents").fetchall()
         connected = {r["id"]: r["connected"] for r in rows}
-        return render(request, operator, "agents.html", conn, agents=store.list_agents(conn), connected=connected,
+        return render(request, operator, "agents.html", conn, nav="agents", agents=store.list_agents(conn), connected=connected,
                       projects=store.list_projects(conn), new_code=None)
 
     @router.post("/agents/enroll", response_class=HTMLResponse)
@@ -352,7 +368,7 @@ def build_router() -> APIRouter:
             code = store.create_enrollment(conn, created_by=operator.actor, projects=names)
         rows = conn.execute("SELECT id, connected FROM agents").fetchall()
         # Shown once, never stored in plain text.
-        return render(request, operator, "agents.html", conn, agents=store.list_agents(conn),
+        return render(request, operator, "agents.html", conn, nav="agents", agents=store.list_agents(conn),
                       connected={r["id"]: r["connected"] for r in rows}, projects=store.list_projects(conn),
                       new_code={"code": code, "projects": names})
 
