@@ -20,6 +20,7 @@
     <form class="search" role="search" method="get" action="/ui/search"><input type="search" name="q" placeholder="Search everything" aria-label="Search" maxlength="500"></form>
   </header>
   <main>
+    <div id="compose"></div>
     {% block content %}{% endblock %}
     {% if self.live is defined %}
     <section id="live" hx-get="{{ path }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s">

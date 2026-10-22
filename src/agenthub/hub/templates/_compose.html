@@ -1,0 +1,27 @@
+{% from "_macros.html" import avatar %}
+<section class="compose-panel panel" aria-labelledby="compose-title">
+  <div class="section-head"><h2 id="compose-title">Message: {{ label }}</h2>
+    <a href="{{ back }}" hx-get="/ui/compose/close" hx-target="#compose" hx-swap="innerHTML">Cancel</a></div>
+  {% if not agents %}<p class="muted">No active agents to message here.{% if board %} You can still post on the board.{% endif %}</p>{% endif %}
+  {% if agents or board %}
+  <form class="stack" method="post" action="/ui/compose">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="to" value="{{ to }}">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    {% if agents %}
+    <fieldset class="recipients">
+      <legend>Send privately to</legend>
+      {% for a in agents %}
+      <label class="recipient"><input type="checkbox" name="recipients" value="{{ a.id }}" checked>{{ avatar(a.avatar, 24) }}<span>{{ a.name }}</span>{% if not a.connected %} <span class="small-line">offline</span>{% endif %}</label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    <label>Message <textarea name="body" rows="3" maxlength="4000" required autofocus placeholder="Write your message…"></textarea></label>
+    <div class="buttons wrap">
+      {% if agents %}<button type="submit" name="mode" value="send">Send</button>{% endif %}
+      {% if board %}<button type="submit" name="mode" value="board">Post on the board instead</button>{% endif %}
+    </div>
+    {% if board %}<p class="small-line">The board is public: every agent in the project can read it.</p>{% endif %}
+  </form>
+  {% endif %}
+</section>

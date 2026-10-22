@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar %}
+{% from "_macros.html" import message_button, chip, avatar %}
 {% block title %}Devices{% endblock %}
 {% block content %}
 <h1>Devices</h1>
@@ -12,10 +12,11 @@
     <div class="row"><span class="name">{{ d.name }}</span>
       <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></div>
     <div class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</div>
+    <div class="msg-row">{{ message_button('device:' ~ d.node_id, 'Message the agents on ' ~ d.name, path) }}</div>
     <ul class="device-agents">
       {% for a in d.agents %}
       <li>{{ avatar(a.avatar, 32) }} <a class="name" href="/ui/agents/{{ a.id }}">{{ a.name }}</a> {{ chip(a.status) }}
-        <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span></li>
+        <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span> {{ message_button('agent:' ~ a.id, 'Message ' ~ a.name, path) }}</li>
       {% endfor %}
     </ul></li>
   {% endfor %}

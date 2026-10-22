@@ -105,6 +105,49 @@ def chat_list(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     return {"threads": threads, "others": others}
 
 
+# --- Tap to message ------------------------------------------------------------------------
+
+
+def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
+    """Who a message to ``target`` (``agent:<id>``, ``task:<id>``, ``project:<name>``, ``device:<node_id>``) reaches.
+
+    ``{label, agents, board}``: ``agents`` are the :func:`agent_rows` entries with status ``active`` (offline ones
+    included; they read it at their next session), ``board`` the ``(project, channel)`` a public post would go to,
+    or None for agent and device targets. Raises store.NotFound for a malformed or unknown target.
+    """
+    kind, _, key = target.partition(":")
+    pool = {a["id"]: a for a in agent_rows(conn)}
+    board: tuple[str, str] | None = None
+    if kind == "agent" and key:
+        found = agent_rows(conn, agent_id=key)
+        if not found:
+            raise store.NotFound(f"no agent {key!r}")
+        label, ids, pool = f"agent {found[0]['name']}", [key], {key: found[0]}  # revoked agents are filtered below
+    elif kind == "task" and key.isdecimal():
+        row = conn.execute("SELECT id, project FROM tasks WHERE id = ?", (int(key),)).fetchone()
+        if row is None:
+            raise store.NotFound(f"no task {key}")
+        label, board = f"task #{row['id']}", (row["project"], f"task-{row['id']}")
+        ids = [r["agent_id"] for r in conn.execute("SELECT agent_id FROM task_agents WHERE task_id = ?", (row["id"],))]
+    elif kind == "project" and key:
+        if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (key,)).fetchone():
+            raise store.NotFound(f"no project {key!r}")
+        label, board = f"project {key}", (key, "general")
+        ids = [r["agent_id"] for r in conn.execute(
+            "SELECT DISTINCT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
+            "WHERE t.project = ? AND t.state NOT IN ('done', 'rejected', 'cancelled')", (key,))]
+    elif kind == "device" and key:
+        device = next((d for d in devices(conn) if d["node_id"] == key), None)
+        if device is None:
+            raise store.NotFound(f"no device {key!r}")
+        label, ids = f"device {device['name']}", [a["id"] for a in device["agents"]]
+    else:
+        raise store.NotFound(f"no message target {target!r}")
+    agents = sorted((pool[i] for i in set(ids) if i in pool and pool[i]["status"] == "active"),
+                    key=lambda a: (a["name"], a["id"]))
+    return {"label": label, "agents": agents, "board": board}
+
+
 # --- Board: public channels and agent-to-agent threads -----------------------------------
 
 BOARD_LIMIT = 200
@@ -143,7 +186,7 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             out["projects"].append(item | {"title": c["project"]})
         elif m and (c["project"], int(m[1])) in task_titles:
             title, by = task_titles[(c["project"], int(m[1]))]
-            out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by})
+            out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by, "task_id": int(m[1])})
         else:
             out["threads"].append(item)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title %}
+{% from "_macros.html" import message_button, chip, avatar, task_title %}
 {% from "_board.html" import board %}
 {% block title %}{{ project.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/projects">← Projects</a></p>
 <h1>{{ project.name }}</h1>
+<p>{{ message_button('project:' ~ project.name, 'Message the agents on project ' ~ project.name, path) }}</p>
 {% if project.description %}<p class="pre">{{ project.description }}</p>{% else %}<p class="muted">No description yet.</p>{% endif %}
 <details class="panel">
   <summary>Edit description</summary>
@@ -19,10 +20,10 @@
 {% if not tasks %}<p class="empty">No live tasks.</p>{% endif %}
 {% for t in tasks %}
 <div class="task-row">
-  <div class="row"><span><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+  <div class="row"><span><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</div>
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %}
-    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div></div>
+    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div>{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}</div>
   {% else %}<div class="member small-line">Nobody yet</div>
   {% endfor %}
 </div>

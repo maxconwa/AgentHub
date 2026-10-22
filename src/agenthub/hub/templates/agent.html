@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title, approval_summary %}
+{% from "_macros.html" import message_button, chip, avatar, task_title, approval_summary %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -9,6 +9,7 @@
   <div class="info"><h1>{{ ag.name }} {{ chip(ag.status) }}</h1>
     {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}</div>
 </div>
+{% if ag.status == 'active' %}<p>{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}</p>{% endif %}
 {% if ag.status != 'revoked' %}
 <form class="inline" method="post" action="/ui/agents/{{ ag.id }}/avatar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reroll look</button></form>
 {% endif %}
@@ -18,7 +19,7 @@
   <dl class="facts">
     <div><dt>Device</dt><dd>{{ ag.device }}{% if device_ip %} · {{ device_ip }}{% endif %}</dd></div>
     <div><dt>Agent id</dt><dd>{{ ag.id }}</dd></div>
-    <div><dt>Directory <span class="muted small">(reported by the agent)</span></dt><dd class="dir">{{ ag.current_dir or 'None reported' }}</dd></div>
+    <div><dt>Directory <span class="small-line">reported by the agent</span></dt><dd class="dir">{{ ag.current_dir or 'None reported' }}</dd></div>
   </dl>
   <h4>Checkouts <span class="muted small">(reported by the agent)</span></h4>
   {% if ag.checkouts %}
@@ -29,7 +30,7 @@
 <section class="panel">
   <h3>Tasks</h3>
   {% for t in ag.tasks %}
-  <p class="task-row"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · {{ t.project }} · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
+  <p class="task-row"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · {{ t.project }} · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} {{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</p>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
 

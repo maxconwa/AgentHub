@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from agenthub.hub import db, store, task_agents, tasks, views
+from agenthub.hub import db, private, store, task_agents, tasks, views
 
 from .conftest import OP_LOGIN, OPERATOR
 
@@ -552,3 +552,203 @@ def test_agent_chosen_channel_and_task_title_labeled(talk):
     with db.transaction(conn):
         conn.execute("UPDATE tasks SET created_by = ? WHERE id = ?", (OPERATOR, t["id"]))
     assert "Fix login</span> <span" not in get(hub, "/ui/board").text
+
+
+# --- Tap to message ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reach(hub):
+    """worker + helper on task t (helper offline), a pending and a revoked agent that must never be offered."""
+    a, b = hub.enroll("worker"), hub.enroll("helper")
+    p, r = hub.enroll("newbie"), hub.enroll("gone")
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (a.id,))
+        t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Fix login", assignee=None)
+        for ag in (a, b, p, r):
+            task_agents.add_agent(conn, t["id"], ag.id, role="r", stage="works", actor=OPERATOR)
+        conn.execute("UPDATE agents SET status = 'pending' WHERE id = ?", (p.id,))  # members may lose standing later
+        conn.execute("UPDATE agents SET status = 'revoked' WHERE id = ?", (r.id,))
+    return hub, a, b, p, r, t
+
+
+def names_of(hub, target):
+    return [x["name"] for x in views.recipients(hub.conn(), target)["agents"]]
+
+
+def test_recipients_per_target_kind(reach):
+    hub, a, b, p, r, t = reach
+    conn = hub.conn()
+    assert names_of(hub, f"agent:{a.id}") == ["worker"]
+    assert names_of(hub, f"agent:{p.id}") == [] and names_of(hub, f"agent:{r.id}") == []
+    task = views.recipients(conn, f"task:{t['id']}")
+    assert sorted(x["name"] for x in task["agents"]) == ["helper", "worker"]
+    assert task["board"] == ("proj", f"task-{t['id']}")
+    proj = views.recipients(conn, "project:proj")
+    assert sorted(x["name"] for x in proj["agents"]) == ["helper", "worker"] and proj["board"] == ("proj", "general")
+    assert names_of(hub, "device:nworker") == ["worker"] and names_of(hub, "device:nnewbie") == []
+    assert views.recipients(conn, "device:nworker")["board"] is None
+    assert views.recipients(conn, f"agent:{a.id}")["label"]
+
+
+@pytest.mark.parametrize("target", ["", "agent", "agent:nope", "task:abc", "task:9999", "project:nope", "device:nope",
+                                    "thing:1", f"agent:"])
+def test_recipients_unknown_target_is_404(hub, target):
+    with pytest.raises(store.NotFound):
+        views.recipients(hub.conn(), target)
+    assert get(hub, "/ui/compose?to=" + target).status_code == 404
+
+
+def test_project_recipients_ignore_finished_tasks(reach):
+    hub, a, b, p, r, t = reach
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET state = 'done' WHERE id = ?", (t["id"],))
+    assert names_of(hub, "project:proj") == []
+
+
+def test_compose_page_lists_recipients_and_marks_offline(reach):
+    hub, a, b, p, r, t = reach
+    html = get(hub, f"/ui/compose?to=task:{t['id']}&next=/ui/tasks/{t['id']}").text
+    assert html.count('type="checkbox"') == 2 and html.count(" checked") == 2
+    assert "worker" in html and "helper" in html and "newbie" not in html and "gone" not in html
+    assert html.count('<span class="small-line">offline</span>') == 1 and "Post on the board instead" in html
+    assert 'name="next" value="/ui/tasks/' in html
+    assert "Post on the board instead" not in get(hub, f"/ui/compose?to=agent:{a.id}").text
+
+
+def test_compose_partial_for_htmx_and_next_filtering(reach):
+    hub, a, *_ = reach
+    r = hub.client.get(f"/ui/compose?to=agent:{a.id}&next=https://evil.example", headers=hub.op_headers(**{"hx-request": "true"}))
+    assert "<html" not in r.text and "evil.example" not in r.text and 'name="next"' not in r.text
+    assert "<html" in get(hub, f"/ui/compose?to=agent:{a.id}").text
+
+
+def test_compose_without_recipients(reach):
+    hub, a, b, p, r, t = reach
+    html = get(hub, f"/ui/compose?to=agent:{p.id}").text
+    assert "No active agents" in html and "<textarea" not in html
+    conn = hub.conn()
+    with db.transaction(conn):
+        tk = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Alone", assignee=None)
+    html = get(hub, f"/ui/compose?to=task:{tk['id']}").text
+    assert "No active agents" in html and "Post on the board instead" in html and 'name="recipients"' not in html
+
+
+def send(hub, **data):
+    return hub.client.post("/ui/compose", headers=hub.op_headers(), data={"csrf": hub.csrf(), "mode": "send", **data},
+                           follow_redirects=False)
+
+
+def chat(hub, agent):
+    return [m["body"] for m in private.thread(hub.conn(), agent.id)]
+
+
+def test_send_delivers_one_private_message_per_recipient(reach):
+    hub, a, b, p, r, t = reach
+    resp = send(hub, to=f"task:{t['id']}", recipients=[a.id, b.id], body="hello team")
+    assert resp.status_code == 303 and resp.headers["location"] == f"/ui/tasks/{t['id']}"
+    assert chat(hub, a) == ["hello team"] and chat(hub, b) == ["hello team"]
+    sent = [m for m in private.thread(hub.conn(), a.id)]
+    assert sent[0]["author"] == f"human:{OP_LOGIN}"
+    resp = send(hub, to=f"task:{t['id']}", recipients=[a.id], body="just you")
+    assert chat(hub, a) == ["hello team", "just you"] and chat(hub, b) == ["hello team"]
+
+
+@pytest.mark.parametrize("target,loc", [("agent:{a}", "/ui/agents/{a}"), ("project:proj", "/ui/projects/proj"),
+                                        ("device:nworker", "/ui/devices")])
+def test_send_redirects_to_target_page(reach, target, loc):
+    hub, a, *_ = reach
+    resp = send(hub, to=target.format(a=a.id), recipients=[a.id], body="x")
+    assert resp.headers["location"] == loc.format(a=a.id)
+
+
+def test_send_redirects_to_valid_next_only(reach):
+    hub, a, *_ = reach
+    assert send(hub, to=f"agent:{a.id}", recipients=[a.id], body="x", next="/ui/tasks").headers["location"] == "/ui/tasks"
+    for bad in ("https://evil.example", "//evil.example", "/ui/../x", "/other"):
+        loc = send(hub, to=f"agent:{a.id}", recipients=[a.id], body="x", next=bad).headers["location"]
+        assert loc == f"/ui/agents/{a.id}", bad
+
+
+def test_send_rejects_recipient_outside_target_and_empty_selection(reach):
+    hub, a, b, p, r, t = reach
+    for bad in (p.id, r.id, "ag-nope"):
+        assert send(hub, to=f"agent:{a.id}", recipients=[a.id, bad], body="x").status_code == 400
+    assert send(hub, to=f"agent:{a.id}", recipients=[b.id], body="x").status_code == 400
+    assert send(hub, to=f"agent:{a.id}", body="x").status_code == 400
+    assert chat(hub, a) == [] and chat(hub, b) == []  # nothing partially delivered
+
+
+def test_send_validates_body_and_target(reach):
+    hub, a, *_ = reach
+    assert send(hub, to=f"agent:{a.id}", recipients=[a.id], body="").status_code == 422
+    assert send(hub, to=f"agent:{a.id}", recipients=[a.id], body="x" * 4001).status_code == 422
+    assert send(hub, to="agent:nope", recipients=[a.id], body="x").status_code == 404
+    assert send(hub, to=f"agent:{a.id}", recipients=[a.id], body="x", mode="bogus").status_code == 422
+
+
+def test_board_mode_posts_to_the_right_channel(reach):
+    hub, a, b, p, r, t = reach
+    resp = send(hub, to=f"task:{t['id']}", body="for the board", mode="board")
+    assert resp.status_code == 303 and resp.headers["location"] == f"/ui/tasks/{t['id']}"
+    conn = hub.conn()
+    msgs = store.recent_messages(conn, project="proj", channel=f"task-{t['id']}", limit=5)
+    assert [(m["author"], m["body"]) for m in msgs] == [(f"human:{OP_LOGIN}", "for the board")]
+    send(hub, to="project:proj", body="project note", mode="board")
+    assert [m["body"] for m in store.recent_messages(conn, project="proj", channel="general", limit=5)] == ["project note"]
+    assert chat(hub, a) == []  # the board is public, not a private message
+    assert send(hub, to=f"agent:{a.id}", body="x", mode="board").status_code == 400
+    assert send(hub, to="device:nworker", body="x", mode="board").status_code == 400
+
+
+def test_compose_post_requires_csrf(reach):
+    hub, a, *_ = reach
+    r = hub.client.post("/ui/compose", headers=hub.op_headers(), follow_redirects=False,
+                        data={"to": f"agent:{a.id}", "recipients": [a.id], "body": "x", "mode": "send"})
+    assert r.status_code == 403 and chat(hub, a) == []
+
+
+def test_compose_close_is_empty(hub):
+    r = get(hub, "/ui/compose/close")
+    assert r.status_code == 200 and r.text == ""
+
+
+def links(html):
+    return set(re.findall(r'href="/ui/compose\?to=([^&"]+)', html))
+
+
+def test_every_page_has_a_compose_link_per_item(reach):
+    hub, a, b, p, r, t = reach
+    tid = t["id"]
+    ag = {f"agent%3A{x.id}" for x in (a, b)}
+    assert ag | {f"task%3A{tid}"} <= links(get(hub, "/ui/dashboard").text)
+    pr = links(get(hub, "/ui/projects").text)
+    assert ag | {f"task%3A{tid}", "project%3Aproj"} <= pr
+    assert ag | {f"task%3A{tid}", "project%3Aproj"} <= links(get(hub, "/ui/projects/proj").text)
+    assert ag | {f"task%3A{tid}"} <= links(get(hub, "/ui/tasks").text)
+    assert ag | {f"task%3A{tid}"} <= links(get(hub, f"/ui/tasks/{tid}").text)
+    assert ag <= links(get(hub, "/ui/agents").text)
+    assert f"agent%3A{a.id}" in links(get(hub, f"/ui/agents/{a.id}").text)
+    assert f"task%3A{tid}" in links(get(hub, f"/ui/agents/{a.id}").text)
+    dev = links(get(hub, "/ui/devices").text)
+    assert ag | {"device%3Anworker", "device%3Anhelper"} <= dev
+    send(hub, to=f"task:{tid}", body="n", mode="board")
+    send(hub, to="project:proj", body="n", mode="board")
+    board = links(get(hub, "/ui/board").text)
+    assert {f"task%3A{tid}", "project%3Aproj"} <= board
+
+
+def test_message_button_markup(reach):
+    hub, a, *_ = reach
+    html = get(hub, "/ui/tasks").text
+    assert 'hx-target="#compose"' in html and 'id="compose"' in html
+    assert re.search(r'aria-label="Message the agents on task #\d+"[^>]*>Message</a>', html)
+    assert "next=%2Fui%2Ftasks" in html and "style=" not in html
+
+
+def test_agent_card_directory_caption_is_visible(reach):
+    hub, *_ = reach
+    html = get(hub, "/ui/agents").text
+    assert "reported by the agent" in html and 'title="reported by the agent"' not in html

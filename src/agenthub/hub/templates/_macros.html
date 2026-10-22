@@ -1,3 +1,8 @@
+{% macro message_button(target, label, next='') -%}
+{%- set href = '/ui/compose?' ~ ({'to': target, 'next': next} if next else {'to': target})|urlencode -%}
+<a class="msg-btn" href="{{ href }}" hx-get="{{ href }}" hx-target="#compose" hx-swap="innerHTML" aria-label="{{ label }}">Message</a>
+{%- endmacro %}
+
 {% macro chip(state) -%}<span class="chip chip-{{ state }}">{{ state.replace('_', ' ') }}</span>{%- endmacro %}
 
 {% macro agent_text(text, author_id, names) -%}

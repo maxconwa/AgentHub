@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -172,6 +172,16 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
 SAFE_NEXT = re.compile(r"/ui/[A-Za-z0-9_\-./]*")
 
 
+def safe_next(next: str) -> str:
+    return next if SAFE_NEXT.fullmatch(next) and ".." not in next else ""
+
+
+def target_page(target: str) -> str:
+    """The page a message target lives on (the target is already known to exist)."""
+    kind, _, key = target.partition(":")
+    return "/ui/devices" if kind == "device" else f"/ui/{kind}s/{quote(key)}"
+
+
 def done(request: Request, url: str) -> Response:
     """PRG for plain forms; HTMX follows HX-Redirect instead."""
     if request.headers.get("hx-request"):
@@ -282,7 +292,46 @@ def build_router() -> APIRouter:
                   next: Annotated[str, Form(max_length=500)] = "") -> Response:
         with db.transaction(conn):
             private.send(conn, agent_id, author=operator.actor, body=body)
-        return done(request, next if SAFE_NEXT.fullmatch(next) and ".." not in next else f"/ui/chats/{agent_id}")
+        return done(request, safe_next(next) or f"/ui/chats/{agent_id}")
+
+    # tap to message ------------------------------------------------------------------------
+
+    @router.get("/compose", response_class=HTMLResponse)
+    def compose_page(request: Request, operator: Op, conn: Conn, to: str = "", next: str = "") -> HTMLResponse:
+        reach = views.recipients(conn, to)
+        next = safe_next(next)
+        # HTMX loads just the panel into #compose; a plain link gets the whole page.
+        name = "_compose.html" if request.headers.get("hx-request") else "compose.html"
+        return render(request, operator, name, conn, nav="", to=to, next=next, back=next or target_page(to), **reach)
+
+    @router.get("/compose/close", response_class=HTMLResponse)
+    def compose_close(operator: Op) -> HTMLResponse:
+        return HTMLResponse("", headers=SECURITY_HEADERS)
+
+    @router.post("/compose")
+    def compose_send(request: Request, operator: PostOp, conn: Conn,
+                     to: Annotated[str, Form(max_length=200)],
+                     body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
+                     mode: Annotated[str, Form(pattern="^(send|board)$")] = "send",
+                     recipients: Annotated[list[str], Form()] = [],  # noqa: B006 (never mutated)
+                     next: Annotated[str, Form(max_length=500)] = "") -> Response:
+        reach = views.recipients(conn, to)
+        with db.transaction(conn):
+            if mode == "board":
+                if reach["board"] is None:
+                    raise HTTPException(400, "this target has no board")
+                project, channel = reach["board"]
+                store.post_message(conn, author=operator.actor, project=project, channel=channel, body=body)
+            else:
+                chosen = list(dict.fromkeys(recipients))
+                allowed = {a["id"] for a in reach["agents"]}
+                if not chosen:
+                    raise HTTPException(400, "choose at least one recipient")
+                if not set(chosen) <= allowed:
+                    raise HTTPException(400, "a recipient is not reachable from this target")
+                for agent_id in chosen:
+                    private.send(conn, agent_id, author=operator.actor, body=body)
+        return done(request, safe_next(next) or target_page(to))
 
     # board (public channels and agent-to-agent threads) ----------------------------------
 
