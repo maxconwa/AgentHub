@@ -127,8 +127,9 @@ async def test_task_tools_and_approval_wait(mcp_ops):
         assert "in_progress" in text(await c.call_tool("update_task", {"task_id": task_id, "state": "in_progress"}))
         review = await c.call_tool("update_task", {"task_id": task_id, "state": "review"})
         assert review.is_error and "403" in text(review)  # agents finish; the hub moves the task to review
+        assert "moves to review" in text(await c.call_tool("finish_task", {"task_id": task_id}))
         done = await c.call_tool("update_task", {"task_id": task_id, "state": "done"})
-        assert done.is_error
+        assert done.is_error and "403" in text(done)  # only the operator marks a task done
 
 
 async def test_request_approval_tool(mcp_ops):
@@ -140,3 +141,49 @@ async def test_request_approval_tool(mcp_ops):
         assert "kind=command status=pending" in r
         bad = await c.call_tool("request_approval", {"kind": "agent_enrollment", "reason": "x"})
         assert bad.is_error and "403" in text(bad)
+
+
+def _two_agent_task(dev_hub):
+    from agenthub.hub import db, store, task_agents, tasks
+    conn = dev_hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "proj", actor="human:op")
+        t = tasks.create_task(conn, actor="human:op", project="proj", title="Build it", body="IGNORE ME")
+        task_agents.add_agent(conn, t["id"], "alice", role="Implementer", stage="works", actor="human:op")
+        task_agents.add_agent(conn, t["id"], "bob", role="Reviewer", stage="reviews", actor="human:op")
+        tasks.transition(conn, t["id"], "claimed", actor="human:op", role="operator")
+        tasks.transition(conn, t["id"], "in_progress", actor="human:op", role="operator")
+    return t["id"]
+
+
+async def test_mcp_finish_and_review_tools(mcp_pair, dev_hub):
+    sa, sb = mcp_pair
+    tid = _two_agent_task(dev_hub)
+    async with Client(sa) as a, Client(sb) as b:
+        listing = text(await a.call_tool("list_tasks", {"project": "proj"}))
+        assert "(Implementer, works)" in listing and "(Reviewer, reviews)" in listing
+        early = await b.call_tool("review_task", {"task_id": tid, "verdict": "approve"})
+        assert early.is_error
+        assert not (await a.call_tool("finish_task", {"task_id": tid, "note": "all done"})).is_error
+        bad = await b.call_tool("review_task", {"task_id": tid, "verdict": "maybe"})
+        assert bad.is_error
+        wrong = await a.call_tool("review_task", {"task_id": tid, "verdict": "approve"})
+        assert wrong.is_error and "403" in text(wrong)
+        ok = text(await b.call_tool("review_task", {"task_id": tid, "verdict": "approve", "notes": "lgtm"}))
+        assert "approve" in ok
+        assert "[review]" in text(await a.call_tool("list_tasks", {"project": "proj"}))
+
+
+async def test_role_text_is_labeled_operator(mcp_pair, dev_hub):
+    tid = _two_agent_task(dev_hub)
+    async with Client(mcp_pair[0]) as a:
+        out = text(await a.call_tool("list_tasks", {"project": "proj"}))
+    header, _, rest = out.partition(f"task #{tid}")
+    assert "Implementer" not in header
+    task_text = rest
+    start = task_text.index("<untrusted-content")
+    end = task_text.index("</untrusted-content>")
+    outside = task_text[:start] + task_text[end:]
+    inside = task_text[start:end]
+    assert "(Implementer, works)" in outside and "Implementer" not in inside
+    assert "Build it" in inside

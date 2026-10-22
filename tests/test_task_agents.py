@@ -153,6 +153,9 @@ def test_assignee_column_is_dead():
     """
     for name in ("task_agents.py", "bus.py"):
         assert "assignee" not in _strip_comments((SRC / name).read_text()), name
+    # app.py: the request model field ``assignee`` of CreateTaskRequest is the one wire-format use.
+    assert "assignee" not in _strip_comments((SRC / "app.py").read_text()).replace(
+        "assignee: str | None", "").replace("assignee=body.assignee", ""), "app.py"
     # approvals.py: the task_reassign details key "assignee" is wire format; no error text may use it.
     for sub in ast.walk(ast.parse((SRC / "approvals.py").read_text())):
         if isinstance(sub, ast.Constant) and isinstance(sub.value, str):

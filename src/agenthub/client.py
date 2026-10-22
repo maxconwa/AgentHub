@@ -122,6 +122,15 @@ class HubClient:
     async def update_task(self, task_id: int, state: str | None = None, note: str = "") -> dict[str, Any]:
         return await self._request("POST", f"/tasks/{task_id}/update", json={"state": state, "note": note})
 
+    async def finish_task(self, task_id: int, note: str = "") -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/finish", json={"note": note})
+
+    async def review_task(self, task_id: int, verdict: str, notes: str = "") -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/verdict", json={"verdict": verdict, "notes": notes})
+
+    async def pause_task(self, task_id: int, until: str | None) -> dict[str, Any]:
+        return await self._request("POST", f"/tasks/{task_id}/pause", json={"until": until})
+
     async def task_runs(self, task_id: int) -> dict[str, Any]:
         return await self._request("GET", f"/tasks/{task_id}/runs")
 

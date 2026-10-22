@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, asks, db, events, intents, store, tasks
+from agenthub.hub import approvals, asks, db, events, intents, store, task_agents, tasks
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
@@ -168,6 +168,19 @@ class ProgressItem(BaseModel):
 class ProgressRequest(BaseModel):
     run_id: int | None = None
     items: list[ProgressItem] = Field(max_length=tasks.MAX_PROGRESS_ITEMS)
+
+
+class FinishRequest(BaseModel):
+    note: str = Field(default="", max_length=4000)
+
+
+class VerdictRequest(BaseModel):
+    verdict: str = Field(max_length=32)
+    notes: str = Field(default="", max_length=4000)
+
+
+class PauseRequest(BaseModel):
+    until: str | None = Field(default=None, max_length=64)
 
 
 class ToolPermissionRequest(BaseModel):
@@ -329,8 +342,8 @@ def create_app(state: HubState) -> FastAPI:
         project: str, caller: Caller, conn: Conn, state: str | None = None, mine: bool = False,
     ) -> dict[str, Any]:
         require_project(caller, project)
-        assignee = caller.agent.id if mine else None
-        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=assignee)}
+        member_id = caller.agent.id if mine else None
+        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=member_id)}
 
     @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
     def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -364,6 +377,25 @@ def create_app(state: HubState) -> FastAPI:
                 return tasks.get_task(conn, task_id)
             return tasks.transition(conn, task_id, body.state, actor=caller.agent.id, role="agent",
                                     agent=caller.agent, note=body.note, device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/finish")
+    def finish_task(task_id: int, body: FinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return task_agents.finish(conn, task_id, caller.agent, note=body.note, device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/verdict")
+    def task_verdict(task_id: int, body: VerdictRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return task_agents.record_verdict(conn, task_id, caller.agent, verdict=body.verdict,
+                                              notes=body.notes, device=caller.device.name)
+
+    @app.post(f"{api}/tasks/{{task_id}}/pause")
+    def pause_task(task_id: int, body: PauseRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            visible_task(caller, conn, task_id)
+            return task_agents.pause(conn, task_id, caller.agent, until=body.until, device=caller.device.name)
 
     @app.get(f"{api}/tasks/{{task_id}}/runs")
     def task_runs(task_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:

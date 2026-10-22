@@ -448,3 +448,68 @@ def test_reassign_approval_applies_requester_role(hub):
     decide(hub, r.json()["id"])
     got = tasks.get_task(hub.conn(), t["id"])
     assert task_agents.member(got, b.id)["role"] == "Lead"
+
+
+# --- agent HTTP: finish / verdict / pause -------------------------------------------
+
+def post(hub, agent, path, **body):
+    return hub.client.post(f"/api/v1/tasks/{path}", json=body, headers=agent.headers)
+
+
+def test_finish_and_verdict_endpoints(hub):
+    a, r, x = hub.enroll("a"), hub.enroll("r"), hub.enroll("x")
+    t = op_task(hub)
+    add_member(hub, t["id"], "a", role="Implementer")
+    add_member(hub, t["id"], "r", stage="reviews", role="Reviewer")
+    op_move(hub, t["id"], "claimed")
+    op_move(hub, t["id"], "in_progress")
+    # non-member and reviewer cannot finish; oversized note is rejected
+    assert post(hub, x, f"{t['id']}/finish", note="n").status_code == 403
+    assert post(hub, r, f"{t['id']}/finish", note="n").status_code == 403
+    assert post(hub, a, f"{t['id']}/finish", note="x" * 4001).status_code == 422
+    resp = post(hub, a, f"{t['id']}/finish", note="done")
+    assert resp.status_code == 200 and resp.json()["state"] == "review"
+    # verdicts
+    assert post(hub, a, f"{t['id']}/verdict", verdict="approve").status_code == 403
+    assert post(hub, x, f"{t['id']}/verdict", verdict="approve").status_code == 403
+    assert post(hub, r, f"{t['id']}/verdict", verdict="maybe").status_code in (400, 422)
+    assert post(hub, r, f"{t['id']}/verdict", verdict="approve", notes="y" * 4001).status_code == 422
+    resp = post(hub, r, f"{t['id']}/verdict", verdict="changes", notes="fix it")
+    assert resp.status_code == 200 and resp.json()["state"] == "review"
+    rev = [m for m in resp.json()["agents"] if m["agent_id"] == r.id][0]
+    assert rev["verdict"] == "changes" and rev["verdict_notes"] == "fix it"
+    # another project's task is invisible
+    other = hub.enroll("o", projects=("other",))
+    assert post(hub, other, f"{t['id']}/finish", note="").status_code == 404
+    assert post(hub, other, f"{t['id']}/verdict", verdict="approve").status_code == 404
+    assert post(hub, other, f"{t['id']}/pause", until=None).status_code == 404
+    # unauthenticated
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/finish", json={}).status_code in (401, 403)
+
+
+def test_pause_endpoint_sets_paused_until(hub):
+    a, x = hub.enroll("a"), hub.enroll("x")
+    t = op_task(hub)
+    add_member(hub, t["id"], "a")
+    until = "2030-01-01T00:00:00Z"
+    resp = post(hub, a, f"{t['id']}/pause", until=until)
+    assert resp.status_code == 200
+    mine = [m for m in resp.json()["agents"] if m["agent_id"] == a.id][0]
+    assert mine["paused_until"] == "2030-01-01T00:00:00.000000Z"
+    ev = hub.conn().execute("SELECT actor FROM events WHERE type = 'task.agent_paused'").fetchone()
+    assert ev["actor"] == a.id
+    resp = post(hub, a, f"{t['id']}/pause", until=None)
+    assert [m for m in resp.json()["agents"] if m["agent_id"] == a.id][0]["paused_until"] is None
+    assert post(hub, a, f"{t['id']}/pause", until="not a time").status_code == 422
+    assert post(hub, a, f"{t['id']}/pause", until="2030-01-01T00:00:00").status_code == 422  # no zone
+    assert post(hub, a, f"{t['id']}/pause", until="z" * 100).status_code == 422
+    assert post(hub, x, f"{t['id']}/pause", until=until).status_code == 403
+
+
+def test_mine_filter_uses_membership(hub):
+    a = hub.enroll("a")
+    t = op_task(hub)
+    op_task(hub, title="other")
+    add_member(hub, t["id"], "a")
+    r = hub.client.get("/api/v1/projects/proj/tasks?mine=true", headers=a.headers)
+    assert [x["id"] for x in r.json()["tasks"]] == [t["id"]]

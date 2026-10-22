@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from agenthub.hub import events, tasks
@@ -201,3 +202,27 @@ def record_verdict(
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
     return fresh
+
+
+def pause(
+    conn: sqlite3.Connection, task_id: int, agent: Agent, *, until: str | None, device: str | None = None
+) -> dict[str, Any]:
+    """An agent sets (or with ``None`` clears) its own ``paused_until``; the value is an RFC 3339
+    timestamp with a zone, stored as fixed-width UTC."""
+    task = tasks.get_task(conn, task_id)
+    if member(task, agent.id) is None:
+        raise Forbidden("only agents on this task may do this")
+    stored = None
+    if until is not None:
+        try:
+            parsed = datetime.fromisoformat(until)
+        except ValueError:
+            raise Invalid("until must be an RFC 3339 timestamp") from None
+        if parsed.tzinfo is None:
+            raise Invalid("until must include a time zone offset")
+        stored = now_iso(parsed)
+    conn.execute(
+        "UPDATE task_agents SET paused_until = ? WHERE task_id = ? AND agent_id = ?",
+        (stored, task_id, agent.id),
+    )
+    return _emit(conn, "paused", task, agent.id, agent.id)

@@ -48,8 +48,9 @@ def _format_message(m: dict[str, Any]) -> str:
 
 def _format_task(t: dict[str, Any], *, with_body: bool = False) -> str:
     who = untrusted.author_label(t.get("created_by"), t.get("created_by_name"))
-    assignee = t.get("assignee_name") or t.get("assignee") or "unassigned"
-    header = f"task #{t['id']} [{t['state']}] project={t['project']} assignee={assignee} budget={t['budget']}"
+    # Roles are written by the operator only, so they sit outside the untrusted block.
+    members = ", ".join(f"{m['name']} ({m['role']}, {m['stage']})" for m in t.get("agents") or []) or "none"
+    header = f"task #{t['id']} [{t['state']}] project={t['project']} agents={members} budget={t['budget']}"
     text = t["title"] + ("\n\n" + t["body"] if with_body and t.get("body") else "")
     return header + "\n" + untrusted.wrap(text, author=who, kind="task", id=t["id"])
 
@@ -189,12 +190,26 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def update_task(task_id: int, state: str | None = None, note: str = "") -> str:
-        """Move your task (claimed → in_progress → review, or blocked / open) and/or add a progress note.
+        """Move your task (blocked / in_progress / open) and/or add a progress note.
 
-        Only the operator can mark a task done.
+        Use finish_task when your part is done. Only the operator can mark a task done.
         """
         t = await call(lambda c: c.update_task(task_id, state=state, note=note))
         return f"Task #{t['id']} is now {t['state']}."
+
+    @server.tool()
+    async def finish_task(task_id: int, note: str = "") -> str:
+        """Mark your part of the task finished; the task moves to review when every implementer has finished."""
+        t = await call(lambda c: c.finish_task(task_id, note))
+        if t["state"] == "review":
+            return f"Task #{t['id']} moves to review: every implementer has finished."
+        return f"Marked your part of task #{t['id']} finished; it is still {t['state']}."
+
+    @server.tool()
+    async def review_task(task_id: int, verdict: str, notes: str = "") -> str:
+        """As this task's reviewer, record 'approve' or 'changes' with notes. The operator decides what happens next."""
+        t = await call(lambda c: c.review_task(task_id, verdict, notes))
+        return f"Recorded verdict {verdict!r} on task #{t['id']}; the operator decides what happens next."
 
     @server.tool()
     async def request_approval(kind: str, reason: str, project: str | None = None,
