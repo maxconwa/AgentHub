@@ -97,6 +97,27 @@ def test_working_and_reviewing_follow_the_stage(setup):
     assert avatars.poses(conn)[a.id] == "reviewing"
 
 
+def _prompt(conn, agent_id, *, mode, status):
+    pid = conn.execute("INSERT INTO prompts (target, body, mode, status, created_by, created_at) "
+                       "VALUES ('agent:x', 'b', ?, 'running', ?, 'x')", (mode, OPERATOR)).lastrowid
+    conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, updated_at) VALUES (?, ?, ?, 'x')",
+                 (pid, agent_id, status))
+    return pid
+
+
+def test_a_prompt_session_is_working_and_a_group_discussion_is_talking(setup):
+    _, a, conn = setup
+    _prompt(conn, a.id, mode="single", status="pending")  # not started yet
+    assert avatars.poses(conn)[a.id] == "idle"
+    pid = _prompt(conn, a.id, mode="single", status="running")
+    assert avatars.poses(conn)[a.id] == "working"
+    conn.execute("UPDATE prompt_recipients SET status = 'done' WHERE prompt_id = ?", (pid,))
+    _prompt(conn, a.id, mode="group", status="running")
+    assert avatars.poses(conn)[a.id] == "talking"
+    _pending_approval(conn, a.id)
+    assert avatars.poses(conn)[a.id] == "needs_you"
+
+
 def test_waiting_on_an_unanswered_ask(hub, setup):
     _, a, conn = setup
     b = hub.enroll("helper")

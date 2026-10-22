@@ -2,9 +2,9 @@
 
 A look is ``(avatar_version, avatar_seed)`` on the agent row; the art itself is
 drawn by :mod:`agenthub.hub.avatar_art`. The pose is derived from hub state on
-every page render, first match wins (see :func:`poses`). ``talking`` and
-``janitor`` are drawn but not derived yet (they arrive with messaging and the
-janitor).
+every page render, first match wins (see :func:`poses`). ``talking`` is an
+agent in a group prompt's discussion; ``janitor`` is drawn but not derived yet
+(it arrives with the janitor).
 """
 
 from __future__ import annotations
@@ -51,6 +51,10 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
         # Several active runs (on different tasks): any review run makes it "reviewing".
         if running.get(r["agent_id"]) != "reviews":
             running[r["agent_id"]] = r["stage"]
+    # A prompt session going: working on a single prompt, talking it over in a group prompt's discussion.
+    prompting = {r["agent_id"]: "talking" if r["mode"] == "group" else "working" for r in conn.execute(
+        "SELECT r.agent_id, p.mode FROM prompt_recipients r JOIN prompts p ON p.id = r.prompt_id "
+        "WHERE r.status = 'running' ORDER BY p.mode")}  # 'single' after 'group': a single prompt's session wins
     waiting = _ids(conn, "SELECT from_agent FROM asks WHERE status = 'pending' AND expires_at > ?", now_s)
     # The latest ended run per agent errored, on a task that is still live.
     errored = _ids(conn,
@@ -71,6 +75,8 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
             pose = "recharging"
         elif aid in running:
             pose = "reviewing" if running[aid] == "reviews" else "working"
+        elif aid in prompting:
+            pose = prompting[aid]
         elif aid in waiting:
             pose = "waiting"
         elif aid in errored:
