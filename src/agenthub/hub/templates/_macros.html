@@ -1,8 +1,3 @@
-{% macro message_button(target, label, next='') -%}
-{%- set href = '/ui/compose?' ~ ({'to': target, 'next': next} if next else {'to': target})|urlencode -%}
-<a class="msg-btn" href="{{ href }}" hx-get="{{ href }}" hx-target="#compose" hx-swap="innerHTML" aria-label="{{ label }}">Message</a>
-{%- endmacro %}
-
 {# Send and Prompt side by side, sharing one form and its textarea: the caller's Send (or Post) button(s), then
    Prompt, a second submit button that posts the same form to /ui/prompts (formaction) with this hidden target.
    `prompt` is views.prompt_state: whom Prompt wakes, or (while nobody there is connected) why it is disabled.
@@ -55,7 +50,6 @@ href="{{ href }}" data-panel="{{ item }}"
 {% macro agent_tasks(ag, names, next) -%}
 {% for t in ag.tasks %}
 <div class="small-line"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
-<div class="msg-row"><span class="msg-cap">Task</span>{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, next) }}<span class="msg-cap">Project</span>{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, next) }}</div>
 {% else %}<div class="small-line">No current task</div>{% endfor %}
 {%- endmacro %}
 

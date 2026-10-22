@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, avatar, task_title %}
+{% from "_macros.html" import avatar, task_title %}
 {% block title %}Board{% endblock %}
 {% macro group(label, items) %}
 {% if items %}
@@ -8,7 +8,7 @@
 <ul class="chat-list panel">
   {% for t in items %}
   <li class="with-action"><a href="{{ t.href or '/ui/board/' ~ t.key }}"{% if label == "Projects" %} data-panel="project:{{ t.project }}"{% elif label == "Tasks" %} data-panel="task:{{ t.task_id }}"{% elif label == "Devices" %} data-panel="device:{{ t.node_id }}"{% endif %}>{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{% if label == "Tasks" %}{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}{% else %}{{ t.title }}{% if t.created_by and not t.created_by.startswith(('human:', 'system:')) %} <span class="by-label">by {{ who(t.created_by, names) }}</span>{% endif %}{% endif %}</strong>
-    <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a>{% if label == "Projects" %}{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, path) }}{% elif label == "Tasks" %}{{ message_button('task:' ~ t.task_id, 'Message the agents on task #' ~ t.task_id, path) }}{% elif label == "Devices" %}{{ message_button('device:' ~ t.node_id, 'Message the agents on ' ~ t.title, path) }}{% endif %}</li>
+    <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a></li>
   {% endfor %}
 </ul>
 {% endif %}

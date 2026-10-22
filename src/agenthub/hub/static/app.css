@@ -219,16 +219,9 @@ header.top nav::-webkit-scrollbar { display: none; }
 /* Board */
 .chat-list .avatar-wrap { flex: none; }
 
-/* Tap to message */
-.msg-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px;
-  padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--chip); color: inherit;
-  font-size: 0.85rem; font-weight: 600; text-decoration: none; flex: none; }
-.msg-btn:hover { border-color: var(--muted); }
-.msg-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.row .msg-btn, .member .msg-btn { margin-left: auto; }
+/* The compose sheet (/ui/compose) */
 .chat-list li.with-action { display: flex; align-items: center; gap: 6px; }
 .chat-list li.with-action > a { flex: 1; min-width: 0; }
-.device-agents .msg-btn { margin-left: auto; }
 .compose-panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; max-height: 85vh; overflow-y: auto;
   margin: 0; border-radius: 14px 14px 0 0; box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.25); background: var(--surface); }
 body > main > #compose:empty { display: none; }
@@ -241,7 +234,6 @@ body > main > #compose:empty { display: none; }
 }
 .compose-page .compose-panel { position: static; max-height: none; width: auto; border-radius: var(--radius);
   box-shadow: none; margin: 12px 0; }
-.msg-cap { font-size: 0.75rem; color: var(--muted); align-self: center; overflow-wrap: anywhere; }
 .chat-list li.with-action { flex-wrap: wrap; }
 
 /* Slide-in panel (left): status, then the item's chat. Loaded by app.js into <aside id="panel">. */

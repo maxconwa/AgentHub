@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, agent_tasks, chip, avatar, task_title, open_attrs %}
+{% from "_macros.html" import agent_tasks, chip, avatar, task_title, open_attrs %}
 {% block title %}Agents{% endblock %}
 {% block content %}
 <h1>Agents</h1>
@@ -31,7 +31,7 @@
       <div class="small-line">on {{ ag.device }}</div>
       <div class="small-line dir">{{ ag.current_dir or (ag.checkouts.values() | join(', ')) or 'No checkouts reported' }}</div>
       <div class="small-line">reported by the agent</div>
-      <div class="msg-row">{% if ag.id in active_ids %}{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% endif %}</div></div></li>
+      </div></li>
   {% endfor %}
 </ul>
 {% if not agents %}<p class="empty">No agents yet. Enroll one above.</p>{% endif %}

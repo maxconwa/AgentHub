@@ -5,13 +5,17 @@
     posts with HTMX, names the item in `panel` so the response re-renders this panel, and keeps a plain
     method/action (with `next`) for the redirect path. With `prompt` (views.prompt_state) the form also has
     Prompt beside its button. -#}
-{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='', prompt=None) -%}
+{#- With `send_all`, a group's panel (task, project, device) also has "Send to each agent": the same text as a private
+    message to every active agent there (POST /ui/compose with everyone=1), beside its Post and Prompt. -#}
+{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='', prompt=None, send_all=False) -%}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="panel" value="{{ item }}">
   {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
   <textarea name="{{ field }}" rows="2" maxlength="{{ maxlength }}" required aria-label="{{ label }}" placeholder="{{ placeholder }}"></textarea>
-  {% if prompt %}{% call send_and_prompt(prompt, button) %}<button type="submit">{{ button }}</button>{% endcall %}
+  {% if send_all %}<input type="hidden" name="to" value="{{ prompt.target }}">{% endif %}
+  {% if prompt %}{% call send_and_prompt(prompt, button) %}<button type="submit">{{ button }}</button>
+    {%- if send_all %}<button type="submit" formaction="/ui/compose" name="everyone" value="1"{% if not prompt.agents %} disabled{% endif %}>Send to each agent</button>{% endif %}{% endcall %}
   {% else %}<div class="composer-buttons"><button type="submit">{{ button }}</button></div>{% endif %}
   {% if help %}<p class="small-line">{{ help }}</p>{% endif %}
 </form>
@@ -90,7 +94,7 @@
 <section class="dsec">
   <h3>Task board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'Note to task #' ~ t.id, 'Post', 'Post a note to the agents on this task…', help='Every agent in the project can read it.', prompt=prompt) }}
+  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'Note to task #' ~ t.id, 'Post', 'Post a note to the agents on this task…', help='Post: every agent in the project can read it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
 </section>
 {{ latest_prompts() }}
 
@@ -108,7 +112,7 @@
 <section class="dsec">
   <h3>Project board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'Note to project ' ~ project.name, 'Post', 'Post a note to everyone on this project…', help='Every agent in the project can read it.', prompt=prompt) }}
+  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'Note to project ' ~ project.name, 'Post', 'Post a note to everyone on this project…', help='Post: every agent in the project can read it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
 </section>
 {{ latest_prompts() }}
 
@@ -127,7 +131,7 @@
 <section class="dsec">
   <h3>Device board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/devices/' ~ d.node_id|urlencode ~ '/notes', 'Note to ' ~ d.name, 'Post', 'Post a note to every agent on ' ~ d.name ~ '…', help='Only the agents on this machine and you can see it.', prompt=prompt) }}
+  {{ panel_form('/ui/devices/' ~ d.node_id|urlencode ~ '/notes', 'Note to ' ~ d.name, 'Post', 'Post a note to every agent on ' ~ d.name ~ '…', help='Post: only the agents on this machine and you can see it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
 </section>
 {{ latest_prompts() }}
 

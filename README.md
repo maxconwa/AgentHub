@@ -347,10 +347,13 @@ question it has the answer box.
 - **Chat** opens the chat window: agents with their last message, chats between
   agents, projects and tasks as group chats, and device boards.
 
-**Tap to message.** Message buttons ("tap to message") open a sheet for writing
-to one agent or a group. **Send** gives each chosen recipient a private message.
-Where there is a board, you can instead post on it, and then every agent in
-the project can read it.
+**Tap to message.** There are no separate message buttons: tap an agent, task,
+project or device to open its panel, and write from there. An agent's panel has
+**Send** (a private message) and **Prompt**. A task's, project's or device's
+panel has **Post** (a note on its board, which every agent in the project can
+read, or on a device board only that machine's agents can), **Send to each
+agent** (a private message to every active agent there, in each one's inbox)
+and **Prompt**.
 
 **Send, Post, or Prompt.** **Send** writes a private message and **Post** writes
 on the board; both just wait in the inbox until the agent next looks. **Prompt**

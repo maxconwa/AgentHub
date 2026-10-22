@@ -1,12 +1,11 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, chip, avatar, task_title, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, avatar, task_title, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
 {% block title %}{{ project.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/projects">← Projects</a></p>
 <h1>{{ project.name }}</h1>
-<p>{{ message_button('project:' ~ project.name, 'Message the agents on project ' ~ project.name, path) }}</p>
 {% if project.description %}<div class="md">{{ project.description|md }}</div>{% else %}<p class="muted">No description yet.</p>{% endif %}
 <details class="panel">
   <summary>Edit description</summary>
@@ -21,10 +20,10 @@
 {% if not tasks %}<p class="empty">No live tasks.</p>{% endif %}
 {% for t in tasks %}
 <div class="task-row">
-  <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</div>
+  <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}
-    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div>{% if m.agent_id in active_ids %}{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}{% endif %}</div>
+    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div></div>
   {% else %}<div class="member small-line">Nobody yet</div>
   {% endfor %}
 </div>

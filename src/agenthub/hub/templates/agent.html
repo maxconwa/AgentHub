@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, chip, avatar, task_title, approval_summary, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -10,7 +10,6 @@
   <div class="info"><h1>{{ ag.name }} {{ chip(ag.status) }}</h1>
     {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}</div>
 </div>
-{% if ag.status == 'active' %}<p>{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}</p>{% endif %}
 {% if ag.status != 'revoked' %}
 <form class="inline" method="post" action="/ui/agents/{{ ag.id }}/avatar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reroll look</button></form>
 {% endif %}
@@ -32,7 +31,7 @@
 <section class="panel">
   <h3>Tasks</h3>
   {% for t in ag.tasks %}
-  <p class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} {{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</p>
+  <p class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
 

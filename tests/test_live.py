@@ -254,6 +254,5 @@ def test_live_region_does_not_leak_its_htmx_attributes(site):
         assert "hx-headers" not in section  # the CSRF header still comes down from <body>
         for tag, url, resolved in htmx_controls_in_live(html):
             seen += 1
-            assert resolved["hx-select"] is None, (path, url)  # a Message button gets the whole compose sheet
+            assert resolved["hx-select"] is None, (path, url)  # a control's response isn't filtered to #live
             assert resolved["hx-target"] != "#live" and resolved["hx-swap"] != "outerHTML", (path, url)
-    assert seen >= 6  # Message buttons on the pages above

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, chip, avatar, task_title, open_attrs %}
+{% from "_macros.html" import chip, avatar, task_title, open_attrs %}
 {% block title %}Projects{% endblock %}
 {% block content %}
 <h1>Projects</h1>
@@ -12,14 +12,14 @@
 <details class="panel project"{% if p.tasks %} open{% endif %} data-remember="project:{{ p.name }}">
   <summary><span><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>{{ p.name }}</a></span><span class="muted small">{{ p.tasks|length }} live task{{ '' if p.tasks|length == 1 else 's' }}</span></summary>
   {% if p.description %}<div class="muted small md">{{ p.description|md }}</div>{% endif %}
-  <p class="small"><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>Open project</a> {{ message_button('project:' ~ p.name, 'Message the agents on project ' ~ p.name, path) }}</p>
+  <p class="small"><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>Open project</a></p>
   {% if not p.tasks %}<p class="muted small">No live tasks</p>{% endif %}
   {% for t in p.tasks %}
   <div class="task-row">
-    <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</div>
+    <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
     {% for m in t.agents %}
     <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}
-      <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div>{% if m.agent_id in active_ids %}{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}{% endif %}</div>
+      <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div></div>
     {% else %}<div class="member small-line">Nobody yet</div>
     {% endfor %}
   </div>

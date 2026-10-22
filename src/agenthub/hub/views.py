@@ -199,7 +199,8 @@ def prompt_state(conn: sqlite3.Connection, target: str, found: dict[str, Any] | 
         reason = f"Prompt is off: {agents[0]['name']} is not connected right now."
     else:
         reason = "Prompt is off: none of the agents here is connected right now."
-    return {"target": target, "label": found["label"], "wakes": wakes, "too_old": too_old, "reason": reason}
+    return {"target": target, "label": found["label"], "wakes": wakes, "too_old": too_old, "reason": reason,
+            "agents": len(agents)}
 
 
 def board_prompt_target(conn: sqlite3.Connection, project: str, channel: str) -> str | None:

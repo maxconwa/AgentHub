@@ -480,9 +480,16 @@ def build_router() -> APIRouter:
                      body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
                      mode: Annotated[str, Form(pattern="^(send|board)$")] = "send",
                      recipients: Annotated[list[str], Form()] = [],  # noqa: B006 (never mutated)
-                     next: Annotated[str, Form(max_length=500)] = "") -> Response:
+                     everyone: Annotated[bool, Form()] = False,
+                     next: Annotated[str, Form(max_length=500)] = "", panel: PanelField = "") -> Response:
+        """The compose sheet's Send/Post, and a group panel's "Send to each agent" (``everyone``: every active
+        agent the target reaches, re-rendering the panel it came from)."""
         written(body)
         reach = views.recipients(conn, to)
+        if everyone:
+            recipients = [a["id"] for a in reach["agents"]]
+            if not recipients:
+                raise HTTPException(400, "there is no active agent here to send to")
         with db.transaction(conn):
             if mode == "board":
                 if reach["board"] is None:
@@ -498,7 +505,7 @@ def build_router() -> APIRouter:
                     raise HTTPException(400, "a recipient is not reachable from this target")
                 for agent_id in chosen:
                     private.send(conn, agent_id, author=operator.actor, body=body)
-        return done(request, safe_next(next) or target_page(to))
+        return finish(request, operator, conn, panel, next, safe_next(next) or target_page(to))
 
     # prompts: wake the agents now ----------------------------------------------------------
 

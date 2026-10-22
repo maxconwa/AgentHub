@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import avatar, message_button, open_attrs %}
+{% from "_macros.html" import avatar, open_attrs %}
 {% block title %}Chats{% endblock %}
 {% block content %}
 <h1>Chats</h1>
@@ -23,7 +23,7 @@
 <ul class="chat-list panel">
   {% for t in between_agents %}
   <li class="with-action"><a href="/ui/chats/pair/{{ t.key }}">{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{{ t.title }}</strong>
-    <span>Last message {{ ago(t.last_ts) }}</span></span></a><div class="msg-row">{% for ag in t.agents %}{% if ag.id in active_ids %}<span class="msg-cap">{{ ag.name }}</span>{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% endif %}{% endfor %}</div></li>
+    <span>Last message {{ ago(t.last_ts) }}</span></span></a></li>
   {% endfor %}
 </ul>
 {% endif %}

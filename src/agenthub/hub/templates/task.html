@@ -1,12 +1,11 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import message_button, chip, agent_text, avatar, task_title, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
 <h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
-<p>{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</p>
 <p class="muted"><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
@@ -47,7 +46,7 @@
   {% if not t.agents %}<p class="muted">Nobody yet.</p>{% endif %}
   {% for m in t.agents %}
   <div class="member-card">
-    <p>{{ avatar(avatars.get(m.agent_id), 32) }} <a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %} {% if m.agent_id in active_ids %}{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}{% endif %}</p>
+    <p>{{ avatar(avatars.get(m.agent_id), 32) }} <a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %} </p>
     {% set u = member_usage[m.agent_id] %}
     <dl class="grid3 member-budget">
       <div><dt>Turns</dt><dd>{{ u.turns }} / {{ m.budget.max_turns }}</dd></div>

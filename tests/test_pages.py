@@ -558,7 +558,6 @@ def test_agent_pairs_newest_first_with_labels(talk):
     assert "Between agents" in html and f'href="/ui/chats/pair/{pair_key(a, c)}"' in html
     assert html.index(f"/ui/chats/pair/{pair_key(a, d)}") < html.index(f"/ui/chats/pair/{pair_key(a, c)}")
     assert html.index("Between agents") < html.index("Start a chat")
-    assert "Message helper" in html
 
 
 def test_chats_page_lists_private_chats_before_pairs(talk):
@@ -797,60 +796,46 @@ def test_compose_close_is_empty(hub):
 
 
 def links(html):
-    return set(re.findall(r'href="/ui/compose\?to=([^&"]+)', html))
+    """The items a page opens in the slide-in panel (``data-panel``): each entity is clickable, not a button."""
+    return set(re.findall(r'data-panel="([^"]+)"', html))
 
 
-def test_every_page_has_a_compose_link_per_item(reach):
+def test_every_page_opens_each_item_in_the_panel(reach):
     hub, a, b, p, r, t = reach
     tid = t["id"]
-    ag = {f"agent%3A{x.id}" for x in (a, b)}
-    assert ag | {f"task%3A{tid}"} <= links(get(hub, "/ui/dashboard").text)
-    pr = links(get(hub, "/ui/projects").text)
-    assert ag | {f"task%3A{tid}", "project%3Aproj"} <= pr
-    assert ag | {f"task%3A{tid}", "project%3Aproj"} <= links(get(hub, "/ui/projects/proj").text)
-    assert ag | {f"task%3A{tid}"} <= links(get(hub, "/ui/tasks").text)
-    assert ag | {f"task%3A{tid}"} <= links(get(hub, f"/ui/tasks/{tid}").text)
+    ag = {f"agent:{x.id}" for x in (a, b)}
+    assert ag | {f"task:{tid}"} <= links(get(hub, "/ui/dashboard").text)
+    assert ag | {f"task:{tid}", "project:proj"} <= links(get(hub, "/ui/projects").text)
+    assert ag | {f"task:{tid}"} <= links(get(hub, "/ui/projects/proj").text)
+    assert {f"task:{tid}"} <= links(get(hub, "/ui/tasks").text)
+    assert ag <= links(get(hub, f"/ui/tasks/{tid}").text)
     assert ag <= links(get(hub, "/ui/agents").text)
-    assert f"agent%3A{a.id}" in links(get(hub, f"/ui/agents/{a.id}").text)
-    assert f"task%3A{tid}" in links(get(hub, f"/ui/agents/{a.id}").text)
-    dev = links(get(hub, "/ui/devices").text)
-    assert ag | {"device%3Anworker", "device%3Anhelper"} <= dev
-    send(hub, to=f"task:{tid}", body="n", mode="board")
-    send(hub, to="project:proj", body="n", mode="board")
-    board = links(get(hub, "/ui/board").text)
-    assert {f"task%3A{tid}", "project%3Aproj"} <= board
+    assert {f"task:{tid}", "project:proj"} <= links(get(hub, f"/ui/agents/{a.id}").text)
+    assert ag | {"device:nworker", "device:nhelper"} <= links(get(hub, "/ui/devices").text)
 
 
-def test_compose_links_cover_every_task_project_and_pair_agent(reach):
+def test_no_page_has_message_buttons(reach):
     hub, a, b, p, r, t = reach
-    conn = hub.conn()
-    with db.transaction(conn):
-        t2 = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Second chore", assignee=None)
-        task_agents.add_agent(conn, t2["id"], a.id, role="r2", stage="works", actor=OPERATOR)
-        store.post_message(conn, author=a.id, project="proj", channel="general", body="hi", to="helper")
-    for path in ("/ui/dashboard", "/ui/agents"):
-        found = links(get(hub, path).text)
-        assert {f"task%3A{t['id']}", f"task%3A{t2['id']}", "project%3Aproj"} <= found, path
-    assert {f"agent%3A{a.id}", f"agent%3A{b.id}"} <= links(get(hub, "/ui/chats").text)
+    for path in ("/ui/dashboard", "/ui/agents", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{t['id']}",
+                 "/ui/devices", "/ui/devices/nworker", "/ui/board", "/ui/chats", f"/ui/agents/{a.id}"):
+        html = get(hub, path).text
+        assert "msg-btn" not in html and 'hx-target="#compose"' not in html and ">Message</a>" not in html, path
 
 
-def test_agent_buttons_hidden_for_pending_and_revoked_agents(reach):
+@pytest.mark.parametrize("target", ["task", "project", "device:nworker"])
+def test_group_panel_sends_to_each_agent(reach, target):
+    """A task, project or device panel's "Send to each agent": a private message to each of its active agents."""
     hub, a, b, p, r, t = reach
-    tid = t["id"]
-    for path in ("/ui/dashboard", "/ui/agents", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{tid}",
-                 "/ui/devices", "/ui/board", f"/ui/agents/{p.id}", f"/ui/agents/{r.id}"):
-        found = links(get(hub, path).text)
-        assert f"agent%3A{p.id}" not in found and f"agent%3A{r.id}" not in found, path
-        assert f"agent%3A{a.id}" in found or path.startswith("/ui/agents/") or path == "/ui/board", path
-    assert f"task%3A{tid}" in links(get(hub, "/ui/tasks").text)  # task targets keep theirs
-
-
-def test_message_button_markup(reach):
-    hub, a, *_ = reach
-    html = get(hub, "/ui/tasks").text
-    assert 'hx-target="#compose"' in html and 'id="compose"' in html
-    assert re.search(r'aria-label="Message the agents on task #\d+"[^>]*>Message</a>', html)
-    assert "next=%2Fui%2Ftasks" in html and "style=" not in html
+    item = {"task": f"task:{t['id']}", "project": "project:proj"}.get(target, target)
+    html = panel(hub, item).text
+    assert 'formaction="/ui/compose"' in html and "Send to each agent" in html and f'name="to" value="{item}"' in html
+    r_ = hub.client.post("/ui/compose", headers=hub.op_headers(**{"hx-request": "true"}),
+                         data={"csrf": hub.csrf(), "to": item, "body": "everyone, please", "everyone": "1",
+                               "panel": item})
+    assert r_.status_code == 200 and "Send to each agent" in r_.text  # the panel, re-rendered
+    got = {row["agent_id"] for row in hub.conn().execute(
+        "SELECT agent_id FROM private_messages WHERE body = 'everyone, please'")}
+    assert got == {x["id"] for x in views.recipients(hub.conn(), item)["agents"]} and p.id not in got and r.id not in got
 
 
 def test_agent_card_directory_caption_is_visible(reach):
