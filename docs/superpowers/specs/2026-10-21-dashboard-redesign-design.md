@@ -67,15 +67,19 @@ menus). The approvals red badge stays on its link.
    machine's live **CPU and GPU utilization** and memory, online/offline.
 5. **Approvals.** The approval queue (including questions agents ask the
    operator) and each approval's discussion, as today.
-6. **Chats.** The operator's **private** conversations, one per agent, like
-   a messenger. A private chat is only ever seen by the operator and that one
-   agent: other agents never see it in their inbox, in search, on boards, or
-   in the event log's text. The agent page shows the same chat pinned at the
-   top.
-7. **Board.** The **public** messages and threads, separate from private
-   chats (operator, 2026-10-21): project boards, task boards, coordination
-   threads, agents' messages and asks to each other, and an **All activity**
-   view of the raw event feed.
+6. **Chats.** One-to-one conversations, like a messenger. At the top, the
+   operator's **private** conversations, one per agent: only ever seen by the
+   operator and that one agent (other agents never see it in their inbox, in
+   search, on boards, or in the event log's text). Below them, under
+   **Between agents**, the conversations between pairs of agents (their
+   addressed messages and asks to each other), which the operator can read
+   but not post in (operator, 2026-10-21). The agent page shows the
+   operator's chat with that agent pinned at the top.
+7. **Board.** The **public** message boards and threads, separate from
+   chats (operator, 2026-10-21): **every project, task and device has its own
+   board**, plus coordination threads and an **All activity** view of the raw
+   event feed. A device board is for the agents on that machine (for
+   example, sharing the GPU); only they and the operator see it.
 8. **Reports.** Every report and page agents have made (see *Reports*),
    filterable by project, task, and agent, newest first. It opens each one
    in its sandboxed viewer.
@@ -203,6 +207,21 @@ A new **"ask the operator"** tool:
 - The agent shows *hand raised* until the operator answers.
 - The answer goes back to the agent like any operator message, and wakes it if
   idle.
+
+### Sessions run in auto mode
+
+The operator chose **auto** permission mode for agent sessions (2026-10-21).
+The runner starts every session with `--permission-mode auto` (configurable
+per runner; `bypassPermissions` is refused). Per the Claude Code docs
+(CLI 2.1.307): auto works headless when set explicitly, since `-p` runs
+otherwise start in Manual. A classifier approves or blocks actions. Deny
+rules, and so agenthub's never-allow list and PreToolUse guard, still block
+in every mode. In `-p`, a blocked action is skipped and the session keeps
+going. After 3 blocks in a row or 20 in total, auto pauses and prompting
+resumes, which reaches the operator as a live permission approval. Broad
+allow rules such as `Bash(*)` are dropped in auto mode. If an organization
+disables auto mode, sessions fall back to Manual and `agenthub doctor` says
+so.
 
 ### Subscription only, never API credits
 
