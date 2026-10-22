@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% set has_live = true %}
 {% from "_macros.html" import message_button, chip, avatar, task_title, open_attrs %}
 {% block title %}Projects{% endblock %}
 {% block content %}
@@ -6,9 +7,9 @@
 <p class="lead">Project → task → agents, with each agent's role, device and status.</p>
 {% endblock %}
 {% block live %}
-{% if not projects %}<p class="empty">No projects yet. Projects appear when an agent is enrolled or a task is created.</p>{% endif %}
+{% if not projects %}<p class="empty">No projects yet. Make one with the + button › New project.</p>{% endif %}
 {% for p in projects %}
-<details class="panel project"{% if p.tasks %} open{% endif %}>
+<details class="panel project"{% if p.tasks %} open{% endif %} data-remember="project:{{ p.name }}">
   <summary><span><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>{{ p.name }}</a></span><span class="muted small">{{ p.tasks|length }} live task{{ '' if p.tasks|length == 1 else 's' }}</span></summary>
   {% if p.description %}<div class="muted small md">{{ p.description|md }}</div>{% endif %}
   <p class="small"><a {{ open_attrs('project:' ~ p.name, '/ui/projects/' ~ p.name) }}>Open project</a> {{ message_button('project:' ~ p.name, 'Message the agents on project ' ~ p.name, path) }}</p>

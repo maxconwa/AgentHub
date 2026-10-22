@@ -149,7 +149,7 @@ def test_projects_page(tree):
     assert f"/ui/tasks/{t['id']}" in r.text and "/ui/projects/proj" in r.text
     assert "No live tasks" in r.text
     assert r.text.index("/ui/projects/proj") < r.text.index("/ui/projects/empty")
-    assert re.search(r'<details class="panel project" open>(?:(?!</details>).)*proj', r.text, re.S)
+    assert re.search(r'<details class="panel project" open data-remember="project:proj">', r.text)
     assert "style=" not in r.text
 
 
@@ -219,7 +219,21 @@ def test_board_shows_agent_message_as_agent_text(tree):
 
 
 def test_empty_hub_projects(hub):
-    assert "No projects" in get(hub, "/ui/projects").text
+    html = get(hub, "/ui/projects").text
+    assert "No projects yet. Make one with the + button › New project." in html
+
+
+def test_project_without_tasks_is_listed_collapsed_last(tree):
+    hub = tree[0]
+    r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={"csrf": hub.csrf(), "name": "aaa-new"},
+                        follow_redirects=False)
+    assert r.status_code == 303
+    out = views.project_tree(hub.conn())
+    assert [p["name"] for p in out][0] == "proj" and {"aaa-new", "empty"} <= {p["name"] for p in out[1:]}
+    assert next(p for p in out if p["name"] == "aaa-new")["tasks"] == []
+    html = get(hub, "/ui/projects").text
+    assert '<details class="panel project" data-remember="project:aaa-new">' in html  # collapsed
+    assert html.index("project:proj") < html.index("project:aaa-new")
 
 
 # --- Tasks page and task page ---------------------------------------------------------

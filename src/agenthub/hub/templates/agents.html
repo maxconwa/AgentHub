@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% set has_live = true %}
 {% from "_macros.html" import message_button, agent_tasks, chip, avatar, task_title, open_attrs %}
 {% block title %}Agents{% endblock %}
 {% block content %}
@@ -20,6 +21,8 @@
     <button type="submit">Create code</button>
   </form>
 </details>
+{% endblock %}
+{% block live %}
 <ul class="agent-grid">
   {% for ag in agents %}
   <li class="card agent-card" id="agent-{{ ag.id }}" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 96, scene=True) }}

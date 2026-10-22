@@ -178,12 +178,40 @@ def pending_total(conn: sqlite3.Connection) -> int:
         + questions.pending_count(conn)
 
 
-def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connection, **ctx: Any) -> HTMLResponse:
+def live_poll(request: Request) -> bool:
+    """Whether this is a page's live region polling itself (base.html: HTMX, aimed at ``#live``)."""
+    return bool(request.headers.get("hx-request")) and request.headers.get("hx-target") == "live"
+
+
+def same_origin(request: Request) -> bool:
+    """Whether a GET came from our own pages (or was typed): only then may it mark messages read."""
+    try:
+        check_same_origin(request)
+    except HTTPException:
+        return False
+    return True
+
+
+def shows_page_chat(request: Request) -> bool:
+    """Whether a chat page or agent page response puts its private chat in front of the operator: a page load or
+    its live region's poll (which holds the chat) from our own pages. Other HTMX requests and cross-site
+    requests never mark anything read."""
+    return (not request.headers.get("hx-request") or live_poll(request)) and same_origin(request)
+
+
+def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connection, *, live_url: str | None = None,
+           **ctx: Any) -> HTMLResponse:
+    """A page (or fragment) with the shell's context. A page with a live region polls ``live_url`` (default: this
+    URL, query included); its poll gets only that region back."""
+    template = templates.get_template(name)
     pending, chat_unread = pending_total(conn), sum(private.unread_counts(conn).values())
-    html = templates.get_template(name).render(
+    query = request.url.query
+    html = template.render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
         pending_count=pending, chat_unread=chat_unread, messenger_unread=chat_unread + questions.pending_count(conn),
         names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
+        live_url=live_url or request.url.path + (f"?{query}" if query else ""),
+        live_only=live_poll(request) and "live" in template.blocks,
         active_ids={r[0] for r in conn.execute("SELECT id FROM agents WHERE status = 'active'")},
         **ctx,
     )
@@ -228,7 +256,7 @@ def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection,
     if item in NEW_FORMS:
         return render_new(request, operator, conn, item, next)
     data = views.panel(conn, item)
-    if data["kind"] == "agent" and data["chat"]:  # the operator is looking at these now
+    if data["kind"] == "agent" and data["chat"] and same_origin(request):  # the operator is looking at these now
         with db.transaction(conn):
             private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["chat"][0]["id"])
     return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next), **data)
@@ -237,7 +265,7 @@ def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection,
 def render_conversation(request: Request, operator: Operator, conn: sqlite3.Connection, key: str) -> HTMLResponse:
     """One conversation in the chat window; an agent's private chat is marked read, as on its chat page."""
     data = views.conversation(conn, key)
-    if data["kind"] == "agent" and data["messages"]:  # the operator is looking at these now
+    if data["kind"] == "agent" and data["messages"] and same_origin(request):  # the operator is looking at these now
         with db.transaction(conn):
             private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["messages"][0]["id"])
     return render(request, operator, "_messenger.html", conn, view="conversation", **data)
@@ -383,7 +411,7 @@ def build_router() -> APIRouter:
             raise HTTPException(404, "no such agent")
         with db.transaction(conn):
             messages = private.thread(conn, agent_id)
-            if messages:  # the operator is looking at these now
+            if messages and shows_page_chat(request):  # the operator is looking at these now
                 private.mark_read_by_operator(conn, agent_id, since_id=messages[0]["id"])
         return render(request, operator, "chat.html", conn, nav="chats", ag=rows[0], messages=messages)
 
@@ -693,7 +721,7 @@ def build_router() -> APIRouter:
 
     def render_agents(request: Request, operator: Operator, conn: sqlite3.Connection, new_code: dict | None) -> HTMLResponse:
         return render(request, operator, "agents.html", conn, nav="agents", agents=views.agent_rows(conn),
-                      projects=store.list_projects(conn), new_code=new_code)
+                      projects=store.list_projects(conn), new_code=new_code, live_url="/ui/agents")
 
     @router.get("/agents", response_class=HTMLResponse)
     def agents_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -719,7 +747,7 @@ def build_router() -> APIRouter:
             raise HTTPException(404, "no such agent")
         with db.transaction(conn):
             chat = private.thread(conn, agent_id, limit=20)
-            if chat:  # the pinned chat shows these; older unread ones wait for the full chat
+            if chat and shows_page_chat(request):  # the pinned chat shows these; older unread ones wait for the full chat
                 private.mark_read_by_operator(conn, agent_id, since_id=chat[0]["id"])
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),

@@ -1,3 +1,11 @@
+{#- A page opts into a polled live region with a top-level `{% set has_live = true %}` and a `live` block (no
+    forms in it). A poll of that region (HX-Target: live) gets just the section (`live_only`), not the whole page. -#}
+{% macro live_section() -%}
+<section id="live" hx-get="{{ live_url }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s">
+  {{ self.live() }}
+</section>
+{%- endmacro %}
+{% if live_only %}{{ live_section() }}{% else -%}
 <!doctype html>
 <html lang="en">
 <head>
@@ -24,11 +32,7 @@
   <main>
     <div id="compose"></div>
     {% block content %}{% endblock %}
-    {% if self.live is defined %}
-    <section id="live" hx-get="{{ path }}" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-trigger="every 10s">
-      {% block live %}{% endblock %}
-    </section>
-    {% endif %}
+    {% if has_live %}{{ live_section() }}{% endif %}
     {% block after_live %}{% endblock %}
   </main>
   <div class="scrim" id="panel-scrim" hidden></div>
@@ -50,3 +54,4 @@
   <footer>Signed in as {{ operator.login }}</footer>
 </body>
 </html>
+{%- endif %}

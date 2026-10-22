@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% set has_live = true %}
 {% from "_macros.html" import message_button, chip, agent_text, avatar, task_title, open_attrs %}
 {% from "_board.html" import board %}
 {% block title %}Task #{{ t.id }}{% endblock %}

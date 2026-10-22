@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Activity{% endblock %}
+{% block title %}All activity{% endblock %}
 {% block content %}
-<h1>All activity <span id="live" class="live" data-state="connecting">connecting</span></h1>
+<h1>All activity <span id="ws-state" class="live" data-state="connecting">connecting</span></h1>
 <form class="filters" method="get" action="/ui/activity">
   <select name="project" aria-label="Project"><option value="">All projects</option>{% for p in projects %}<option value="{{ p.name }}" {{ 'selected' if p.name == filters.project else '' }}>{{ p.name }}</option>{% endfor %}</select>
   <select name="agent" aria-label="Agent"><option value="">All actors</option>{% for ag in agents %}<option value="{{ ag.id }}" {{ 'selected' if ag.id == filters.agent else '' }}>{{ ag.name }}</option>{% endfor %}</select>

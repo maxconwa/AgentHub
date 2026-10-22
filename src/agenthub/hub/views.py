@@ -74,10 +74,10 @@ def device_messages(conn: sqlite3.Connection, node_id: str) -> list[dict[str, An
 
 
 def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Projects that have any task, each with its live tasks and the agents on them.
+    """Every project, each with its live tasks and the agents on them.
 
-    Terminal tasks are left out of ``tasks``. Projects with no live task come after the
-    others, so the page can collapse them.
+    Terminal tasks are left out of ``tasks``. Projects with no live task (finished ones, or
+    none yet) come after the others, so the page can collapse them.
     """
     board = avatars.board(conn)
     members: dict[int, list[dict[str, Any]]] = {}
@@ -94,8 +94,8 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         if r["state"] not in TERMINAL_STATES:
             live.append({"id": r["id"], "title": r["title"], "state": r["state"], "created_by": r["created_by"],
                          "agents": members.get(r["id"], [])})
-    out = [{"name": p["name"], "description": p["description"], "tasks": by_project[p["name"]]}
-           for p in conn.execute("SELECT name, description FROM projects ORDER BY name") if p["name"] in by_project]
+    out = [{"name": p["name"], "description": p["description"], "tasks": by_project.get(p["name"], [])}
+           for p in conn.execute("SELECT name, description FROM projects ORDER BY name")]
     return [p for p in out if p["tasks"]] + [p for p in out if not p["tasks"]]
 
 

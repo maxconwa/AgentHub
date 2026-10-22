@@ -28,6 +28,22 @@
   }
   if (window.htmx) htmx.onLoad(typeset); else typeset(document.body);
 
+  // Live regions are replaced every 10 s. A <details data-remember> in one keeps the open or closed state the
+  // operator last saw (keyed by its data-remember value) instead of snapping back to the server's default.
+  var remembered = {};
+  document.addEventListener("toggle", function (evt) {
+    var d = evt.target;
+    if (d.matches && d.matches("details[data-remember]")) remembered[d.getAttribute("data-remember")] = d.open;
+  }, true);  // toggle doesn't bubble
+  function restoreDetails(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll("details[data-remember]").forEach(function (d) {
+      var key = d.getAttribute("data-remember");
+      if (Object.prototype.hasOwnProperty.call(remembered, key)) d.open = remembered[key];
+    });
+  }
+  if (window.htmx) htmx.onLoad(restoreDetails);
+
   // Clear chat forms after a successful HTMX post.
   document.addEventListener("htmx:afterRequest", function (evt) {
     var form = evt.detail.elt;
@@ -291,7 +307,7 @@
 
   var feed = document.getElementById("feed");
   if (!feed) return;
-  var live = document.getElementById("live");
+  var live = document.getElementById("ws-state");
   var filters = { project: feed.dataset.project, agent: feed.dataset.agent, type: feed.dataset.type };
   var delay = 1000;
 
