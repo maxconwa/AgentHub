@@ -322,3 +322,15 @@ def test_verdict_notes_are_escaped(world):
     page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=hub.op_headers()).text
     assert "&lt;script&gt;" in page and "<script>alert(1)" not in page
     assert "agent content" in page
+
+
+def test_role_shown_on_terminal_task(world):
+    hub, agent, ids = world
+    rev = hub.enroll("rev")
+    h, c = hub.op_headers(), hub.csrf()
+    hub.client.post(f"/ui/tasks/{ids['task_id']}/agents", headers=h,
+                    data={"csrf": c, "agent": "rev", "role": "Reviewer: check the rate limiter", "stage": "reviews"})
+    hub.client.post(f"/ui/tasks/{ids['task_id']}/move", headers=h, data={"csrf": c, "state": "cancelled"})
+    assert tasks.get_task(hub.conn(), ids["task_id"])["state"] == "cancelled"
+    page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=h).text
+    assert "Reviewer: check the rate limiter" in page and rev.name in page
