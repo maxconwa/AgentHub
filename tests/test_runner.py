@@ -712,7 +712,7 @@ def test_parse_limit():
     now = datetime(2026, 10, 21, 14, 0)  # a Wednesday, local time
     assert parse_limit("You've hit your session limit · resets 3:45pm", now) == (True, datetime(2026, 10, 21, 15, 45))
     assert parse_limit("You've hit your session limit · resets 1:30pm", now) == (True, datetime(2026, 10, 22, 13, 30))
-    assert parse_limit("You've hit your session limit · resets 2pm", now) == (True, datetime(2026, 10, 22, 14, 0))
+    assert parse_limit("You've hit your session limit · resets 2pm", now) == (True, now)  # resetting right now
     assert parse_limit("You've hit your weekly limit · resets Mon 12:00am", now) == (True, datetime(2026, 10, 26, 0, 0))
     assert parse_limit("You've hit your weekly limit · resets Wed 3pm", now) == (True, datetime(2026, 10, 21, 15, 0))
     assert parse_limit("You've hit your weekly limit · resets Wed 1pm", now) == (True, datetime(2026, 10, 28, 13, 0))
@@ -739,8 +739,19 @@ def test_parse_limit():
     assert parse_limit("You've hit your session limit · resets 3:45pm (Europe/London)", aware) == (
         True, datetime(2026, 10, 22, 15, 45, tzinfo=london))
     assert parse_limit("You've hit your session limit · resets 13:45pm", now) == (True, None)
+    # a reset time that has just passed (the message is read after the session exits) is not rolled over
+    just_after = datetime(2026, 10, 21, 15, 0, 5)
+    assert parse_limit("You've hit your session limit · resets 3pm", just_after) == (True, just_after)
+    assert parse_limit("You've hit your session limit · resets 1:50pm", now) == (True, now)  # 10 min ago
+    assert parse_limit("You've hit your session limit · resets 1:45pm", now) == (True, now)  # 15 min ago
+    assert parse_limit("You've hit your session limit · resets 1:44pm", now) == (True, datetime(2026, 10, 22, 13, 44))
+    monday = datetime(2026, 10, 26, 0, 0, 2)
+    assert parse_limit("You've hit your weekly limit · resets Mon 12:00am", monday) == (True, monday)
+    tuesday = datetime(2026, 10, 27, 0, 5)  # across midnight
+    assert parse_limit("You've hit your session limit · resets 11:55pm", tuesday) == (True, tuesday)
+    assert parse_limit("You've hit your weekly limit · resets Mon 11:55pm", tuesday) == (True, tuesday)
     ok, when = parse_limit("You've hit your session limit · resets 8pm (UTC)", now)  # naive in, naive out
-    assert ok and when.tzinfo is None and when.astimezone().astimezone(UTC).hour == 20 and when > now
+    assert ok and when.tzinfo is None and when.astimezone().astimezone(UTC).hour == 20 and when >= now
 
 
 def test_result_from_detects_usage_limit():
@@ -850,3 +861,60 @@ async def test_runner_waits_out_a_pause_left_by_a_previous_runner(live_hub, fake
         await stop(main)
     assert [w for w, _ in seen] == [until]
     assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None and len(calls()) == 1
+
+
+async def test_stale_pause_keeps_a_new_review_rounds_prompt(live_hub, fake_claude, tmp_path, monkeypatch):
+    """A reviewer whose previous runner stopped mid-pause still gets the review prompt in a new round."""
+    claude_bin, calls = fake_claude
+    reviewer, rev_cfg = runner_for(live_hub, tmp_path, claude_bin, name="rev")
+    live_hub.agent("impl", tmp_path)
+    task_id = live_hub.op_task("t", assignee="impl")
+    live_hub.add(task_id, "rev", stage="reviews")
+    live_hub.move(task_id, "claimed", "in_progress", "review")
+    _past_run(live_hub, task_id, "rev", "rev-round-1", turns=1)
+    _send_back(live_hub, task_id, "reviewer wanted changes")
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        task_agents.finish(conn, task_id, store.find_agent(conn, "impl"), note="round two fixes")
+        task_agents.pause(conn, task_id, store.find_agent(conn, "rev"),
+                          until=(datetime.now(UTC) + timedelta(minutes=30)).isoformat())
+    seen = _patch_limit_wait(monkeypatch, live_hub, lambda: rev_cfg.agent_id, lambda: task_id)
+    main = asyncio.create_task(reviewer.run_forever())
+    try:
+        await wait_for(lambda: len(calls()) == 1)
+    finally:
+        await stop(main)
+    assert len(seen) == 1 and live_hub.member(task_id, rev_cfg.agent_id)["paused_until"] is None
+    (call,) = calls()
+    assert "Reviewer" in call["stdin"] and "round two fixes" in call["stdin"]
+    assert "usage limit has reset" not in call["stdin"] and "where you left off" not in call["stdin"]
+
+
+async def test_transport_error_while_clearing_pause_does_not_block(live_hub, fake_claude, tmp_path, monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_then_success")
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+    seen = _patch_limit_wait(monkeypatch, live_hub, lambda: agent_cfg.agent_id, lambda: ids["task"])
+    real_pause = runner.client.pause_task
+    failures: list[str | None] = []
+
+    async def flaky_pause(task_id, until):
+        if until is None and not failures:
+            failures.append(until)
+            raise httpx.ReadTimeout("hub too slow")
+        return await real_pause(task_id, until)
+
+    monkeypatch.setattr(runner.client, "pause_task", flaky_pause)
+    ids["task"] = task_id = live_hub.op_task("t", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+    assert failures == [None] and len(seen) == 1  # the failed clear is retried, not waited out again
+    assert "blocked" not in [e["to"] for e in live_hub.events("task.transitioned")]
+    assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None
+    assert len(calls()) == 2

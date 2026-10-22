@@ -38,6 +38,7 @@ import contextlib
 import json
 import logging
 import random
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -194,6 +195,8 @@ class Runner:
         # Review rounds this reviewer is done with, as (task id, task updated_at when it entered review).
         self._review_rounds_done: set[tuple[int, str]] = set()
         self._stopping = False
+        # task id -> the paused_until this runner already waited out (the hub may still show it if clearing failed)
+        self._waited_out: dict[int, datetime] = {}
 
     # --- main loop ---------------------------------------------------------------
 
@@ -339,10 +342,15 @@ class Runner:
             task, me = verified
             if task["state"] != RUN_STATE[me["stage"]]:
                 return
-            if me.get("paused_until"):  # left by a previous runner process that stopped while paused
-                await self._wait_out_pause(task_id, datetime.fromisoformat(me["paused_until"]))
-                resume_reason = "limit"
-                continue
+            if me.get("paused_until"):
+                paused = datetime.fromisoformat(me["paused_until"])
+                if self._waited_out.get(task_id) != paused:
+                    # Left by a previous runner process that stopped while paused. The entry reason stays:
+                    # a new review round still gets the review prompt, a send-back still gets its note.
+                    await self._wait_out_pause(task_id, paused)
+                    continue
+                # Waited out already, but clearing it failed: try once more and run anyway.
+                await self._quietly(task_id, "clear the pause", self.client.pause_task(task_id, None))
             usage = (await self.client.task_runs(task_id, agent=self.agent.agent_id))["usage"]
             limit = exceeded_limit(me["budget"], usage)
             if limit:
@@ -497,17 +505,25 @@ class Runner:
             until = datetime.now(UTC) + timedelta(seconds=LIMIT_FALLBACK_SECONDS)
         local = until.astimezone()
         when = f"{local:%H:%M}" if local.date() == datetime.now().astimezone().date() else f"{local:%a %H:%M}"
-        with contextlib.suppress(HubError):  # e.g. removed from the task meanwhile; the next check drops it
-            await self.client.pause_task(task_id, until.isoformat())
-            await self.client.progress(task_id, [{"kind": "limit",
-                                                  "text": f"paused for the usage limit until {when}"}])
+        # Hub or transport errors here must not block the task (e.g. removed meanwhile: the next check drops it).
+        await self._quietly(task_id, "record the pause", self.client.pause_task(task_id, until.isoformat()))
+        await self._quietly(task_id, "report the pause", self.client.progress(
+            task_id, [{"kind": "limit", "text": f"paused for the usage limit until {when}"}]))
         log.info("task %s: usage limit reached; paused until %s", task_id, local.isoformat(timespec="minutes"))
         await self._wait_out_pause(task_id, until)
 
     async def _wait_out_pause(self, task_id: int, until: datetime) -> None:
         await wait_until(until)
-        with contextlib.suppress(HubError):
-            await self.client.pause_task(task_id, None)
+        self._waited_out[task_id] = until
+        await self._quietly(task_id, "clear the pause", self.client.pause_task(task_id, None))
+
+    @staticmethod
+    async def _quietly(task_id: int, what: str, call: Awaitable[Any]) -> None:
+        """Await a hub call whose failure must not end the task's loop (and so block the task)."""
+        try:
+            await call
+        except (HubError, httpx.HTTPError) as exc:
+            log.warning("task %s: could not %s: %s", task_id, what, exc)
 
     async def _pause_for_budget(self, task: dict[str, Any], me: dict[str, Any], limit: str,
                                 usage: dict[str, Any]) -> bool:

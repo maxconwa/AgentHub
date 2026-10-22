@@ -91,6 +91,9 @@ _RESET = re.compile(
     re.IGNORECASE,
 )
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# A reset time this recently past has already happened (the message is read after the session exits):
+# it is not rolled to the next day or week.
+JUST_RESET = timedelta(minutes=15)
 
 
 def _clock(m: re.Match[str]) -> tuple[int, int] | None:
@@ -110,8 +113,9 @@ def parse_limit(text: str, now: datetime) -> tuple[bool, datetime | None]:
     """Whether ``text`` carries the subscription usage-limit message, and when the limit resets.
 
     The reset is the next occurrence (after ``now``) of the time in the message, in ``now``'s zone (naive
-    means local), or in the IANA zone the message names in parentheses. ``(True, None)`` means the message
-    was recognised but its time could not be read."""
+    means local), or in the IANA zone the message names in parentheses. A time at most ``JUST_RESET`` in the
+    past has just happened, so the reset is ``now``. ``(True, None)`` means the message was recognised but
+    its time could not be read."""
     line = _LIMIT_LINE.search(text or "")
     if line is None:
         return False, None
@@ -127,12 +131,13 @@ def parse_limit(text: str, now: datetime) -> tuple[bool, datetime | None]:
             return True, None
     base = now.astimezone(zone) if zone else now
     candidate = base.replace(hour=clock[0], minute=clock[1], second=0, microsecond=0)
+    period = timedelta(days=7 if m["day"] else 1)
     if m["day"]:
         candidate += timedelta(days=(_WEEKDAYS.index(m["day"].lower()) - base.weekday()) % 7)
-        if candidate <= base:
-            candidate += timedelta(days=7)
-    elif candidate <= base:
-        candidate += timedelta(days=1)
+    if candidate <= base:
+        candidate += period
+    if candidate - period >= base - JUST_RESET:  # the previous occurrence was moments ago
+        candidate = base
     if zone and now.tzinfo is None:
         candidate = candidate.astimezone().replace(tzinfo=None)  # back to local wall time
     return True, candidate
