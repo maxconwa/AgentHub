@@ -96,17 +96,24 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
     agent = get_agent(conn, q["agent_id"])
     if agent is None or agent.status == "revoked":  # a revoked agent's chat is read-only
         return get(conn, qid)
-    text = _answer_prefix(qid) + answer
+    text, about = _answer_prefix(qid) + answer, "\n\n" + _about(q)
     if _idle(conn, agent):
         from agenthub.hub import prompts  # imported here: prompts imports views, which imports this module
 
-        prompts.create(conn, target=f"agent:{agent.id}", body=text, actor=actor)
+        prompts.create(conn, target=f"agent:{agent.id}", body=text + about, actor=actor)
     else:
-        if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
+        if len(text + about) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
             note = f"… [truncated; full answer: call get_question with question_id={qid}]"
-            text = text[: private.MAX_BODY_CHARS - len(note)] + note
-        private.send(conn, agent.id, author=actor, body=text)
+            text = text[: private.MAX_BODY_CHARS - len(note) - len(about)] + note
+        private.send(conn, agent.id, author=actor, body=text + about)
     return get(conn, qid)
+
+
+def _about(q: dict[str, Any]) -> str:
+    """The hub's line after an answer (outside the operator's text): which question it answers, so the session
+    that gets it (often a new one) can look the question up."""
+    lookup = f"call get_question({q['id']}) for your question"
+    return f"(about task #{q['task_id']} in {q['project']}; {lookup})" if q["task_id"] else f"({lookup})"
 
 
 def _idle(conn: sqlite3.Connection, agent: Agent) -> bool:

@@ -57,7 +57,8 @@ def test_round_trip_answer_arrives_as_private_operator_message(pair):
     assert op_answer(hub, qid).status_code == 303
     mine = hub.client.get("/api/v1/inbox", headers=alice.headers).json()["messages"]
     assert [(m["kind"], m["author"], m["body"]) for m in mine] == [
-        ("private", f"human:{OP_LOGIN}", f"Answer to your question #{qid}: Use sqlite.")]
+        ("private", f"human:{OP_LOGIN}",
+         f"Answer to your question #{qid}: Use sqlite.\n\n(call get_question({qid}) for your question)")]
     assert hub.client.get("/api/v1/inbox", headers=bob.headers).json()["messages"] == []
     got = hub.client.get(f"/api/v1/questions/{qid}", headers=alice.headers).json()
     assert got["status"] == "answered" and got["answer"] == "Use sqlite." and got["answered_by"] == f"human:{OP_LOGIN}"
@@ -71,6 +72,7 @@ def test_long_answer_still_reaches_the_agent(pair):
     assert op_answer(hub, qid, "x" * 4000).status_code == 303
     body = hub.client.get("/api/v1/inbox", headers=alice.headers).json()["messages"][0]["body"]
     assert body.startswith(f"Answer to your question #{qid}: xxx") and f"get_question with question_id={qid}" in body
+    assert len(body) <= 4000 and body.endswith(f"\n\n(call get_question({qid}) for your question)")
     full = hub.client.get(f"/api/v1/questions/{qid}", headers=alice.headers).json()
     assert full["answer"] == "x" * 4000
 

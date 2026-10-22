@@ -1758,10 +1758,13 @@ def test_answering_a_question_prompts_the_asking_agent(window):
     assert resp.status_code == 303
     [row] = hub.conn().execute("SELECT id FROM prompts").fetchall()
     p = prompts.get(hub.conn(), row["id"])
-    assert p["target"] == f"agent:{a.id}" and p["body"] == f"Answer to your question #{q['id']}: Use 8080"
+    # The hub adds what the answer is about (it was asked on task t), outside the operator's text.
+    text = (f"Answer to your question #{q['id']}: Use 8080\n\n"
+            f"(about task #{t['id']} in proj; call get_question({q['id']}) for your question)")
+    assert p["target"] == f"agent:{a.id}" and p["body"] == text
     assert p["mode"] == "single" and [x["status"] for x in p["recipients"]] == ["pending"]
     bodies = [m["body"] for m in private.thread(hub.conn(), a.id)]
-    assert bodies.count(f"Prompt #{p['id']}: Answer to your question #{q['id']}: Use 8080") == 1
+    assert bodies.count(f"Prompt #{p['id']}: {text}") == 1
     page = get(hub, f"/ui/questions/{q['id']}").text
     assert f'href="/ui/prompts/{p["id"]}"' in page and "wakes worker" in page
 
@@ -1780,7 +1783,10 @@ def assert_answered_privately(hub, agent, qid, text, since):
     from agenthub.hub import events
     from agenthub.hub.notify import build_notification
     assert hub.conn().execute("SELECT COUNT(*) FROM prompts WHERE body LIKE 'Answer%'").fetchone()[0] == 0
-    assert [m["body"] for m in private.thread(hub.conn(), agent.id)][-1] == f"Answer to your question #{qid}: {text}"
+    tid = hub.conn().execute("SELECT task_id FROM questions WHERE id = ?", (qid,)).fetchone()[0]
+    about = f"about task #{tid} in proj; " if tid else ""
+    assert [m["body"] for m in private.thread(hub.conn(), agent.id)][-1] == (
+        f"Answer to your question #{qid}: {text}\n\n({about}call get_question({qid}) for your question)")
     cfg = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="t")
     rows = hub.conn().execute(
         "SELECT * FROM events WHERE id > ? AND (type LIKE 'prompt.%' OR type = 'question.answered')", (since,))
