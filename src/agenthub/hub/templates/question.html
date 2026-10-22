@@ -14,12 +14,11 @@
 {% if q.status == 'answered' %}
 <h2>Answer</h2>
 {{ agent_text(q.answer, q.answered_by, names) }}
-{% if q.agent_status == 'revoked' %}<p class="muted">Recorded {{ ago(q.answered_at) }}; not delivered because {{ q.agent_name or q.agent_id }} is revoked.</p>
-{% else %}<p class="muted">Answered {{ ago(q.answered_at) }}; sent to {{ q.agent_name or q.agent_id }} as a private message.</p>{% endif %}
+{% include "_answer_note.html" %}
 {% elif q.status == 'pending' %}
 <form class="chat" method="post" action="/ui/questions/{{ q.id }}/answer">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <textarea name="answer" rows="4" maxlength="4000" required placeholder="Your answer goes to {{ q.agent_name or 'the agent' }} as a private message…"></textarea>
+  <textarea name="answer" rows="4" maxlength="4000" required placeholder="Your answer goes to {{ q.agent_name or 'the agent' }} as a prompt, which wakes it if it is connected…"></textarea>
   <button type="submit">Answer</button>
 </form>
 {% else %}

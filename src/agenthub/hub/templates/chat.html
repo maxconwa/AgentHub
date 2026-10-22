@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import avatar, chip, open_attrs %}
+{% from "_macros.html" import avatar, chip, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
 {% block title %}Chat with {{ ag.name }}{% endblock %}
 {% block content %}
@@ -15,10 +15,10 @@
 {% endblock %}
 {% block after_live %}
 {% if ag.status != 'revoked' %}
-<form class="chat" method="post" action="/ui/chats/{{ ag.id }}">
+<form class="composer" method="post" action="/ui/chats/{{ ag.id }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <textarea name="body" rows="2" maxlength="4000" required aria-label="Message to {{ ag.name }}" placeholder="Write to {{ ag.name }}…"></textarea>
-  <button type="submit">Send</button>
+  {% call send_and_prompt(prompt) %}<button type="submit">Send</button>{% endcall %}
 </form>
 <p class="small-line">It waits in {{ ag.name }}'s inbox until it next reads it.</p>
 {% else %}

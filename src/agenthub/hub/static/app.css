@@ -64,10 +64,10 @@ dd { margin: 0 0 6px; overflow-wrap: anywhere; }
 
 .chip { display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: var(--chip);
   color: var(--muted); font-weight: 600; vertical-align: middle; }
-.chip-pending, .chip-awaiting_approval, .chip-blocked, .chip-waiting { color: var(--warn); }
+.chip-pending, .chip-awaiting_approval, .chip-blocked, .chip-waiting, .chip-skipped, .chip-timed_out { color: var(--warn); }
 .chip-approved, .chip-active, .chip-online, .chip-done, .chip-review { color: var(--ok); }
-.chip-rejected, .chip-revoked, .chip-cancelled { color: var(--bad); }
-.chip-in_progress, .chip-claimed, .chip-open, .chip-reply { color: var(--accent); }
+.chip-rejected, .chip-revoked, .chip-cancelled, .chip-failed { color: var(--bad); }
+.chip-in_progress, .chip-claimed, .chip-open, .chip-reply, .chip-running, .chip-discussing { color: var(--accent); }
 
 .agent-text { margin: 10px 0; background: var(--agent-bg); border: 1px solid var(--agent-line); border-radius: 8px; padding: 8px 10px; }
 .agent-text figcaption { font-size: 0.75rem; color: var(--muted); margin-bottom: 4px; }
@@ -276,8 +276,24 @@ li.card[data-panel]:hover { border-color: var(--muted); }
 .dthread { max-height: 38vh; overflow-y: auto; padding: 4px 2px; }
 .dthread .empty { padding: 8px 0; }
 .composer { display: grid; gap: 8px; margin-top: 8px; }
-.composer-buttons { display: flex; gap: 8px; }
-.composer-buttons > * { flex: 1; }
+.composer-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.composer-buttons > * { flex: 1 1 96px; }
+/* Prompt: Send's twin on every composer (it wakes the agents now, so it stands out). */
+button.prompt-btn { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+button.prompt-btn:disabled { border-color: var(--line); color: var(--muted); cursor: not-allowed; }
+.prompt-off { color: var(--warn); }
+/* A prompt's progress (_prompt.html) */
+.prompt-card { display: grid; gap: 4px; min-width: 0; }
+.prompt-card .agent-text { margin: 6px 0; }
+.ptext { overflow-wrap: anywhere; }
+.precipients { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 6px; }
+.precipients li { overflow-wrap: anywhere; }
+.precipients .avatar-wrap { margin-right: 6px; vertical-align: middle; }
+.pnote { margin-top: 2px; padding: 4px 8px; border-left: 3px solid var(--agent-line); background: var(--agent-bg);
+  border-radius: 4px; }
+.pnote .tag, .clast .tag { font-size: 0.7rem; border: 1px solid var(--agent-line); background: var(--agent-bg);
+  border-radius: 6px; padding: 0 4px; }
+.mprompt { padding: 0 12px; margin: 0 0 6px; }
 .group-icon { width: 48px; height: 48px; border-radius: 12px; background: var(--chip); color: var(--muted);
   display: grid; place-items: center; font-weight: 800; font-size: 1.3rem; flex: none; }
 .group-icon.g-task { color: var(--accent); }
@@ -355,8 +371,6 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .cstatus { justify-content: flex-start; }
 .cago { font-size: 0.75rem; color: var(--muted); flex: none; }
 .clast { font-size: 0.85rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.clast .tag { font-size: 0.7rem; border: 1px solid var(--agent-line); background: var(--agent-bg); border-radius: 6px;
-  padding: 0 4px; }
 .unread { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
 .mthread { flex: 1; overflow-y: auto; padding: 12px; margin: 0; min-height: 0; overscroll-behavior: contain; }
 .mthread .empty { padding: 8px 0; }

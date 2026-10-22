@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% set has_live = true %}
+{% from "_prompt.html" import prompt_card with context %}
+{% block title %}Prompt #{{ p.id }}{% endblock %}
+{% block content %}
+<p><a href="/ui/dashboard">← Dashboard</a></p>
+<h1>Prompt #{{ p.id }}</h1>
+{% endblock %}
+{% block live %}
+{{ prompt_card(p, names, full=True) }}
+{% endblock %}

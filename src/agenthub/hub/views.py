@@ -165,6 +165,77 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
     return {"label": label, "agents": agents, "board": board}
 
 
+def prompt_state(conn: sqlite3.Connection, target: str, found: dict[str, Any] | None = None) -> dict[str, Any]:
+    """What a Prompt button to ``target`` needs: ``{target, reason}``, ``reason`` saying why it is off (no
+    :func:`recipients` agent is connected), else None. ``found`` is that :func:`recipients` result if known."""
+    agents = (found or recipients(conn, target))["agents"]
+    if any(a["connected"] for a in agents):
+        reason = None
+    elif not agents:
+        reason = "Prompt is off: there is no active agent here to wake."
+    elif len(agents) == 1:
+        reason = f"Prompt is off: {agents[0]['name']} is not connected right now."
+    else:
+        reason = "Prompt is off: none of the agents here is connected right now."
+    return {"target": target, "reason": reason}
+
+
+# --- Prompts ----------------------------------------------------------------------------------
+
+PANEL_PROMPTS = 3  # a target's latest prompts in its panel
+RECENT_PROMPTS = 5  # finished prompts on the Dashboard
+OPEN_PROMPT_STATUSES = ("pending", "running", "discussing")
+
+
+def prompt(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
+    """:func:`prompts.get` for the pages, plus where its target and thread live: ``target_label``,
+    ``target_item`` (its panel), ``target_href``, ``thread_href`` (None for a single prompt) and, on each
+    recipient, ``task_by`` (who wrote its share task). Raises store.NotFound."""
+    from agenthub.hub import prompts  # imported here: prompts imports this module
+
+    p = prompts.get(conn, pid)
+    kind, _, key = p["target"].partition(":")
+    if kind == "agent":
+        row = conn.execute("SELECT name FROM agents WHERE id = ?", (key,)).fetchone()
+        label, href = f"agent {row['name'] if row else key}", f"/ui/agents/{key}"
+    elif kind == "task":
+        label, href = f"task #{key}", f"/ui/tasks/{key}"
+    elif kind == "project":
+        label, href = f"project {key}", f"/ui/projects/{quote(key, safe='')}"
+    else:
+        name = device_board.device_labels(conn).get(f"device:{key}", key)
+        label, href = f"device {name}", f"/ui/devices/{quote(key, safe='')}"
+    thread = p["thread"]
+    if thread is None:
+        thread_href = None
+    elif thread.startswith("device:"):
+        thread_href = f"/ui/devices/{quote(thread.removeprefix('device:'), safe='')}"
+    else:
+        thread_href = f"/ui/board/{thread.removeprefix('board:')}"
+    for r in p["recipients"]:
+        by = conn.execute("SELECT created_by FROM tasks WHERE id = ?", (r["task_id"],)).fetchone() \
+            if r["task_id"] else None
+        r["task_by"] = by["created_by"] if by else None
+    return p | {"target_label": label, "target_item": p["target"], "target_href": href, "thread_href": thread_href}
+
+
+def prompts_for(conn: sqlite3.Connection, target: str, limit: int = PANEL_PROMPTS) -> list[dict[str, Any]]:
+    """The newest ``limit`` prompts sent to ``target``, newest first (as :func:`prompt`)."""
+    rows = conn.execute("SELECT id FROM prompts WHERE target = ? ORDER BY id DESC LIMIT ?", (target, limit))
+    return [prompt(conn, r["id"]) for r in rows.fetchall()]
+
+
+def prompt_overview(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """The Dashboard's Prompts section: ``open`` (pending, running or discussing; newest first) and ``recent``,
+    the :data:`RECENT_PROMPTS` latest finished (done or failed) ones."""
+    marks = ",".join("?" * len(OPEN_PROMPT_STATUSES))
+    live = conn.execute(f"SELECT id FROM prompts WHERE status IN ({marks}) ORDER BY id DESC",
+                        OPEN_PROMPT_STATUSES).fetchall()
+    done = conn.execute(f"SELECT id FROM prompts WHERE status NOT IN ({marks}) ORDER BY id DESC LIMIT ?",
+                        (*OPEN_PROMPT_STATUSES, RECENT_PROMPTS)).fetchall()
+    return {"open": [prompt(conn, r["id"]) for r in live], "recent": [prompt(conn, r["id"]) for r in done]}
+
+
 # --- Board: public channels; Chats: agent-to-agent threads -----------------------------------
 
 BOARD_LIMIT = 200
@@ -339,8 +410,9 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     ``href`` is the item's full page. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not),
     its pending ``approvals`` and ``questions`` and its private ``chat``; task: ``t`` and its board
     ``messages``; project: ``project``, its live ``tasks`` and board ``messages``; device: ``d`` and
-    its board ``messages``; approval: ``a`` and its ``task``; question: ``q`` and its ``task``.
-    Raises store.NotFound for a malformed or unknown item.
+    its board ``messages``; approval: ``a`` and its ``task``; question: ``q``, its ``task`` and the
+    ``answer_prompt`` that carried the answer. Agent, task, project and device panels also carry
+    ``prompt`` and ``prompts`` (:func:`_prompting`). Raises store.NotFound for a malformed or unknown item.
     """
     m = _PANEL_ITEM.fullmatch(item)
     if not m:
@@ -355,23 +427,24 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
         return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0],
                 "approvals": approvals.list_for_agent(conn, key),
                 "questions": [q for q in questions.pending(conn) if q["agent_id"] == key],
-                "chat": private.thread(conn, key, limit=PANEL_LIMIT)}
+                "chat": private.thread(conn, key, limit=PANEL_LIMIT)} | _prompting(conn, item)
     if kind == "task":
         t = tasks.get_task(conn, int(key))
         return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t,
                 "messages": store.recent_messages(conn, project=t["project"], channel=f"task-{t['id']}",
-                                                  limit=PANEL_LIMIT)}
+                                                  limit=PANEL_LIMIT)} | _prompting(conn, f"task:{t['id']}")
     if kind == "project":
         row = conn.execute("SELECT name, description FROM projects WHERE name = ?", (key,)).fetchone()
         if row is None:
             raise store.NotFound(f"no project {key!r}")
         live = next((p["tasks"] for p in project_tree(conn) if p["name"] == key), [])
         return {"kind": kind, "href": f"/ui/projects/{quote(key, safe='')}", "project": dict(row), "tasks": live,
-                "messages": store.recent_messages(conn, project=key, channel="general", limit=PANEL_LIMIT)}
+                "messages": store.recent_messages(conn, project=key, channel="general", limit=PANEL_LIMIT)} \
+            | _prompting(conn, item)
     if kind == "device":
         d = device(conn, key)
         return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": d,
-                "messages": device_messages(conn, key)[-PANEL_LIMIT:]}
+                "messages": device_messages(conn, key)[-PANEL_LIMIT:]} | _prompting(conn, item)
     if kind == "approval":
         a = approvals.get(conn, int(key))
         task_id = a["details"].get("task_id")
@@ -379,13 +452,28 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
                 "task": tasks.get_task(conn, task_id) if isinstance(task_id, int) else None}
     q = questions.get(conn, int(key))
     return {"kind": kind, "href": f"/ui/questions/{q['id']}", "q": q,
-            "task": tasks.get_task(conn, q["task_id"]) if q["task_id"] else None}
+            "task": tasks.get_task(conn, q["task_id"]) if q["task_id"] else None,
+            "answer_prompt": answer_prompt(conn, q)}
+
+
+def _prompting(conn: sqlite3.Connection, target: str, limit: int = PANEL_PROMPTS) -> dict[str, Any]:
+    """A panel's or conversation's Prompt parts: ``prompt`` (:func:`prompt_state`) and ``prompts``, the target's
+    latest ``limit`` (:func:`prompts_for`)."""
+    return {"prompt": prompt_state(conn, target), "prompts": prompts_for(conn, target, limit)}
+
+
+def answer_prompt(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, Any] | None:
+    """The prompt that carried the operator's answer to question ``q`` (:func:`questions.answer_prompt_id`), as
+    :func:`prompt`, or None (unanswered, answered before prompts, or its agent was revoked)."""
+    pid = questions.answer_prompt_id(conn, q)
+    return prompt(conn, pid) if pid is not None else None
 
 
 # --- Chat window ------------------------------------------------------------------------------
 
 SNIPPET_CHARS = 200  # of the last private message in the chat window's list (the row clips it further)
 _CONVERSATION = re.compile(r"(agent|pair|board|device):(.+)")
+_PROMPT_THREAD = re.compile(r"prompt-[0-9]+")  # a group prompt's discussion channel
 
 
 def messenger(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
@@ -459,7 +547,9 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
     ``action`` is where its form posts (None when read-only), ``href`` the full page and ``item`` the slide-in
     panel its header opens (None for agent-to-agent chats and other threads). agent: ``ag`` (revoked agents
     are read-only) and its pending ``questions``; pair: read-only; board: ``created_by``; device: ``d``.
-    Raises store.NotFound for a malformed or unknown key.
+    Agent, device and board conversations (but not a prompt's own discussion thread) carry ``prompt`` and
+    their target's latest prompt in ``prompts`` (:func:`_prompting`). Raises store.NotFound for a malformed or
+    unknown key.
     """
     m = _CONVERSATION.fullmatch(key)
     if not m:
@@ -473,7 +563,7 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
         return {"kind": kind, "key": key, "title": ag["name"], "ag": ag, "messages": private.thread(conn, ref),
                 "questions": [q for q in questions.pending(conn) if q["agent_id"] == ref],
                 "action": f"/ui/chats/{ref}" if ag["status"] != "revoked" else None,
-                "href": f"/ui/agents/{ref}", "item": f"agent:{ref}"}
+                "href": f"/ui/agents/{ref}", "item": f"agent:{ref}"} | _prompting(conn, f"agent:{ref}", 1)
     if kind == "pair":
         thread = pair_thread(conn, ref)
         x, y = _PAIR_KEY.fullmatch(ref).groups()
@@ -492,8 +582,12 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
         elif t:  # the title and its "by" label are the task's
             out |= {"title": f"#{t['id']} {t['title']}", "created_by": t["created_by"], "href": f"/ui/tasks/{t['id']}",
                     "item": f"task:{t['id']}"}
+        # Prompt wakes the board's task or project; a prompt's own discussion thread has none.
+        if not _PROMPT_THREAD.fullmatch(channel):
+            out |= _prompting(conn, f"task:{t['id']}" if t else f"project:{project}", 1)
         return out
     d = device(conn, ref)
     return {"kind": kind, "key": key, "title": d["name"], "d": d, "messages": device_messages(conn, ref),
             "action": f"/ui/devices/{quote(ref, safe='')}/notes", "href": f"/ui/devices/{quote(ref, safe='')}",
-            "item": f"device:{ref}", "members": _faces(avatars.board(conn), [a["id"] for a in d["agents"]])}
+            "item": f"device:{ref}", "members": _faces(avatars.board(conn), [a["id"] for a in d["agents"]])} \
+        | _prompting(conn, key, 1)

@@ -988,7 +988,8 @@ def test_question_panel_has_answer_form_then_the_answer(side):
     resp = hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(**{"hx-request": "true"}),
                            data={"csrf": hub.csrf(), "answer": "8080", "panel": item})
     assert resp.status_code == 200 and "<html" not in resp.text
-    assert "8080" in resp.text and not forms(resp.text) and "private message" in resp.text
+    assert "8080" in resp.text and not forms(resp.text) and "as <a href=\"/ui/prompts/" in resp.text
+    assert "private chat" in resp.text  # the answer went as a prompt to the connected agent
 
 
 def test_revoked_agent_panel_is_read_only(side):
@@ -1537,3 +1538,220 @@ def test_buttons_step_aside_for_the_compose_sheet(hub):
     assert 'classList.toggle("compose-open"' in js and 'getElementById("compose")' in js
     html = get(hub, "/ui/dashboard").text
     assert '<div id="compose"></div>' in html.split("</main>")[0]  # the region app.js watches
+
+
+# --- Prompt: wake the agents now ------------------------------------------------------------------------
+
+HINT = "Send delivers a message. Prompt wakes the agents now and uses your subscription."
+
+
+def online(hub, *agents, connected=True):
+    conn = hub.conn()
+    with db.transaction(conn):
+        for ag in agents:
+            conn.execute("UPDATE agents SET connected = ? WHERE id = ?", (int(connected), ag.id))
+
+
+def prompt_buttons(html):
+    """The Prompt buttons in ``html``: (whole <button> tag, the form it sits in)."""
+    out = []
+    for f in forms(html):
+        for b in re.findall(r'<button\b[^>]*formaction="/ui/prompts"[^>]*>', f):
+            out.append((b, f))
+    return out
+
+
+def assert_prompt_beside_send(html, target, enabled=True):
+    [(button, form)] = prompt_buttons(html)
+    assert f'name="target" value="{target}"' in form and len(re.findall(r"<textarea\b", form)) == 1
+    assert re.search(r'<button type="submit"(?![^>]*formaction)[^>]*>(Send|Post)</button>', form)  # Send stays
+    assert HINT in form
+    assert ("disabled" in button) is not enabled
+
+
+def make_prompt(hub, target, body="Look at the flaky test"):
+    from agenthub.hub import prompts
+    conn = hub.conn()
+    with db.transaction(conn):
+        return prompts.create(conn, target=target, body=body, actor=OPERATOR)
+
+
+def post_prompt(hub, htmx=False, csrf=True, **data):
+    headers = hub.op_headers(**({"hx-request": "true"} if htmx else {}))
+    return hub.client.post("/ui/prompts", headers=headers, follow_redirects=False,
+                           data={**({"csrf": hub.csrf()} if csrf else {}), **data})
+
+
+def test_every_send_has_a_prompt_button(window):
+    hub, a, c, r, t, ap, q = window
+    tid = t["id"]
+    for item in (f"agent:{a.id}", f"task:{tid}", "project:proj", "device:nworker"):
+        assert_prompt_beside_send(panel(hub, item).text, item)
+    for key, target in ((f"agent:{a.id}", f"agent:{a.id}"), (f"board:ch-proj~task-{tid}", f"task:{tid}"),
+                        ("board:ch-proj~general", "project:proj"), ("device:nworker", "device:nworker")):
+        assert_prompt_beside_send(messenger(hub, key).text, target)
+    for path in (f"/ui/agents/{a.id}", f"/ui/chats/{a.id}", f"/ui/compose?to=task:{tid}"):
+        target = f"task:{tid}" if "compose" in path else f"agent:{a.id}"
+        assert_prompt_beside_send(get(hub, path).text, target)
+    sheet = hub.client.get(f"/ui/compose?to=agent:{a.id}", headers=hub.op_headers(**{"hx-request": "true"})).text
+    assert_prompt_beside_send(sheet, f"agent:{a.id}")
+
+
+def test_prompt_is_disabled_with_a_reason_when_nobody_is_live(window):
+    hub, a, c, r, t, ap, q = window  # helper (c) is offline
+    me = f"agent:{c.id}"
+    pages = [(panel(hub, me).text, me), (messenger(hub, me).text, me), (get(hub, f"/ui/chats/{c.id}").text, me),
+             (get(hub, f"/ui/compose?to={me}").text, me), (panel(hub, "device:nhelper").text, "device:nhelper")]
+    for html, target in pages:
+        assert_prompt_beside_send(html, target, enabled=False)
+        assert "Prompt is off: helper is not connected right now." in html
+    p = hub.enroll("newbie", approve=False)
+    html = panel(hub, f"agent:{p.id}").text
+    assert_prompt_beside_send(html, f"agent:{p.id}", enabled=False)
+    assert "Prompt is off" in html
+    assert "Prompt is off" not in panel(hub, f"agent:{a.id}").text
+
+
+def test_prompt_thread_boards_and_read_only_chats_get_no_prompt_button(window):
+    hub, a, c, r, t, ap, q = window
+    online(hub, c)
+    p = make_prompt(hub, f"task:{t['id']}")
+    assert p["mode"] == "group" and p["thread"] == f"board:ch-proj~prompt-{p['id']}"
+    html = messenger(hub, p["thread"]).text
+    assert len(forms(html)) == 1 and not prompt_buttons(html)
+    assert not prompt_buttons(messenger(hub, f"pair:{pair_key(a, c)}").text)
+    assert not prompt_buttons(messenger(hub, f"agent:{r.id}").text)  # revoked: read-only
+
+
+def test_post_prompt_creates_it_for_the_targets_live_agents(window):
+    hub, a, c, r, t, ap, q = window
+    target = f"task:{t['id']}"
+    resp = post_prompt(hub, target=target, body="Fix <b>it</b> now")
+    assert resp.status_code == 303
+    pid = int(resp.headers["location"].removeprefix("/ui/prompts/"))
+    from agenthub.hub import prompts
+    p = prompts.get(hub.conn(), pid)
+    assert p["target"] == target and p["body"] == "Fix <b>it</b> now" and p["created_by"] == f"human:{OP_LOGIN}"
+    assert p["mode"] == "single" and p["status"] == "pending"
+    assert {x["name"]: x["status"] for x in p["recipients"]} == {"worker": "pending", "helper": "skipped"}
+    assert private.thread(hub.conn(), a.id)[-1]["body"] == f"Prompt #{pid}: Fix <b>it</b> now"
+    page = get(hub, f"/ui/prompts/{pid}").text
+    assert "Fix &lt;b&gt;it&lt;/b&gt; now" in page and "chip-skipped" in page
+    resp = post_prompt(hub, target=f"agent:{a.id}", body="go", next="/ui/dashboard")
+    assert resp.status_code == 303 and resp.headers["location"] == "/ui/dashboard"
+    resp = post_prompt(hub, target=f"agent:{a.id}", body="go", next="https://evil.example")
+    assert resp.headers["location"].startswith("/ui/prompts/")
+
+
+def test_post_prompt_rerenders_the_panel_or_conversation(window):
+    hub, a, c, r, t, ap, q = window
+    resp = post_prompt(hub, htmx=True, target="project:proj", body="panel prompt", panel="project:proj",
+                       next="/ui/dashboard")
+    assert resp.status_code == 200 and "<html" not in resp.text and "data-panel-close" in resp.text
+    assert re.search(r"Prompt #\d+", resp.text) and "panel prompt" in resp.text
+    resp = post_prompt(hub, htmx=True, target=f"agent:{a.id}", body="chat prompt", messenger=f"agent:{a.id}")
+    assert resp.status_code == 200 and "data-chat-list" in resp.text and "chat prompt" in resp.text
+
+
+def test_post_prompt_needs_csrf_a_body_and_a_real_target(window):
+    hub, a, c, r, t, ap, q = window
+    count = lambda: hub.conn().execute("SELECT COUNT(*) FROM prompts").fetchone()[0]  # noqa: E731
+    assert post_prompt(hub, csrf=False, target=f"agent:{a.id}", body="x").status_code == 403
+    assert post_prompt(hub, target=f"agent:{a.id}", body="   ").status_code == 422
+    assert post_prompt(hub, target="agent:nope", body="x").status_code == 404
+    assert post_prompt(hub, target="thing:1", body="x").status_code == 404
+    r2 = hub.client.post("/ui/prompts", headers=a.headers, data={"csrf": hub.csrf(), "target": f"agent:{a.id}",
+                                                                  "body": "x"}, follow_redirects=False)
+    assert r2.status_code == 403
+    assert count() == 0
+
+
+def test_prompt_to_nobody_live_is_recorded_failed_and_shown(window):
+    hub, a, c, r, t, ap, q = window
+    resp = post_prompt(hub, target=f"agent:{c.id}", body="anyone?")
+    pid = int(resp.headers["location"].removeprefix("/ui/prompts/"))
+    page = get(hub, f"/ui/prompts/{pid}").text
+    assert "chip-failed" in page and "chip-skipped" in page and "nobody was woken" in page
+
+
+def test_prompt_page_shows_statuses_share_links_and_the_thread(window):
+    hub, a, c, r, t, ap, q = window
+    from agenthub.hub import prompts
+    d = hub.enroll("dora")
+    online(hub, c, d)
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.add_agent(conn, t["id"], d.id, role="", stage="works", actor=OPERATOR)
+    online(hub, d, connected=False)
+    p = make_prompt(hub, f"task:{t['id']}", body="Split the <b>migration</b>")
+    with db.transaction(conn):
+        share = prompts.claim(conn, p["id"], store.get_agent(conn, a.id), title=f"Schema {EVIL}")
+        prompts.decline(conn, p["id"], store.get_agent(conn, c.id), reason=f"busy {EVIL}")
+    resp = get(hub, f"/ui/prompts/{p['id']}")
+    assert resp.status_code == 200
+    html = resp.text
+    live = html.split('id="live"')[1]
+    assert f"Prompt #{p['id']}" in live and "Split the &lt;b&gt;migration&lt;/b&gt;" in live
+    assert "chip-done" in live and "chip-claimed" in live and "chip-declined" in live and "chip-skipped" in live
+    assert f'data-panel="task:{share["id"]}"' in live and f'href="/ui/tasks/{share["id"]}"' in live
+    assert "Schema &lt;script&gt;" in live and 'class="by-label">by worker' in live
+    assert "busy &lt;script&gt;" in live and "agent text" in live and "<script>alert" not in html
+    assert f'href="/ui/board/ch-proj~prompt-{p["id"]}"' in live
+    assert f'data-panel="task:{t["id"]}"' in live  # the target opens its panel
+    for ag in (a, c, d):
+        assert f'data-panel="agent:{ag.id}"' in live
+    assert "offline" in live  # dora was skipped because it was offline
+    assert "style=" not in html and not re.search(r"<script(?![^>]*\bsrc=)", html)
+    assert get(hub, "/ui/prompts/9999").status_code == 404
+
+
+def test_panel_shows_the_targets_latest_three_prompts(window):
+    hub, a, c, r, t, ap, q = window
+    ids = [make_prompt(hub, f"agent:{a.id}", body=f"number {i}")["id"] for i in range(4)]
+    html = panel(hub, f"agent:{a.id}").text
+    shown = [int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', html)]
+    assert sorted(set(shown), reverse=True) == ids[:0:-1]
+    assert "number 0" not in html.split("Private chat")[0]
+    assert not re.findall(r'href="/ui/prompts/', panel(hub, "project:proj").text)
+
+
+def test_dashboard_lists_open_prompts_first_then_five_recent(window):
+    hub, a, c, r, t, ap, q = window
+    failed = [make_prompt(hub, f"agent:{c.id}", body=f"old {i}")["id"] for i in range(6)]  # helper is offline
+    running = make_prompt(hub, f"agent:{a.id}", body="still going")["id"]
+    html = get(hub, "/ui/dashboard").text
+    live = html.split('id="live"')[1]
+    section = live.split("Prompts")[1]
+    shown = [int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', section)]
+    shown = list(dict.fromkeys(shown))
+    assert shown == [running] + failed[::-1][:5]
+
+
+def test_answering_a_question_prompts_the_asking_agent(window):
+    hub, a, c, r, t, ap, q = window  # worker is connected
+    from agenthub.hub import prompts
+    resp = hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(), follow_redirects=False,
+                           data={"csrf": hub.csrf(), "answer": "Use 8080"})
+    assert resp.status_code == 303
+    [row] = hub.conn().execute("SELECT id FROM prompts").fetchall()
+    p = prompts.get(hub.conn(), row["id"])
+    assert p["target"] == f"agent:{a.id}" and p["body"] == f"Answer to your question #{q['id']}: Use 8080"
+    assert p["mode"] == "single" and [x["status"] for x in p["recipients"]] == ["pending"]
+    bodies = [m["body"] for m in private.thread(hub.conn(), a.id)]
+    assert bodies.count(f"Prompt #{p['id']}: Answer to your question #{q['id']}: Use 8080") == 1
+    page = get(hub, f"/ui/questions/{q['id']}").text
+    assert f'href="/ui/prompts/{p["id"]}"' in page and "wakes worker" in page
+
+
+def test_answer_to_an_offline_agent_waits_in_its_private_chat(window):
+    hub, a, c, r, t, ap, q = window
+    from agenthub.hub import prompts
+    q2 = hub.client.post("/api/v1/projects/proj/questions", headers=c.headers, json={"question": "Port?"}).json()
+    hub.client.post(f"/ui/questions/{q2['id']}/answer", headers=hub.op_headers(),
+                    data={"csrf": hub.csrf(), "answer": "9090"})
+    [row] = hub.conn().execute("SELECT id FROM prompts").fetchall()
+    p = prompts.get(hub.conn(), row["id"])
+    assert p["status"] == "failed" and [x["status"] for x in p["recipients"]] == ["skipped"]
+    assert [m["body"] for m in private.thread(hub.conn(), c.id)][-1] == f"Answer to your question #{q2['id']}: 9090"
+    for html in (get(hub, f"/ui/questions/{q2['id']}").text, panel(hub, f"question:{q2['id']}").text):
+        assert "helper was offline" in html and "private chat" in html and f'href="/ui/prompts/{p["id"]}"' in html

@@ -1,7 +1,10 @@
 """Questions an agent asks the operator (the ``ask_operator`` tool).
 
 A pending question waits in the approval queue; the operator's answer goes back
-to the asking agent as a private operator message. Unlike private chat text,
+to the asking agent as a single prompt (``Answer to your question #N: …``), so an
+idle agent wakes on it, and the prompt puts it in the agent's private chat. If the
+agent isn't connected the prompt wakes nobody (its recipient is ``skipped``) and the
+answer is sent as a plain private message instead. Unlike private chat text,
 questions are not secret, but ``question.*`` events carry ids only (the page
 reads the table), the same as private messages.
 """
@@ -90,13 +93,34 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
     events.emit(conn, type="question.answered", actor=actor, project=q["project"], payload=_payload(q))
     agent = get_agent(conn, q["agent_id"])
     if agent is not None and agent.status != "revoked":  # a revoked agent's chat is read-only
-        prefix = f"Answer to your question #{qid}: "
-        text = prefix + answer
-        if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
-            note = f"… [truncated; full answer: call get_question with question_id={qid}]"
-            text = text[: private.MAX_BODY_CHARS - len(note)] + note
-        private.send(conn, agent.id, author=actor, body=text)
+        from agenthub.hub import prompts  # imported here: prompts imports views, which imports this module
+
+        text = _answer_prefix(qid) + answer
+        p = prompts.create(conn, target=f"agent:{agent.id}", body=text, actor=actor)
+        if all(r["status"] == "skipped" for r in p["recipients"]):  # nobody woke: the chat still gets the answer
+            if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
+                note = f"… [truncated; full answer: call get_question with question_id={qid}]"
+                text = text[: private.MAX_BODY_CHARS - len(note)] + note
+            private.send(conn, agent.id, author=actor, body=text)
     return get(conn, qid)
+
+
+def _answer_prefix(qid: int) -> str:
+    return f"Answer to your question #{qid}: "
+
+
+def answer_prompt_id(conn: sqlite3.Connection, q: dict[str, Any]) -> int | None:
+    """The prompt :func:`answer` made to carry ``q``'s answer: the first prompt to the asking agent, by the
+    answering operator, at or after the answer, whose text starts with the answer's prefix. None if there is
+    none (unanswered, answered before prompts existed, or the agent was revoked)."""
+    if q["status"] != "answered" or not q["answered_at"]:
+        return None
+    prefix = _answer_prefix(q["id"])
+    row = conn.execute(
+        "SELECT id FROM prompts WHERE target = ? AND created_by = ? AND created_at >= ? AND substr(body, 1, ?) = ? "
+        "ORDER BY id LIMIT 1", (f"agent:{q['agent_id']}", q["answered_by"], q["answered_at"], len(prefix), prefix),
+    ).fetchone()
+    return row["id"] if row else None
 
 
 def withdraw(conn: sqlite3.Connection, qid: int, agent: Agent) -> dict[str, Any]:

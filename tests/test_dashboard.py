@@ -7,7 +7,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agenthub.hub import approvals, db, store, task_agents, tasks
+from agenthub.hub import approvals, db, prompts, store, task_agents, tasks
 
 from .conftest import OP_IP, OP_LOGIN, OPERATOR
 
@@ -47,8 +47,10 @@ def world(hub):
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
+        pr = prompts.create(conn, target=f"agent:{a.id}", body="wake up", actor=OPERATOR)
     node_id = store.get_agent(conn, a.id).device_node_id
     return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id, "node_id": node_id,
+                    "prompt_id": pr["id"],
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
@@ -56,7 +58,8 @@ def test_route_inventory_is_not_empty(hub):
     routes = ui_routes(hub.client.app)
     assert ("POST", "/ui/approvals/{approval_id}/decide") in routes
     assert ("GET", "/ui/activity") in routes and ("GET", "/ui/feed") in routes
-    assert len(routes) == 58, "a route was added or removed: the walk tests cover it, update this count"
+    assert ("POST", "/ui/prompts") in routes and ("GET", "/ui/prompts/{prompt_id}") in routes
+    assert len(routes) == 60, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):
@@ -129,7 +132,8 @@ def test_pages_render_with_security_headers(world):
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/activity", "/ui/activity?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
-                 "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board"]:
+                 "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board",
+                 f"/ui/prompts/{ids['prompt_id']}"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
         assert "default-src 'self'" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "DENY"

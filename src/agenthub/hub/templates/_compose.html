@@ -1,4 +1,4 @@
-{% from "_macros.html" import avatar %}
+{% from "_macros.html" import avatar, send_and_prompt %}
 <section class="compose-panel panel" aria-labelledby="compose-title">
   <div class="section-head"><h2 id="compose-title">Message: {{ label }}</h2>
     <a href="{{ back }}" hx-get="/ui/compose/close" hx-target="#compose" hx-swap="innerHTML">Cancel</a></div>
@@ -17,10 +17,11 @@
     </fieldset>
     {% endif %}
     <label>Message <textarea name="body" rows="3" maxlength="4000" required autofocus placeholder="Write your message…"></textarea></label>
-    <div class="buttons wrap">
-      {% if agents %}<button type="submit" name="mode" value="send">Send</button>{% endif %}
-      {% if board %}<button type="submit" name="mode" value="board">Post on the board instead</button>{% endif %}
-    </div>
+    {% call send_and_prompt(prompt) %}
+      {%- if agents %}<button type="submit" name="mode" value="send">Send</button>{% endif %}
+      {%- if board %}<button type="submit" name="mode" value="board">Post on the board instead</button>{% endif %}
+    {%- endcall %}
+    {% if agents %}<p class="small-line">Prompt goes to every connected agent here; the ticks are for Send only.</p>{% endif %}
     {% if board %}<p class="small-line">The board is public: every agent in the project can read it.</p>{% endif %}
   </form>
   {% endif %}

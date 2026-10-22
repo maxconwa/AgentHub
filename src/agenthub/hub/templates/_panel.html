@@ -1,17 +1,29 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
+{% from "_prompt.html" import prompt_card with context %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. Every form
     posts with HTMX, names the item in `panel` so the response re-renders this panel, and keeps a plain
-    method/action (with `next`) for the redirect path. -#}
-{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='') -%}
+    method/action (with `next`) for the redirect path. With `prompt` (views.prompt_state) the form also has
+    Prompt beside its button. -#}
+{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='', prompt=None) -%}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="panel" value="{{ item }}">
   {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
   <textarea name="{{ field }}" rows="2" maxlength="{{ maxlength }}" required aria-label="{{ label }}" placeholder="{{ placeholder }}"></textarea>
-  <div class="composer-buttons"><button type="submit">{{ button }}</button></div>
+  {% if prompt %}{% call send_and_prompt(prompt) %}<button type="submit">{{ button }}</button>{% endcall %}
+  {% else %}<div class="composer-buttons"><button type="submit">{{ button }}</button></div>{% endif %}
   {% if help %}<p class="small-line">{{ help }}</p>{% endif %}
 </form>
+{%- endmacro %}
+{#- The item's latest prompts (its panel's `prompts`), newest first. -#}
+{% macro latest_prompts() -%}
+{% if prompts %}
+<section class="dsec">
+  <h3>Prompts</h3>
+  <ul class="cards prompts">{% for p in prompts %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
 {%- endmacro %}
 {% macro agent_link(agent_id, name) -%}
 {%- if name %}<a {{ open_attrs('agent:' ~ agent_id, '/ui/agents/' ~ agent_id) }}>{{ name }}</a>{% else %}{{ agent_id }}{% endif -%}
@@ -54,9 +66,10 @@
   <h3>Private chat</h3>
   <div class="dthread">{{ board(chat, names, empty="No messages yet.") }}</div>
   {% if ag.status != 'revoked' %}
-  {{ panel_form('/ui/chats/' ~ ag.id, 'Message to ' ~ ag.name, 'Send', 'Write to ' ~ ag.name ~ '…', help='Private: only you and ' ~ ag.name ~ ' see it.') }}
+  {{ panel_form('/ui/chats/' ~ ag.id, 'Message to ' ~ ag.name, 'Send', 'Write to ' ~ ag.name ~ '…', help='Private: only you and ' ~ ag.name ~ ' see it.', prompt=prompt) }}
   {% else %}<p class="muted">{{ ag.name }} is revoked, so this chat is read-only.</p>{% endif %}
 </section>
+{{ latest_prompts() }}
 
 {% elif kind == 'task' %}
 <div class="dhead"><span class="group-icon g-task" aria-hidden="true">#</span>
@@ -76,8 +89,9 @@
 <section class="dsec">
   <h3>Task board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'Note to task #' ~ t.id, 'Post', 'Post a note to the agents on this task…', help='Every agent in the project can read it.') }}
+  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'Note to task #' ~ t.id, 'Post', 'Post a note to the agents on this task…', help='Every agent in the project can read it.', prompt=prompt) }}
 </section>
+{{ latest_prompts() }}
 
 {% elif kind == 'project' %}
 <div class="dhead"><span class="group-icon g-project" aria-hidden="true">▦</span>
@@ -93,8 +107,9 @@
 <section class="dsec">
   <h3>Project board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'Note to project ' ~ project.name, 'Post', 'Post a note to everyone on this project…', help='Every agent in the project can read it.') }}
+  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'Note to project ' ~ project.name, 'Post', 'Post a note to everyone on this project…', help='Every agent in the project can read it.', prompt=prompt) }}
 </section>
+{{ latest_prompts() }}
 
 {% elif kind == 'device' %}
 <div class="dhead"><span class="group-icon g-device" aria-hidden="true">▣</span>
@@ -111,8 +126,9 @@
 <section class="dsec">
   <h3>Device board</h3>
   <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/devices/' ~ d.node_id|urlencode ~ '/notes', 'Note to ' ~ d.name, 'Post', 'Post a note to every agent on ' ~ d.name ~ '…', help='Only the agents on this machine and you can see it.') }}
+  {{ panel_form('/ui/devices/' ~ d.node_id|urlencode ~ '/notes', 'Note to ' ~ d.name, 'Post', 'Post a note to every agent on ' ~ d.name ~ '…', help='Only the agents on this machine and you can see it.', prompt=prompt) }}
 </section>
+{{ latest_prompts() }}
 
 {% elif kind == 'approval' %}
 {% set dt = a.details %}
@@ -168,10 +184,9 @@
   <h3>Answer</h3>
   {% if q.status == 'answered' %}
   {{ agent_text(q.answer, q.answered_by, names) }}
-  {% if q.agent_status == 'revoked' %}<p class="small-line">Recorded {{ ago(q.answered_at) }}; not delivered because {{ q.agent_name or q.agent_id }} is revoked.</p>
-  {% else %}<p class="small-line">Answered {{ ago(q.answered_at) }}; sent to {{ q.agent_name or q.agent_id }} as a private message.</p>{% endif %}
+  {% include "_answer_note.html" %}
   {% elif q.status == 'pending' %}
-  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer goes to ' ~ (q.agent_name or 'the agent') ~ ' as a private message…', field='answer') }}
+  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer goes to ' ~ (q.agent_name or 'the agent') ~ ' as a prompt, which wakes it if it is connected…', field='answer') }}
   {% else %}<p class="small-line">The agent withdrew this question.</p>{% endif %}
 </section>
 {% endif %}

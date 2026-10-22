@@ -1,0 +1,36 @@
+{% from "_macros.html" import chip, avatar, open_attrs, task_title, agent_text %}
+{#- A prompt's progress (views.prompt): its target, mode and status, the operator's text, and each recipient
+    with its status, its share task (a panel link) and its note. Import with context (it shows `avatars`).
+    A recipient's note is agent-written (labeled), except the hub's own on skipped and timed-out recipients. -#}
+{% macro prompt_card(p, names, full=False) -%}
+<article class="prompt-card">
+  <div class="row"><span><a href="/ui/prompts/{{ p.id }}"><strong>Prompt #{{ p.id }}</strong></a> {{ chip(p.status) }}</span>
+    <span class="small-line">{{ ago(p.created_at) }}</span></div>
+  <div class="small-line">to <a {{ open_attrs(p.target_item, p.target_href) }}>{{ p.target_label }}</a> ·
+    {% if p.mode == 'group' %}several agents: they talk it over and each takes a share{% else %}one agent{% endif %}</div>
+  {% if full %}{{ agent_text(p.body, p.created_by, names) }}{% else %}<div class="ptext">{{ p.body|truncate(200) }}</div>{% endif %}
+  {% set woken = p.recipients|rejectattr('status', 'equalto', 'skipped')|list %}
+  {% if not woken %}<p class="small-line prompt-off">Nobody here was connected, so nobody was woken.{% if p.recipients %} The skipped agents below never got it.{% endif %}</p>
+  {% elif p.status == 'discussing' %}<p class="small-line">Talking it over{% if p.thread_href %} in <a href="{{ p.thread_href }}">the discussion thread</a>{% endif %}; each agent claims a share (a task) or declines.</p>
+  {% elif p.thread_href %}<p class="small-line"><a href="{{ p.thread_href }}">The discussion thread</a></p>{% endif %}
+  <ul class="precipients">
+    {% for r in p.recipients %}
+    <li>{{ avatar(avatars.get(r.agent_id), 24) }}<a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.name }}</a> {{ chip(r.status) }}
+      {%- if r.status == 'skipped' %} <span class="small-line">offline when it was sent, so not woken</span>
+      {%- elif r.status == 'timed_out' %} <span class="small-line">{{ r.note or 'timed out' }}</span>
+      {%- elif r.status == 'pending' %} <span class="small-line">{{ 'deciding' if p.mode == 'group' else 'its runner starts it next' }}</span>
+      {%- elif r.status == 'running' %} <span class="small-line">working on it now</span>{% endif %}
+      {%- if r.task_id %}
+      <div class="small-line">Share: <a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>#{{ r.task_id }} {{ task_title({'title': r.task_title, 'created_by': r.task_by}, names) }}</a></div>{% endif %}
+      {%- if r.note and r.status not in ('skipped', 'timed_out') %}
+      <div class="pnote"><span class="tag">agent text</span> <span class="small-line">note from {{ r.name }}</span><div class="md">{{ r.note|md }}</div></div>{% endif %}
+    </li>
+    {% else %}<li class="small-line">No active agent was here to prompt.</li>{% endfor %}
+  </ul>
+</article>
+{%- endmacro %}
+
+{# One line for the chat window: the target's latest prompt and its status, linking to its page. #}
+{% macro prompt_line(p) -%}
+<p class="mprompt small-line"><a href="/ui/prompts/{{ p.id }}">Prompt #{{ p.id }}</a> {{ chip(p.status) }} · {{ ago(p.created_at) }}</p>
+{%- endmacro %}

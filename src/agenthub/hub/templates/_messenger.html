@@ -1,5 +1,6 @@
-{% from "_macros.html" import open_attrs, chip, task_title %}
+{% from "_macros.html" import open_attrs, chip, task_title, send_and_prompt %}
 {% from "_board.html" import board %}
+{% from "_prompt.html" import prompt_line %}
 {#- The chat window (GET /ui/messenger, GET /ui/messenger/<key>), loaded into <section id="messenger"> by app.js.
     Every row keeps its full page as href (a new tab, or no JavaScript); a tap opens the conversation here.
     A conversation's form posts with HTMX and names it in `messenger`, so the response re-renders it. -#}
@@ -87,12 +88,14 @@
   {% endfor %}
 </ul>
 {% endif %}
+{% for p in prompts %}{{ prompt_line(p) }}{% endfor %}
 {% if action %}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#messenger" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="messenger" value="{{ key }}">
   <textarea name="body" rows="2" maxlength="4000" required aria-label="{{ 'Message to ' ~ title if kind == 'agent' else 'Post to ' ~ title }}" placeholder="{% if kind == 'agent' %}Write to {{ title }}…{% else %}Post a note…{% endif %}"></textarea>
-  <div class="composer-buttons"><button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button></div>
+  {% if prompt %}{% call send_and_prompt(prompt) %}<button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button>{% endcall %}
+  {% else %}<div class="composer-buttons"><button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button></div>{% endif %}
   <p class="small-line">{% if kind == 'agent' %}Private: only you and {{ title }} see it.{% elif kind == 'device' %}Only the agents on this machine and you see it.{% else %}Every agent in the project can read it.{% endif %}</p>
 </form>
 {% elif kind == 'agent' %}<p class="mreadonly muted">{{ title }} is revoked, so this chat is read-only.</p>

@@ -25,8 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agenthub.hub import (
-    approvals, avatar_art, avatars, db, device_board, events, markdown, private, questions, store, task_agents, tasks,
-    views,
+    approvals, avatar_art, avatars, db, device_board, events, markdown, private, prompts, questions, store, task_agents,
+    tasks, views,
 )
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
@@ -338,7 +338,7 @@ def build_router() -> APIRouter:
         tally_chips = [{"pose": p, "count": n, "label": avatar_art.POSE_LABELS[p]}
                        for p, n in sorted(tally.items(), key=lambda kv: avatar_art.POSES.index(kv[0]))]
         return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
-                      tally=tally_chips, questions=questions.pending(conn))
+                      tally=tally_chips, questions=questions.pending(conn), prompts=views.prompt_overview(conn))
 
     @router.get("/projects", response_class=HTMLResponse)
     def projects_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -431,7 +431,8 @@ def build_router() -> APIRouter:
             messages = private.thread(conn, agent_id)
             if messages and shows_page_chat(request):  # the operator is looking at these now
                 private.mark_read_by_operator(conn, agent_id, since_id=messages[0]["id"])
-        return render(request, operator, "chat.html", conn, nav="chats", ag=rows[0], messages=messages)
+        return render(request, operator, "chat.html", conn, nav="chats", ag=rows[0], messages=messages,
+                      prompt=views.prompt_state(conn, f"agent:{agent_id}"))
 
     @router.post("/chats/{agent_id}")
     def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
@@ -466,7 +467,8 @@ def build_router() -> APIRouter:
         next = safe_next(next)
         # HTMX loads just the panel into #compose; a plain link gets the whole page.
         name = "_compose.html" if request.headers.get("hx-request") else "compose.html"
-        return render(request, operator, name, conn, nav="", to=to, next=next, back=next or target_page(to), **reach)
+        return render(request, operator, name, conn, nav="", to=to, next=next, back=next or target_page(to),
+                      prompt=views.prompt_state(conn, to, reach), **reach)
 
     @router.get("/compose/close", response_class=HTMLResponse)
     def compose_close(operator: Op) -> HTMLResponse:
@@ -497,6 +499,23 @@ def build_router() -> APIRouter:
                 for agent_id in chosen:
                     private.send(conn, agent_id, author=operator.actor, body=body)
         return done(request, safe_next(next) or target_page(to))
+
+    # prompts: wake the agents now ----------------------------------------------------------
+
+    @router.post("/prompts")
+    def prompt_create(request: Request, operator: PostOp, conn: Conn,
+                      target: Annotated[str, Form(max_length=200)],
+                      body: Annotated[str, Form(min_length=1, max_length=prompts.MAX_BODY_CHARS)],
+                      panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
+        """Every composer's Prompt button: the same form as its Send, posted here with the composer's ``target``."""
+        written(body)
+        with db.transaction(conn):
+            p = prompts.create(conn, target=target, body=body, actor=operator.actor)
+        return finish(request, operator, conn, panel, next, f"/ui/prompts/{p['id']}", messenger)
+
+    @router.get("/prompts/{prompt_id}", response_class=HTMLResponse)
+    def prompt_page(prompt_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "prompt.html", conn, nav="dashboard", p=views.prompt(conn, prompt_id))
 
     # board (public channels) ----------------------------------
 
@@ -537,7 +556,8 @@ def build_router() -> APIRouter:
     def question_page(qid: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         q = questions.get(conn, qid)
         task = tasks.get_task(conn, q["task_id"]) if q["task_id"] else None
-        return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task)
+        return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task,
+                      answer_prompt=views.answer_prompt(conn, q))
 
     @router.post("/questions/{qid}/answer")
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
@@ -776,6 +796,7 @@ def build_router() -> APIRouter:
             if chat and shows_page_chat(request):  # the pinned chat shows these; older unread ones wait for the full chat
                 private.mark_read_by_operator(conn, agent_id, since_id=chat[0]["id"])
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
+                      prompt=views.prompt_state(conn, f"agent:{agent_id}"),
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
                       chat=chat, pairs=[p for p in views.agent_pairs(conn) if agent_id in (a["id"] for a in p["agents"])])
 

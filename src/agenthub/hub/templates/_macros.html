@@ -3,6 +3,17 @@
 <a class="msg-btn" href="{{ href }}" hx-get="{{ href }}" hx-target="#compose" hx-swap="innerHTML" aria-label="{{ label }}">Message</a>
 {%- endmacro %}
 
+{# Send and Prompt side by side, sharing one form and its textarea: the caller's Send button(s), then Prompt, a
+   second submit button that posts the same form to /ui/prompts (formaction) with this hidden target. `prompt` is
+   views.prompt_state; while nobody there is connected Prompt is disabled and its reason is shown. #}
+{% macro send_and_prompt(prompt) -%}
+<input type="hidden" name="target" value="{{ prompt.target }}">
+<div class="composer-buttons">{{ caller() }}<button type="submit" class="prompt-btn" formaction="/ui/prompts"{% if prompt.reason %} disabled{% endif %}>Prompt</button></div>
+<p class="small-line">Send delivers a message. Prompt wakes the agents now and uses your subscription.</p>
+{%- if prompt.reason %}
+<p class="small-line prompt-off">{{ prompt.reason }}</p>{% endif %}
+{%- endmacro %}
+
 {# A link to an item's full page that opens its slide-in panel instead when JavaScript runs. #}
 {% macro open_attrs(item, href) -%}
 href="{{ href }}" data-panel="{{ item }}"

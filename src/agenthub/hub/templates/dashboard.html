@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% set has_live = true %}
 {% from "_macros.html" import message_button, agent_tasks, approval_summary, avatar, task_title, open_attrs %}
+{% from "_prompt.html" import prompt_card with context %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -23,6 +24,12 @@
       <div class="summary">{{ q.question|truncate(140) }}</div>
       <div class="muted small">from {{ q.agent_name or q.agent_id }} · {{ q.project }} · agent text</div></div></a></li>
   {% endfor %}
+</ul>
+{% set shown = prompts.open + prompts.recent %}
+<div class="section-head"><h2>Prompts{% if prompts.open %} <span class="count">{{ prompts.open|length }} in progress</span>{% endif %}</h2></div>
+{% if not shown %}<p class="empty">No prompts yet. Prompt, next to Send, wakes the agents now.</p>{% endif %}
+<ul class="cards prompts">
+  {% for p in shown %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}
 </ul>
 <div class="section-head"><h2>Agents <span class="count">{{ agents|length }}</span></h2><a href="/ui/agents">All agents</a></div>
 {% if not agents %}<p class="empty">No agents yet. Enroll one from the Agents page.</p>{% endif %}
