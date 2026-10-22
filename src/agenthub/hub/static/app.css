@@ -462,3 +462,26 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .strip-days { display: flex; justify-content: space-between; margin-top: 2px; }
 .strip-table { margin: 10px 0; }
 .strip-table summary { min-height: 44px; display: flex; align-items: center; color: var(--muted); font-size: 0.9rem; }
+
+/* Reports page: tables like the Usage page's; a Claude page is a link card, an HTML page a sandboxed frame. */
+.chip-claude-page { color: var(--accent); }
+.chip-html-page { color: var(--muted); }
+.report-table th[scope="row"] { font-weight: 400; overflow-wrap: anywhere; }
+.report-table td, .report-table th { vertical-align: top; }
+.report-table .report-name { font-weight: 600; margin-right: 4px; }
+.report-table .when-cell { white-space: nowrap; }
+.report-group h2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.report-card { max-width: 40rem; padding: 16px; }
+.report-card-kind { font-size: 0.85rem; color: var(--muted); }
+.report-card-title { font-size: 1.1rem; font-weight: 600; margin: 4px 0; overflow-wrap: anywhere; }
+.report-url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; color: var(--muted);
+  margin: 0 0 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.report-open { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border-radius: 8px;
+  background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
+a.report-open:hover { filter: brightness(1.08); }
+a.report-open:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.report-frame-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 12px 0 6px; }
+.report-frame-bar a { min-height: 44px; display: inline-flex; align-items: center; }
+/* Agent HTML assumes a white page; the frame stays light in dark mode too. */
+.report-frame { display: block; width: 100%; height: 80vh; min-height: 480px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: #fff; color-scheme: light; }

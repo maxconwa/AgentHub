@@ -2,6 +2,7 @@
 {% set has_live = true %}
 {% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, send_and_prompt %}
 {% from "_board.html" import board %}
+{% from "_reports.html" import report_table %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
@@ -84,6 +85,11 @@
 <table class="runs"><thead><tr><th>#</th><th>Outcome</th><th>Turns</th><th>Est. cost</th><th>Started</th></tr></thead><tbody>
   {% for r in runs %}<tr><td>{{ loop.index }}</td><td>{{ r.outcome or 'running' }}</td><td>{{ r.num_turns if r.num_turns is not none else '–' }}</td><td>{% if r.cost_usd is not none %}${{ '%.4f'|format(r.cost_usd) }}{% else %}–{% endif %}</td><td>{{ ago(r.started_at) }}</td></tr>{% endfor %}
 </tbody></table>
+{% endif %}
+
+{% if reports %}
+<h2>Reports</h2>
+{{ report_table(reports, names, show_task=False) }}
 {% endif %}
 
 <h2>Task board</h2>

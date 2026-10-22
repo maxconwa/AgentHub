@@ -1,0 +1,23 @@
+{% from "_macros.html" import open_attrs %}
+
+{% macro kind_chip(r) -%}
+{%- if r.kind == 'claude' %}<span class="chip chip-claude-page">Claude page</span>{% else %}<span class="chip chip-html-page">HTML page</span>{% endif -%}
+{%- endmacro %}
+
+{# Reports as a table, newest first: the Reports page (per project), and the task and project pages. Titles are
+   agent-written (autoescaped); a report's page labels its summary as agent content. #}
+{% macro report_table(rows, names, show_task=True) -%}
+<div class="table-scroll"><table class="runs report-table">
+  <thead><tr><th scope="col">Report</th>{% if show_task %}<th scope="col">Task</th>{% endif %}<th scope="col">By</th><th scope="col">Published</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <th scope="row"><a class="report-name" href="/ui/reports/{{ r.id }}">{{ r.title }}</a> {{ kind_chip(r) }}</th>
+    {% if show_task %}<td>{% if r.task_id %}<a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>#{{ r.task_id }}{% if r.task_title %} <span class="task-title">{{ r.task_title }}</span>{% endif %}</a>{% else %}<span class="muted">–</span>{% endif %}</td>{% endif %}
+    <td><a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.agent_name or who(r.agent_id, names) }}</a></td>
+    <td class="when-cell"><span title="{{ r.created_at }}">{{ ago(r.created_at) }}</span>{% if r.updated_at != r.created_at %}<span class="small-line" title="{{ r.updated_at }}"> · updated {{ ago(r.updated_at) }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{%- endmacro %}

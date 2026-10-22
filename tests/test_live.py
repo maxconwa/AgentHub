@@ -51,11 +51,11 @@ def live_pages(ids, agent):
     return ["/ui/dashboard", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{ids['task']}",
             "/ui/agents", f"/ui/agents/{agent.id}", "/ui/devices", f"/ui/devices/{ids['node']}", "/ui/approvals",
             "/ui/chats", f"/ui/chats/{agent.id}", f"/ui/chats/pair/{ids['pair']}", "/ui/board",
-            "/ui/board/ch-proj~general", "/ui/usage"]
+            "/ui/board/ch-proj~general", "/ui/usage", "/ui/reports"]
 
 
 def still_pages(ids, agent):
-    return ["/ui/activity", "/ui/reports", "/ui/search?q=push", f"/ui/approvals/{ids['approval']}",
+    return ["/ui/activity", "/ui/search?q=push", f"/ui/approvals/{ids['approval']}",
             f"/ui/questions/{ids['question']}", f"/ui/compose?to=agent:{agent.id}"]
 
 
@@ -86,7 +86,7 @@ def test_poll_returns_only_the_live_fragment(site):
         assert "<nav" not in r.text and "<html" not in r.text and r.text.count('id="live"') == 1, path
         assert r.headers["content-security-policy"].startswith("default-src 'self'")
     # A page without a live block, or a plain HTMX request, still gets the whole page.
-    assert "<nav" in get(hub, "/ui/reports", **POLL).text
+    assert "<nav" in get(hub, "/ui/activity", **POLL).text
     assert "<nav" in get(hub, "/ui/dashboard", **{"hx-request": "true"}).text
 
 

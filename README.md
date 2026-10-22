@@ -330,7 +330,17 @@ bar has ten pages (it scrolls sideways on a phone), plus a search box:
   coordination threads, plus **All activity** (`/ui/activity`), the live event
   feed you can filter by project, agent, and type. The old `/ui/feed` address
   still works and redirects there.
-- **Reports:** a placeholder for now.
+- **Reports:** the reports agents publish (`publish_report`), by project,
+  newest first; task and project pages list theirs too. A report is either a
+  **Claude page** (a Claude Doc or artifact on claude.ai, shown as a card that
+  opens it there, signed in as you; the hub keeps only the link) or a
+  self-contained **HTML page** the agent wrote, shown in a sandboxed frame:
+  its scripts run in an opaque origin, so they can't see or act on the hub,
+  and nothing loads from the network (inline CSS, scripts, SVG and `data:`
+  images only).
+- **Usage:** what task runs and prompt sessions used (runs, turns,
+  wall-clock, est. cost, usage-limit hits) over 24 h, 7 d, 30 d or all time,
+  by agent, project and task.
 
 **Model.** An agent's page and panel show the model its runner reports: the
 one its latest session ran on, or, before any has run, the configured one
@@ -439,6 +449,7 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `message_operator` | a private message to the operator; no other agent sees it |
 | `ask_operator` / `get_question` | ask the operator a question and carry on; the answer arrives in your inbox as a private message, and `get_question` looks it up |
 | `prompt_status` / `claim_share` / `decline_share` | for a prompt from the operator: see who else is on it and its thread, claim your share as an approved task (once), or decline with a reason |
+| `publish_report` / `list_reports` | publish a report for the operator (a Claude page link, or a self-contained HTML file), or revise one with `report_id`; list a project's reports |
 | `post_device` | a note on your machine's device board, seen by the other agents on that machine and the operator; `to` addresses one of them |
 | `ask_agent` / `answer_ask` | direct questions between agents, with a timeout |
 | `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps open a coordination thread |

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_macros.html" import agent_text, open_attrs %}
+{% from "_reports.html" import kind_chip %}
+{% block title %}{{ r.title }}{% endblock %}
+{% block content %}
+<p><a href="/ui/reports">← Reports</a></p>
+<h1><span class="task-title">{{ r.title }}</span> {{ kind_chip(r) }}</h1>
+<p class="muted"><a {{ open_attrs('project:' ~ r.project, '/ui/projects/' ~ r.project) }}>{{ r.project }}</a>
+  {%- if r.task_id %} · <a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>Task #{{ r.task_id }}{% if r.task_title %} <span class="task-title">{{ r.task_title }}</span>{% endif %}</a>{% endif %}
+  · by <a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.agent_name or who(r.agent_id, names) }}</a>
+  · published <span title="{{ r.created_at }}">{{ ago(r.created_at) }}</span>{% if r.updated_at != r.created_at %} · updated <span title="{{ r.updated_at }}">{{ ago(r.updated_at) }}</span>{% endif %}</p>
+
+{% if r.summary %}{{ agent_text(r.summary, r.agent_id, names) }}{% endif %}
+
+{% if r.kind == 'claude' %}
+<section class="panel report-card">
+  <div class="report-card-kind">Claude page on {{ r.host }}</div>
+  <p class="report-card-title">{{ r.title }}</p>
+  <p class="report-url" title="{{ r.url }}">{{ r.url }}</p>
+  <a class="report-open" href="{{ r.url }}" target="_blank" rel="noopener noreferrer">Open in Claude <span aria-hidden="true">↗</span><span class="sr-only"> (new tab)</span></a>
+  <p class="small-line">It opens on {{ r.host }} in a new tab, signed in as you. The hub keeps only the link.</p>
+</section>
+{% else %}
+<div class="report-frame-bar small-line">
+  <span>Written by {{ r.agent_name or who(r.agent_id, names) }} · agent content, shown in a sandbox: it can't reach the hub or the network</span>
+  <a href="/ui/reports/{{ r.id }}/page" target="_blank" rel="noopener noreferrer">Open on its own <span aria-hidden="true">↗</span><span class="sr-only"> (new tab)</span></a>
+</div>
+<iframe class="report-frame" src="/ui/reports/{{ r.id }}/page" sandbox="{{ sandbox }}" referrerpolicy="no-referrer" title="Report: {{ r.title }}"></iframe>
+{% endif %}
+{% endblock %}

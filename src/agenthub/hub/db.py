@@ -406,6 +406,25 @@ MIGRATIONS: list[str] = [
     CREATE INDEX prompt_runs_prompt ON prompt_runs(prompt_id, id);
     CREATE INDEX IF NOT EXISTS task_runs_started ON task_runs(started_at);
     """,
+    # 20: reports agents publish (the Reports page): a link to a Claude page or a self-contained HTML page
+    """
+    CREATE TABLE reports (
+        id          INTEGER PRIMARY KEY,
+        project     TEXT NOT NULL REFERENCES projects(name),
+        task_id     INTEGER REFERENCES tasks(id),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        title       TEXT NOT NULL,
+        summary     TEXT NOT NULL DEFAULT '',
+        url         TEXT,
+        html        TEXT,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        CHECK ((url IS NULL) <> (html IS NULL))
+    );
+    CREATE INDEX reports_created ON reports(created_at);
+    CREATE INDEX reports_project ON reports(project, created_at);
+    CREATE INDEX reports_task ON reports(task_id);
+    """,
 ]
 
 

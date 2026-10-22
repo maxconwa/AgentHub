@@ -44,13 +44,15 @@ def world(hub):
     ap = hub.client.post("/api/v1/approvals/command", json={"command": "git push -f origin x", "cwd": "/w"},
                          headers=a.headers).json()
     q = hub.client.post("/api/v1/projects/proj/questions", json={"question": "which?"}, headers=a.headers).json()
+    rep = hub.client.post("/api/v1/reports", json={"project": "proj", "title": "r", "html": "<p>hi</p>"},
+                          headers=a.headers).json()
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
         pr = prompts.create(conn, target=f"agent:{a.id}", body="wake up", actor=OPERATOR)
     node_id = store.get_agent(conn, a.id).device_node_id
     return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id, "node_id": node_id,
-                    "prompt_id": pr["id"],
+                    "prompt_id": pr["id"], "report_id": rep["id"],
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
@@ -60,7 +62,7 @@ def test_route_inventory_is_not_empty(hub):
     assert ("GET", "/ui/activity") in routes and ("GET", "/ui/feed") in routes
     assert ("POST", "/ui/prompts") in routes and ("GET", "/ui/prompts/{prompt_id}") in routes
     assert ("POST", "/ui/prompts/{prompt_id}/withdraw") in routes
-    assert len(routes) == 62, "a route was added or removed: the walk tests cover it, update this count"
+    assert len(routes) == 64, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):
@@ -134,7 +136,7 @@ def test_pages_render_with_security_headers(world):
                  "/ui/activity", "/ui/activity?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
                  "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board",
-                 f"/ui/prompts/{ids['prompt_id']}"]:
+                 f"/ui/prompts/{ids['prompt_id']}", f"/ui/reports/{ids['report_id']}"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
         assert "default-src 'self'" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "DENY"

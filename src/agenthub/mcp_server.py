@@ -18,6 +18,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,6 +35,7 @@ to send them, and `board_get`/`board_put` for shared versioned documents.
 To reply to the operator privately, use `message_operator`.
 To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
 Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
+To show the operator a report (a Claude page you made, or a self-contained HTML page), use `publish_report`.
 When you get a prompt with several recipients, discuss it in its thread, then `claim_share` your part or `decline_share`; `prompt_status` shows who else is on it.
 {untrusted.NOTICE}
 {untrusted.HUMAN_ONLY}
@@ -91,6 +93,31 @@ def _format_approval(a: dict[str, Any]) -> str:
     if a["kind"] == "command" and a["status"] == "approved":
         parts.append("You may now retry the exact same command once, from the same directory.")
     return "\n".join(parts)
+
+
+MAX_REPORT_FILE_BYTES = 8 * 1024 * 1024  # read no further: the hub takes at most 2,000,000 characters of HTML
+
+
+def _read_report_html(path: str) -> str:
+    """The HTML page ``publish_report`` uploads, read from this machine (relative to the session's directory)."""
+    p = Path(path).expanduser()
+    try:
+        if p.stat().st_size > MAX_REPORT_FILE_BYTES:
+            raise ToolError(f"{path} is too big for a report; keep it under 2 MB (or publish a Claude page)")
+        return p.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"{path} is not UTF-8 text") from exc
+    except OSError as exc:
+        raise ToolError(f"cannot read {path}: {exc.strerror or exc}") from exc
+
+
+def _format_report(r: dict[str, Any]) -> str:
+    who = untrusted.author_label(r.get("agent_id"), r.get("agent_name"))
+    task = f" task=#{r['task_id']}" if r["task_id"] else ""
+    header = (f"report #{r['id']} [{'Claude page' if r['kind'] == 'claude' else 'HTML page'}] project={r['project']}"
+              f"{task} updated={r['updated_at']}")
+    text = r["title"] + ("\n\n" + r["summary"] if r.get("summary") else "")
+    return header + "\n" + untrusted.wrap(text, author=who, kind="report", id=r["id"])
 
 
 THREAD_TAIL = 20  # how many of a prompt thread's latest messages prompt_status shows
@@ -290,6 +317,40 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         """As this task's reviewer, record 'approve' or 'changes' with notes. The operator decides what happens next."""
         t = await call(lambda c: c.review_task(task_id, verdict, notes))
         return f"Recorded verdict {verdict!r} on task #{t['id']}; the operator decides what happens next."
+
+    @server.tool()
+    async def publish_report(
+        project: str, title: str, summary: str = "", url: str | None = None, html_file: str | None = None,
+        task_id: int | None = None, report_id: int | None = None,
+    ) -> str:
+        """Publish a report for the operator, listed on the hub's Reports page (and on its task's page).
+
+        Give exactly one of:
+        - `url`: a Claude page you made (a Claude Doc or artifact, https://claude.ai/...). The hub shows a card
+          that opens it on claude.ai.
+        - `html_file`: the path of a self-contained HTML page you wrote. The hub shows it in a sandboxed frame:
+          inline CSS and scripts, inline SVG and data: images work (inline a chart library if you use one);
+          anything fetched from the network (CDN scripts, external images, fonts, fetch/XHR) is blocked.
+          Up to 2,000,000 characters.
+        `summary` (Markdown) is the gist the operator reads first: the result, in a few lines. Set `task_id` if
+        the report belongs to a task. To revise a report you published, pass its `report_id`: the new title,
+        summary and page replace the old ones."""
+        html = None
+        if html_file is not None:
+            html = _read_report_html(html_file)
+        r = await call(lambda c: c.publish_report(project, title, summary=summary, url=url, html=html,
+                                                  task_id=task_id, report_id=report_id))
+        verb = "Updated" if report_id is not None else "Published"
+        where = f" on task #{r['task_id']}" if r["task_id"] else ""
+        return f"{verb} report #{r['id']} in {r['project']}{where}. The operator sees it on the Reports page."
+
+    @server.tool()
+    async def list_reports(project: str, task_id: int | None = None) -> str:
+        """List the reports published in a project (or on one task), newest first, to find one to update."""
+        rows = await call(lambda c: c.list_reports(project, task_id=task_id))
+        if not rows:
+            return "No reports yet."
+        return "\n\n".join([untrusted.NOTICE, *(_format_report(r) for r in rows)])
 
     @server.tool()
     async def request_approval(kind: str, reason: str, project: str | None = None,

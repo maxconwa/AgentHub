@@ -82,7 +82,7 @@ def test_empty_hub_renders(hub):
         r = get(hub, p)
         assert r.status_code == 200
     assert "Nothing needs you" in get(hub, "/ui/dashboard").text
-    assert "Reports and pages your agents make will appear here." in get(hub, "/ui/reports").text
+    assert "No reports yet." in get(hub, "/ui/reports").text
 
 
 def test_no_inline_style_or_script(busy):

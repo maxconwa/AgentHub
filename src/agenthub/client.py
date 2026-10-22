@@ -163,6 +163,23 @@ class HubClient:
             json={"value": value, "expected_version": expected_version},
         )
 
+    # --- reports ---------------------------------------------------------------
+
+    async def publish_report(
+        self, project: str, title: str, *, summary: str = "", url: str | None = None, html: str | None = None,
+        task_id: int | None = None, report_id: int | None = None,
+    ) -> dict[str, Any]:
+        payload = {"project": project, "title": title, "summary": summary, "url": url, "html": html,
+                   "task_id": task_id, "report_id": report_id}
+        return await self._request("POST", "/reports", json=payload)
+
+    async def list_reports(self, project: str, task_id: int | None = None) -> list[dict[str, Any]]:
+        params = {"task_id": task_id} if task_id is not None else {}
+        return (await self._request("GET", f"/projects/{quote(project)}/reports", params=params))["reports"]
+
+    async def get_report(self, report_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/reports/{report_id}")
+
     # --- tasks -----------------------------------------------------------------
 
     async def list_tasks(self, project: str, state: str | None = None, mine: bool = False) -> list[dict[str, Any]]:

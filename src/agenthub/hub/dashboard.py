@@ -25,8 +25,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agenthub.hub import (
-    approvals, avatar_art, avatars, db, device_board, events, markdown, private, prompts, questions, store, task_agents,
-    tasks, usage, views,
+    approvals, avatar_art, avatars, db, device_board, events, markdown, private, prompts, questions, reports, store,
+    task_agents, tasks, usage, views,
 )
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
@@ -152,6 +152,9 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
         late = [f"{', '.join(who(a, names) for a in p.get(k) or [])} {k.replace('_', ' ')}"
                 for k in ("timed_out", "failed", "withdrawn") if p.get(k)]
         return f"prompt #{p.get('prompt_id')} {p.get('status')}" + (f": {'; '.join(late)}" if late else "")
+    if t.startswith("report."):
+        on = f" on task #{p.get('task_id')}" if p.get("task_id") else ""
+        return f"report #{p.get('report_id')} {t.split('.')[1]}{on}: {snippet(p.get('title'))}"
     if t.startswith("question."):
         return f"question #{p.get('question_id')} {t.split('.')[1]} ({who(p.get('agent_id'), names)})"
     if t.startswith("ask."):
@@ -365,7 +368,8 @@ def build_router() -> APIRouter:
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
         messages = store.recent_messages(conn, project=name, channel="general", limit=50)
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
-                      messages=messages, prompt=views.prompt_state(conn, f"project:{name}"))
+                      messages=messages, prompt=views.prompt_state(conn, f"project:{name}"),
+                      reports=reports.list_reports(conn, projects=[name]))
 
     @router.post("/projects/{name}/description")
     def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
@@ -387,7 +391,17 @@ def build_router() -> APIRouter:
 
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "reports.html", conn, nav="reports")
+        return render(request, operator, "reports.html", conn, nav="reports", groups=reports.by_project(conn))
+
+    @router.get("/reports/{report_id}", response_class=HTMLResponse)
+    def report_page(report_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "report.html", conn, nav="reports", r=reports.get(conn, report_id),
+                      sandbox=reports.SANDBOX)
+
+    @router.get("/reports/{report_id}/page", response_class=HTMLResponse)
+    def report_frame(report_id: int, operator: Op, conn: Conn) -> HTMLResponse:
+        # Agent-written HTML, served only with the sandboxing headers (see reports.FRAME_HEADERS).
+        return HTMLResponse(reports.html(conn, report_id), headers=reports.FRAME_HEADERS)
 
     @router.get("/usage", response_class=HTMLResponse)
     def usage_page(request: Request, operator: Op, conn: Conn, window: str = usage.DEFAULT_WINDOW) -> HTMLResponse:
@@ -669,7 +683,8 @@ def build_router() -> APIRouter:
                       usage=tasks.usage(conn, task_id), member_usage=member_usage,
                       messages=store.recent_messages(conn, project=t["project"], channel=f"task-{task_id}", limit=50),
                       moves=operator_moves(t["state"]), agents=agents,
-                      terminal=t["state"] in tasks.TERMINAL, prompt=views.prompt_state(conn, f"task:{task_id}"))
+                      terminal=t["state"] in tasks.TERMINAL, prompt=views.prompt_state(conn, f"task:{task_id}"),
+                      reports=reports.list_reports(conn, task_id=task_id))
 
     @router.post("/tasks/{task_id}/description")
     def task_description(task_id: int, request: Request, operator: PostOp, conn: Conn,

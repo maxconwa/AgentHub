@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, db, device_board, events, intents, private, prompts, questions, store, task_agents, tasks,
+    approvals, asks, db, device_board, events, intents, private, prompts, questions, reports, store, task_agents,
+    tasks,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -270,6 +271,16 @@ class PromptDeclineRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class ReportRequest(BaseModel):
+    project: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=reports.MAX_TITLE_CHARS)
+    summary: str = Field(default="", max_length=reports.MAX_SUMMARY_CHARS)
+    url: str | None = Field(default=None, max_length=reports.MAX_URL_CHARS)
+    html: str | None = Field(default=None, max_length=reports.MAX_HTML_CHARS)
+    task_id: int | None = None
+    report_id: int | None = None
+
+
 class CommandApprovalRequest(BaseModel):
     command: str = Field(min_length=1, max_length=MAX_COMMAND_CHARS)
     cwd: str = Field(min_length=1, max_length=4096)
@@ -305,7 +316,8 @@ def create_app(state: HubState) -> FastAPI:
 
     app = FastAPI(title="agenthub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.hub = state
-    app.add_middleware(BodySizeLimit, max_bytes=state.config.max_body_bytes)
+    app.add_middleware(BodySizeLimit, max_bytes=state.config.max_body_bytes,
+                       larger={"/api/v1/reports": max(reports.MAX_REQUEST_BYTES, state.config.max_body_bytes)})
 
     from fastapi.staticfiles import StaticFiles
 
@@ -508,6 +520,24 @@ def create_app(state: HubState) -> FastAPI:
                 conn, actor=caller.agent.actor, project=project, key=key, value=body.value,
                 expected_version=body.expected_version, device=caller.device.name,
             )
+
+    # --- reports -------------------------------------------------------------
+
+    @app.post(f"{api}/reports", status_code=201)
+    def publish_report(body: ReportRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return reports.publish(conn, caller.agent, project=body.project, title=body.title, summary=body.summary,
+                                   url=body.url, html=body.html, task_id=body.task_id, report_id=body.report_id,
+                                   device=caller.device.name)
+
+    @app.get(f"{api}/projects/{{project}}/reports")
+    def list_reports(project: str, caller: Caller, conn: Conn, task_id: int | None = None) -> dict[str, Any]:
+        require_project(caller, project)
+        return {"reports": reports.list_reports(conn, projects=[project], task_id=task_id)}
+
+    @app.get(f"{api}/reports/{{report_id}}")
+    def get_report(report_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
+        return reports.get_for_agent(conn, report_id, caller.agent)
 
     # --- tasks ---------------------------------------------------------------
 
