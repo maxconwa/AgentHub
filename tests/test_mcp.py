@@ -200,7 +200,7 @@ def _group_prompt(dev_hub, target="project:proj"):
         for name in ("alice", "bob"):
             aid = conn.execute("SELECT id FROM agents WHERE name = ?", (name,)).fetchone()[0]
             task_agents.add_agent(conn, t["id"], aid, role="", stage="works", actor="human:op")
-            conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (aid,))
+            conn.execute("UPDATE agents SET connected = 1, prompt_support = 1 WHERE id = ?", (aid,))
         return prompts.create(conn, target=f"task:{t['id']}" if target == "task" else target,
                               body="Split the OPERATOR-WORDS work.", actor="human:op")
 

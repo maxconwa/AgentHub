@@ -1011,7 +1011,7 @@ class _FakeWs:
 async def test_heartbeat_frame_reports_checkouts_and_newest_running_session_dir(live_hub, fake_claude, tmp_path):
     runner, _ = runner_for(live_hub, tmp_path, fake_claude[0])
     assert runner._heartbeat_frame() == {"type": "heartbeat", "checkouts": {"proj": str(tmp_path / "checkout")},
-                                         "current_dir": None}
+                                         "current_dir": None, "prompts": 1}  # this runner runs prompts
     first, second = object(), object()
     runner._session_dirs[first] = "/a"
     runner._session_dirs[second] = "/b"
@@ -1045,7 +1045,9 @@ async def test_runner_heartbeat_reaches_hub_and_session_dir_is_cleared(live_hub,
 # --- prompts from the operator --------------------------------------------------------
 
 def _connected(hub: LiveHub, agent_id: str) -> bool:
-    return bool(hub.conn().execute("SELECT connected FROM agents WHERE id = ?", (agent_id,)).fetchone()["connected"])
+    """Connected, and its first heartbeat told the hub that this runner runs prompts."""
+    row = hub.conn().execute("SELECT connected, prompt_support FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    return bool(row["connected"] and row["prompt_support"])
 
 
 def _prompt(hub: LiveHub, target: str, body: str = "Check why the nightly build is slow.") -> int:
@@ -1062,7 +1064,7 @@ def _left_running(hub: LiveHub, agent_id: str, body: str = "Rotate the logs.") -
     """A prompt this agent's previous runner process started and never finished."""
     conn = hub.conn()
     with db.transaction(conn):
-        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (agent_id,))
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1 WHERE id = ?", (agent_id,))
     pid = _prompt(hub, f"agent:{agent_id}", body)
     with db.transaction(conn):
         hub_prompts.start(conn, pid, store.get_agent(conn, agent_id))
@@ -1161,6 +1163,32 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert me["status"] == "done" and me["note"] == "Implemented the change and ran the tests."
     assert runner.prompts.store.get(pid) is None  # nothing left to resume
     assert not runner._session_dirs
+
+
+async def test_first_sync_fails_pending_prompts_too_old_to_run(live_hub, fake_claude, tmp_path):
+    """Prompts left pending for more than six hours (e.g. while this runner was down or too old) are failed with
+    the hub's note when the runner starts, not run; newer ones run."""
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1 WHERE id = ?", (agent_cfg.agent_id,))
+    old = _prompt(live_hub, f"agent:{agent_cfg.agent_id}", "Yesterday's request.")
+    recent = _prompt(live_hub, f"agent:{agent_cfg.agent_id}", "This morning's request.")
+    with db.transaction(conn):
+        for pid, hours in ((old, 6.1), (recent, 5.9)):
+            conn.execute("UPDATE prompts SET created_at = ? WHERE id = ?",
+                         (db.now_iso(datetime.now(UTC) - timedelta(hours=hours)), pid))
+        conn.execute("UPDATE agents SET connected = 0 WHERE id = ?", (agent_cfg.agent_id,))
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _prompt_row(live_hub, recent)["status"] == "done"
+                       and _prompt_row(live_hub, old)["status"] == "failed")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert "This morning's request." in call["stdin"]
+    assert _prompt_row(live_hub, old)["recipients"][0]["note"] == "too old when the runner picked it up"
 
 
 async def test_agent_prompt_runs_in_its_current_tasks_checkout(live_hub, fake_claude, tmp_path):

@@ -1,7 +1,9 @@
 """Prompts: the operator wakes agents now.
 
 A prompt goes to the recipients of a message target (:func:`views.recipients`). Recipients
-that aren't connected are kept as ``skipped`` rows so the operator sees who missed it. One
+that aren't connected, or whose runner is too old to run prompts (its heartbeat doesn't say
+``"prompts": 1``, as a v0.1.0 runner's doesn't), are kept as ``skipped`` rows with a note so
+the operator sees who missed it and why. One
 live recipient makes a ``single`` prompt: its runner runs a session on it. Several make a
 ``group`` prompt: they discuss it as equals in one thread (the project channel
 ``prompt-<id>``, or the device board for a device target), and each claims a share (a new,
@@ -19,7 +21,7 @@ statuses and agent ids, never the body.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agenthub.hub import device_board, events, private, store, task_agents, tasks, views
@@ -31,6 +33,10 @@ DEFAULT_DISCUSSION_MINUTES = 30
 OPEN = ("pending", "running")  # recipient statuses that keep a prompt going
 FINISHED = ("done", "failed")  # prompt statuses
 SYSTEM = "system:hub"
+OFFLINE = "offline"
+TOO_OLD = "runner too old for prompts"
+STALE_HOURS = 6  # a runner that starts up fails pending prompts older than this instead of running them
+STALE = "too old when the runner picked it up"
 
 
 def _labeled(pid: int, body: str, limit: int) -> str:
@@ -155,8 +161,9 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
     if not body or len(body) > MAX_BODY_CHARS:
         raise Invalid(f"a prompt must be 1 to {MAX_BODY_CHARS} characters")
     found = views.recipients(conn, target)
-    live = [a for a in found["agents"] if a["connected"]]
-    offline = [a for a in found["agents"] if not a["connected"]]
+    live = [a for a in found["agents"] if views.wakeable(a)]
+    offline = [a for a in found["agents"] if not views.wakeable(a)]
+    too_old = [a for a in offline if a["connected"]]
     kind, _, key = target.partition(":")
     project = found["board"][0] if found["board"] else None  # task and project targets
     mode = "group" if len(live) > 1 else "single"
@@ -167,10 +174,11 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (target, body, mode, project, status, actor, ts, ts if not live else None))
     pid = cur.lastrowid
     for a in found["agents"]:
+        woken = views.wakeable(a)
         conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, note, updated_at) "
                      "VALUES (?, ?, ?, ?, ?)",
-                     (pid, a["id"], "pending" if a["connected"] else "skipped",
-                      "" if a["connected"] else "offline", ts))
+                     (pid, a["id"], "pending" if woken else "skipped",
+                      "" if woken else TOO_OLD if a["connected"] else OFFLINE, ts))
     if mode == "group":
         if kind == "device":
             device_board.post(conn, key, author=actor, body=_labeled(pid, body, device_board.MAX_BODY_CHARS))
@@ -184,7 +192,7 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
         private.send(conn, a["id"], author=actor, body=_labeled(pid, body, private.MAX_BODY_CHARS), prompt_id=pid)
     events.emit(conn, type="prompt.created", actor=actor, project=project,
                 payload={"prompt_id": pid, "mode": mode, "status": status, "agents": [a["id"] for a in live],
-                         "skipped": [a["id"] for a in offline]})
+                         "skipped": [a["id"] for a in offline], "too_old": [a["id"] for a in too_old]})
     return get(conn, pid)
 
 
@@ -200,12 +208,23 @@ def start(conn: sqlite3.Connection, pid: int, agent: Agent) -> dict[str, Any]:
     return get_for_agent(conn, pid, agent)
 
 
-def finish(conn: sqlite3.Connection, pid: int, agent: Agent, *, ok: bool, note: str = "") -> dict[str, Any]:
+def finish(
+    conn: sqlite3.Connection, pid: int, agent: Agent, *, ok: bool, note: str = "", stale: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """``agent``'s session on the prompt ended. A recipient that already claimed, declined or timed out
-    keeps that status (the call changes nothing)."""
-    _, mine = _own(conn, pid, agent)
+    keeps that status (the call changes nothing).
+
+    ``stale``: its runner, starting up, found the prompt too old to run; the hub checks that it is still pending
+    and older than :data:`STALE_HOURS` (Conflict otherwise) and fails it with its own note."""
+    p, mine = _own(conn, pid, agent)
     if mine["status"] not in OPEN:
         return get_for_agent(conn, pid, agent)
+    if stale:
+        cutoff = now_iso((now or datetime.now(UTC)) - timedelta(hours=STALE_HOURS))
+        if mine["status"] != "pending" or p["created_at"] >= cutoff:
+            raise Conflict(f"prompt {pid} is not too old to run")
+        ok, note = False, STALE
     status = "done" if ok else "failed"
     _set_recipient(conn, pid, agent.id, status, note=note)
     _emit(conn, _settle(conn, pid), actor=agent.id, agent_id=agent.id, recipient_status=status)

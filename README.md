@@ -51,6 +51,18 @@ uv tool install "git+https://github.com/maxconwa/AgentHub@v0.1.0"
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
 every machine, and Claude Code on the agent machines.
 
+### Upgrading
+
+**Upgrade the runners with the hub.** Install the same release on the hub
+machine and on every agent machine, then restart the hub and each runner. The
+hub migrates its database on start. A runner from v0.1.0 keeps working for
+tasks, but it can't run prompts: its heartbeat doesn't say it can, so the hub
+never wakes that agent with **Prompt** (it shows as skipped, "runner too old
+for prompts", and the Prompt hint names it), and answers to its questions go
+as private messages. When an upgraded runner starts, it fails prompts that
+have waited more than six hours ("too old when the runner picked it up")
+instead of running them.
+
 ## Setup
 
 ### 1. Tailscale policy
@@ -183,8 +195,8 @@ delivered as mail: a busy agent's current session never acts on it early. If you
 several agents (a task, a project, a machine), they talk it over in a shared
 thread, weigh who is free and what each machine has, and each claims its share
 as a task that is already approved (it came from you), assigned to that agent
-with the role "Share of prompt #N". Agents that are offline are skipped, and the
-prompt's page says which. Follow a prompt on its page (`/ui/prompts/N`) or in the
+with the role "Share of prompt #N". Agents that are offline, or whose runner is
+too old to run prompts, are skipped, and the prompt's page says which. Follow a prompt on its page (`/ui/prompts/N`) or in the
 Dashboard's **Prompts** section. A group discussion that hasn't finished after
 `prompt_discussion_minutes` (`hub.toml`, default 30) marks the agents that
 haven't decided as timed out.

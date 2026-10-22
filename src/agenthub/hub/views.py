@@ -30,11 +30,13 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
         open_tasks.setdefault(r["agent_id"], []).append(
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
              "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
-    cols = "id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir FROM agents "
+    cols = ("id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir, "
+            "prompt_support FROM agents ")
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
             else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
     return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"], "device_node_id": r["device_node_id"],
-             "connected": bool(r["connected"]), "last_heartbeat": r["last_heartbeat"],
+             "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]),
+             "last_heartbeat": r["last_heartbeat"],
              "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
              "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
 
@@ -165,22 +167,37 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
     return {"label": label, "agents": agents, "board": board}
 
 
+def wakeable(agent: dict[str, Any]) -> bool:
+    """Whether a prompt wakes this :func:`agent_rows` agent: connected, with a runner that runs prompts."""
+    return agent["connected"] and agent["prompts"]
+
+
+def _and(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def prompt_state(conn: sqlite3.Connection, target: str, found: dict[str, Any] | None = None) -> dict[str, Any]:
-    """What a Prompt button to ``target`` needs: ``{target, label, wakes, reason}``. ``label`` is the
-    :func:`recipients` label, ``wakes`` the names of its connected agents (whom Prompt wakes), ``reason`` why
-    Prompt is off (none of them is connected), else None. ``found`` is that :func:`recipients` result if known."""
+    """What a Prompt button to ``target`` needs: ``{target, label, wakes, too_old, reason}``. ``label`` is the
+    :func:`recipients` label, ``wakes`` the names of its agents Prompt wakes (:func:`wakeable`), ``too_old`` those
+    connected with a runner too old to run prompts (they are skipped), ``reason`` why Prompt is off (nobody to
+    wake), else None. ``found`` is that :func:`recipients` result if known."""
     found = found or recipients(conn, target)
     agents = found["agents"]
-    wakes = [a["name"] for a in agents if a["connected"]]
+    wakes = [a["name"] for a in agents if wakeable(a)]
+    too_old = [a["name"] for a in agents if a["connected"] and not a["prompts"]]
     if wakes:
         reason = None
     elif not agents:
         reason = "Prompt is off: there is no active agent here to wake."
+    elif len(too_old) == 1:
+        reason = f"Prompt is off: {too_old[0]}'s runner is too old for prompts; upgrade it."
+    elif too_old:
+        reason = f"Prompt is off: the runners of {_and(too_old)} are too old for prompts; upgrade them."
     elif len(agents) == 1:
         reason = f"Prompt is off: {agents[0]['name']} is not connected right now."
     else:
         reason = "Prompt is off: none of the agents here is connected right now."
-    return {"target": target, "label": found["label"], "wakes": wakes, "reason": reason}
+    return {"target": target, "label": found["label"], "wakes": wakes, "too_old": too_old, "reason": reason}
 
 
 def board_prompt_target(conn: sqlite3.Connection, project: str, channel: str) -> str | None:

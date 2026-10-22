@@ -1,7 +1,7 @@
 """Questions an agent asks the operator (the ``ask_operator`` tool).
 
 A pending question waits in the approval queue; the operator's answer goes back
-to the asking agent. An idle agent (connected, with no task run and no prompt open) gets
+to the asking agent. An idle agent (connected with a runner that runs prompts, with no task run and no prompt open) gets
 it as a single prompt (``Answer to your question #N: …``), so it wakes on it now; the
 prompt also puts it in the agent's private chat. Any other agent gets it as a plain
 private message, which its Stop hook or its next session delivers: an offline agent
@@ -110,10 +110,11 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
 
 
 def _idle(conn: sqlite3.Connection, agent: Agent) -> bool:
-    """Whether a prompt would wake ``agent`` now: active and connected, with no task run going and no prompt
-    pending or running (a pending one runs next, and its session reads the answer from the inbox anyway)."""
+    """Whether a prompt would wake ``agent`` now: active and connected with a runner that runs prompts, with no
+    task run going and no prompt pending or running (a pending one runs next, and its session reads the answer
+    from the inbox anyway)."""
     row = conn.execute(
-        "SELECT a.status = 'active' AND a.connected = 1 "
+        "SELECT a.status = 'active' AND a.connected = 1 AND a.prompt_support = 1 "
         "AND NOT EXISTS (SELECT 1 FROM task_runs WHERE agent_id = a.id AND ended_at IS NULL) "
         "AND NOT EXISTS (SELECT 1 FROM prompt_recipients WHERE agent_id = a.id AND status IN ('pending', 'running')) "
         "FROM agents a WHERE a.id = ?", (agent.id,)).fetchone()

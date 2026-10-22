@@ -371,6 +371,10 @@ MIGRATIONS: list[str] = [
         AND substr(private_messages.body, 1, length('Prompt #' || p.id || ': ')) = 'Prompt #' || p.id || ': '
     ) WHERE author LIKE 'human:%' AND body LIKE 'Prompt #%';
     """,
+    # 16: whether the agent's runner runs prompts (its heartbeat says "prompts": 1; a v0.1.0 runner's doesn't)
+    """
+    ALTER TABLE agents ADD COLUMN prompt_support INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

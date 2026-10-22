@@ -125,8 +125,11 @@ class HubClient:
     async def start_prompt(self, prompt_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/prompts/{prompt_id}/start")
 
-    async def finish_prompt(self, prompt_id: int, ok: bool, note: str = "") -> dict[str, Any]:
-        return await self._request("POST", f"/prompts/{prompt_id}/finish", json={"ok": ok, "note": note})
+    async def finish_prompt(self, prompt_id: int, ok: bool, note: str = "", *, stale: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {"ok": ok, "note": note}
+        if stale:  # too old to run when this runner started; the hub checks and writes the note
+            payload["stale"] = True
+        return await self._request("POST", f"/prompts/{prompt_id}/finish", json=payload)
 
     async def claim_share(self, prompt_id: int, title: str, body: str = "", project: str | None = None
                           ) -> dict[str, Any]:

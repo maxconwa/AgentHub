@@ -638,7 +638,7 @@ def reach(hub):
     p, r = hub.enroll("newbie"), hub.enroll("gone")
     conn = hub.conn()
     with db.transaction(conn):
-        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (a.id,))
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1 WHERE id = ?", (a.id,))
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Fix login", assignee=None)
         for ag in (a, b, p, r):
             task_agents.add_agent(conn, t["id"], ag.id, role="r", stage="works", actor=OPERATOR)
@@ -863,7 +863,7 @@ def side(hub):
     hub.set_status(r, "revoked")
     conn = hub.conn()
     with db.transaction(conn):
-        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (a.id,))
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1 WHERE id = ?", (a.id,))
         t = tasks.create_task(conn, actor=a.id, project="proj", title="Fix <b>login</b>", assignee=None)
         task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
         task_agents.add_agent(conn, t["id"], c.id, role="", stage="reviews", actor=OPERATOR)
@@ -1545,11 +1545,12 @@ def test_buttons_step_aside_for_the_compose_sheet(hub):
 PROMPT_HINT = "Prompt wakes the agents now and uses your subscription."
 
 
-def online(hub, *agents, connected=True):
+def online(hub, *agents, connected=True, prompts=True):
     conn = hub.conn()
     with db.transaction(conn):
         for ag in agents:
-            conn.execute("UPDATE agents SET connected = ? WHERE id = ?", (int(connected), ag.id))
+            conn.execute("UPDATE agents SET connected = ?, prompt_support = ? WHERE id = ?",
+                         (int(connected), int(prompts), ag.id))
 
 
 def prompt_buttons(html):
@@ -1796,6 +1797,14 @@ def test_answer_to_an_offline_agent_is_a_private_message_not_a_prompt(window):
     since = last_event(hub)
     assert answer(hub, q2["id"], "9090").status_code == 303
     assert_answered_privately(hub, c, q2["id"], "9090", since)
+
+
+def test_answer_to_an_agent_whose_runner_is_too_old_is_a_private_message(window):
+    hub, a, c, r, t, ap, q = window
+    online(hub, a, prompts=False)  # connected, but its v0.1.0 runner never runs prompts
+    since = last_event(hub)
+    assert answer(hub, q["id"], "Use 8080").status_code == 303
+    assert_answered_privately(hub, a, q["id"], "Use 8080", since)
 
 
 @pytest.mark.parametrize("busy_with", ["task_run", "running_prompt", "pending_prompt"])

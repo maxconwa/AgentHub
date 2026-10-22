@@ -14,7 +14,7 @@
 {%- if prompt.reason %}
 <p class="small-line prompt-off">{{ prompt.reason }}</p>
 {%- else %}
-<p class="small-line prompt-wakes">Prompt wakes: {{ prompt.label }} ({{ prompt.wakes|join(', ') }})</p>{% endif %}
+<p class="small-line prompt-wakes">Prompt wakes: {{ prompt.label }} ({{ prompt.wakes|join(', ') }}){% if prompt.too_old %}; not {{ prompt.too_old|join(', ') }} (runner too old for prompts; upgrade it){% endif %}</p>{% endif %}
 {%- endmacro %}
 
 {# A link to an item's full page that opens its slide-in panel instead when JavaScript runs. #}

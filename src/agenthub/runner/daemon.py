@@ -254,10 +254,11 @@ class Runner:
                 raise Revoked(ws.close_reason or "revoked")
 
     def _heartbeat_frame(self) -> dict[str, Any]:
-        """Tells the hub where this runner's checkouts are and where its newest running session works."""
+        """Tells the hub where this runner's checkouts are, where its newest running session works, and that it
+        runs prompts (``"prompts": 1``; without it the hub doesn't wake this agent with prompts)."""
         dirs = list(self._session_dirs.values())
         return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
-                "current_dir": dirs[-1] if dirs else None}
+                "current_dir": dirs[-1] if dirs else None, "prompts": 1}
 
     async def _heartbeat(self, ws) -> None:
         while True:

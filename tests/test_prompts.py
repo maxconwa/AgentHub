@@ -19,11 +19,13 @@ SECRET = "SECRET-PROMPT-TEXT"
 CFG = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="ops-x1")
 
 
-def online(hub, *agents, connected=True):
+def online(hub, *agents, connected=True, prompts=True):
+    """Connect agents (as far as the hub knows); ``prompts``: their runner said it runs prompts."""
     conn = hub.conn()
     with db.transaction(conn):
         for a in agents:
-            conn.execute("UPDATE agents SET connected = ? WHERE id = ?", (int(connected), a.id))
+            conn.execute("UPDATE agents SET connected = ?, prompt_support = ? WHERE id = ?",
+                         (int(connected), int(prompts), a.id))
 
 
 def same_device(hub, node, *agents):
@@ -293,6 +295,88 @@ def test_private_copy_is_not_unread_mail_for_a_busy_agent(trio):
     assert [m["prompt_id"] for m in chat] == [None, p["id"]]
     html = hub.client.get(f"/ui/chats/{a.id}", headers=hub.op_headers()).text
     assert SECRET in html and f'href="/ui/prompts/{p["id"]}"' in html
+
+
+def test_connected_agent_whose_runner_is_too_old_is_skipped(trio):
+    """A v0.1.0 runner neither runs prompts nor polls for them: its agent is not woken, and the operator is told."""
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, prompts=False)
+    online(hub, b)
+    p = create(hub, f"task:{t['id']}")
+    assert (p["mode"], p["status"]) == ("single", "pending")
+    assert {r["agent_id"]: (r["status"], r["note"]) for r in p["recipients"]} == {
+        a.id: ("skipped", "runner too old for prompts"), b.id: ("pending", ""), c.id: ("skipped", "offline")}
+    assert [m["agent_id"] for m in hub.conn().execute("SELECT agent_id FROM private_messages")] == [b.id]
+    ev = prompt_events(hub, p["id"])[0]
+    assert ev["payload"]["agents"] == [b.id] and sorted(ev["payload"]["skipped"]) == sorted([a.id, c.id])
+    assert ev["payload"]["too_old"] == [a.id]
+    assert api(hub, a, "GET", "/pending").json()["prompts"] == []
+    msg = build_notification(ev, {a.id: "alice", b.id: "bob", c.id: "carol"}, CFG)
+    assert msg["title"] == f"Prompt #{p['id']}: carol offline, skipped; alice runner too old for prompts, skipped"
+    html = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
+    assert "runner too old for prompts" in html
+    online(hub, b, connected=False)
+    p = create(hub, f"agent:{a.id}")
+    assert p["status"] == "failed" and p["recipients"][0]["note"] == "runner too old for prompts"
+    msg = build_notification(prompt_events(hub, p["id"])[0], {a.id: "alice"}, CFG)
+    assert msg["title"] == f"Prompt #{p['id']}: alice runner too old for prompts, skipped; nobody could be woken"
+
+
+def test_prompt_button_names_agents_whose_runner_is_too_old(trio):
+    from agenthub.hub import views
+
+    hub, a, b, c = trio
+    t = mk_task(hub, a, b, c)
+    online(hub, a, prompts=False)
+    online(hub, b)
+    state = views.prompt_state(hub.conn(), f"task:{t['id']}")
+    assert state["wakes"] == ["bob"] and state["too_old"] == ["alice"] and state["reason"] is None
+    html = hub.client.get(f"/ui/tasks/{t['id']}", headers=hub.op_headers()).text
+    assert "Prompt wakes: task #" in html and "not alice (runner too old for prompts; upgrade it)" in html
+    online(hub, b, prompts=False)
+    state = views.prompt_state(hub.conn(), f"task:{t['id']}")
+    assert state["wakes"] == [] and state["reason"] == (
+        "Prompt is off: the runners of alice and bob are too old for prompts; upgrade them.")
+    state = views.prompt_state(hub.conn(), f"agent:{a.id}")
+    assert state["reason"] == "Prompt is off: alice's runner is too old for prompts; upgrade it."
+
+
+def test_heartbeat_tells_the_hub_whether_the_runner_runs_prompts(trio):
+    """Set by a heartbeat with ``"prompts": 1``, cleared by one without it (a v0.1.0 runner's, which still works)."""
+    hub, a, b, c = trio
+
+    def support():
+        return hub.conn().execute("SELECT prompt_support FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
+
+    assert support() == 0
+    with hub.client.websocket_connect("/api/v1/ws", headers=a.headers) as ws:
+        ws.receive_json()
+        for frame, expected in (({"prompts": 1}, 1), ({"checkouts": {"proj": "/w"}, "current_dir": None}, 0),
+                                ({"checkouts": {"proj": "/w"}, "current_dir": None, "prompts": 1}, 1), ({}, 0),
+                                ({"prompts": 1}, 1), ({"prompts": "yes"}, 0)):
+            ws.send_json({"type": "heartbeat", **frame})
+            assert ws.receive_json()["type"] == "heartbeat_ack"
+            assert support() == expected, frame
+    row = hub.conn().execute("SELECT checkouts, last_heartbeat FROM agents WHERE id = ?", (a.id,)).fetchone()
+    assert json.loads(row["checkouts"]) == {"proj": "/w"} and row["last_heartbeat"]
+
+
+def test_a_runner_fails_a_prompt_that_was_too_old_when_it_picked_it_up(trio):
+    hub, a, b, c = trio
+    online(hub, a)
+    old, fresh = create(hub, f"agent:{a.id}"), create(hub, f"agent:{a.id}")
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE prompts SET created_at = ? WHERE id = ?",
+                     (db.now_iso(datetime.now(UTC) - timedelta(hours=6, minutes=1)), old["id"]))
+    r = api(hub, a, "POST", f"/{fresh['id']}/finish", json={"ok": False, "stale": True})
+    assert r.status_code == 409  # the hub checks the age itself
+    r = api(hub, a, "POST", f"/{old['id']}/finish", json={"ok": True, "note": "ignored", "stale": True})
+    assert r.status_code == 200 and r.json()["my_status"] == "failed" and r.json()["status"] == "failed"
+    assert prompts.get(conn, old["id"])["recipients"][0]["note"] == "too old when the runner picked it up"
+    api(hub, a, "POST", f"/{fresh['id']}/start")
+    assert api(hub, a, "POST", f"/{fresh['id']}/finish", json={"ok": False, "stale": True}).status_code == 409
 
 
 def test_long_private_copy_is_truncated_with_a_pointer(trio):

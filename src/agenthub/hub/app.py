@@ -244,6 +244,8 @@ class DiscussionRequest(BaseModel):
 class PromptFinishRequest(BaseModel):
     ok: bool
     note: str = Field(default="", max_length=4000)
+    # The runner found the prompt too old to run when it started (the hub checks the age and writes the note).
+    stale: bool = False
 
 
 class PromptClaimRequest(BaseModel):
@@ -454,7 +456,7 @@ def create_app(state: HubState) -> FastAPI:
     @app.post(f"{api}/prompts/{{prompt_id}}/finish")
     def finish_prompt(prompt_id: int, body: PromptFinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
         with db.transaction(conn):
-            return prompts.finish(conn, prompt_id, caller.agent, ok=body.ok, note=body.note)
+            return prompts.finish(conn, prompt_id, caller.agent, ok=body.ok, note=body.note, stale=body.stale)
 
     @app.post(f"{api}/prompts/{{prompt_id}}/claim", status_code=201)
     def claim_share(prompt_id: int, body: PromptClaimRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -761,14 +763,18 @@ def create_app(state: HubState) -> FastAPI:
                 await websocket.close(code=CLOSE_REVOKED, reason="agent is no longer active")
                 return
             # One write per heartbeat; the directories ride along only when they differ from what is stored.
+            # A runner that runs prompts says "prompts": 1 on every heartbeat; an older runner's heartbeat lacks it
+            # (and otherwise works as before), so its agent isn't woken by prompts.
+            prompt_support = 1 if message.get("prompts") == 1 else 0
             dirs = _reported_dirs(message)
             if dirs is not None and not conn.execute(
                     "SELECT 1 FROM agents WHERE id = ? AND checkouts IS ? AND current_dir IS ?",
                     (agent_id, *dirs)).fetchone():
-                conn.execute("UPDATE agents SET last_heartbeat = ?, checkouts = ?, current_dir = ? WHERE id = ?",
-                             (db.now_iso(), *dirs, agent_id))
+                conn.execute("UPDATE agents SET last_heartbeat = ?, prompt_support = ?, checkouts = ?, current_dir = ? "
+                             "WHERE id = ?", (db.now_iso(), prompt_support, *dirs, agent_id))
             else:
-                conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
+                conn.execute("UPDATE agents SET last_heartbeat = ?, prompt_support = ? WHERE id = ?",
+                             (db.now_iso(), prompt_support, agent_id))
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 
     # --- search --------------------------------------------------------------

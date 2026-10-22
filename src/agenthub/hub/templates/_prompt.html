@@ -16,7 +16,8 @@
   <ul class="precipients">
     {% for r in p.recipients %}
     <li>{{ avatar(avatars.get(r.agent_id), 24) }}<a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.name }}</a> {{ chip(r.status) }}
-      {%- if r.status == 'skipped' %} <span class="small-line">offline when it was sent, so not woken</span>
+      {%- if r.status == 'skipped' and r.note == 'runner too old for prompts' %} <span class="small-line">runner too old for prompts (upgrade it), so not woken</span>
+      {%- elif r.status == 'skipped' %} <span class="small-line">offline when it was sent, so not woken</span>
       {%- elif r.status == 'timed_out' %} <span class="small-line">{{ r.note or 'timed out' }}</span>
       {%- elif r.status == 'pending' %} <span class="small-line">{{ 'deciding' if p.mode == 'group' else 'its runner starts it next' }}</span>
       {%- elif r.status == 'running' %} <span class="small-line">working on it now</span>{% endif %}

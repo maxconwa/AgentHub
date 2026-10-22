@@ -97,10 +97,14 @@ def _prompt_notification(etype: str, p: dict[str, Any], names: dict[str, str], b
 
     parts = []
     if etype == "prompt.created":
-        if p.get("skipped"):
-            parts.append(f"{listed(p['skipped'])} offline, skipped")
+        too_old = list(p.get("too_old") or ())
+        offline = [a for a in p.get("skipped") or () if a not in too_old]
+        if offline:
+            parts.append(f"{listed(offline)} offline, skipped")
+        if too_old:
+            parts.append(f"{listed(too_old)} runner too old for prompts, skipped")
         if p.get("status") == "failed":
-            parts.append("nobody was online" if p.get("skipped") else "nobody to prompt")
+            parts.append("nobody could be woken" if too_old else "nobody was online" if offline else "nobody to prompt")
     failed = list(p.get("failed") or ())
     if p.get("recipient_status") == "failed" and p.get("agent_id"):
         failed.append(p["agent_id"])
