@@ -33,7 +33,6 @@
   <li class="card agent-card{{ ' is-failed' if ag.avatar and ag.avatar.pose == 'failed' }}" {{ fail_attrs('agent:' ~ ag.id, ag.avatar and ag.avatar.pose == 'failed') }} data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 64, scene=True) }}
     <div class="info"><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a>
       {{ agent_tasks(ag, names, path) }}
-      <div class="small-line">on {{ ag.device }}</div>
       </div></li>
   {% endfor %}
 </ul>

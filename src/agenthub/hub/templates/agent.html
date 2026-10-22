@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, prompt_only %}
+{% from "_macros.html" import chip, avatar, task_title, task_fact_rows, approval_summary, open_attrs, prompt_only %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -31,7 +31,8 @@
 <section class="panel">
   <h3>Tasks</h3>
   {% for t in ag.tasks %}
-  <p class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
+  <div class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}
+    <dl class="agent-facts">{{ task_fact_rows(t) }}{% if t.role %}<dt>Stage</dt><dd>{{ t.stage }}</dd>{% endif %}</dl></div>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
 

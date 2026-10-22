@@ -72,10 +72,26 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {%- endmacro %}
 
 
+{# A task's Project and Role rows (Stage when it has no role) for an agent-facts list. #}
+{% macro task_fact_rows(t) -%}
+<dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></dd>
+{% if t.role %}<dt>Role</dt><dd>{{ t.role }}</dd>{% else %}<dt>Stage</dt><dd>{{ t.stage }}</dd>{% endif %}
+{%- endmacro %}
+
+{# An agent card's facts, one per line: Task, Project and Role for each current task, then
+   Device (the short host; the full name in title) and Folder once. An agent with no task has only the last two. #}
 {% macro agent_tasks(ag, names, next) -%}
 {% for t in ag.tasks %}
-<div class="small-line"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
-{% else %}<div class="small-line">No current task</div>{% endfor %}
+<dl class="agent-facts">
+  <dt>Task</dt><dd><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></dd>
+  {{ task_fact_rows(t) }}
+</dl>
+{% endfor %}
+{%- set folder = ag.current_dir or (ag.checkouts.values() | join(', ')) %}
+<dl class="agent-facts">
+  <dt>Device</dt><dd{% if ag.device and (ag.device | short_host) != ag.device %} title="{{ ag.device }}"{% endif %}>{{ ag.device | short_host }}</dd>
+  <dt>Folder</dt>{% if folder %}<dd class="folder" title="{{ folder }}">{{ folder }}</dd>{% else %}<dd>No checkouts reported</dd>{% endif %}
+</dl>
 {%- endmacro %}
 
 {# What an approval asks for, by kind: shared by the approval page and its slide-in panel so both show the same

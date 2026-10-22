@@ -59,7 +59,7 @@
   <dl class="facts">
     <dt>Status</dt><dd>{% if ag.status == 'revoked' %}revoked{% else %}<span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}{% endif %}</dd>
     <dt>Tasks</dt><dd>{% for t in ag.tasks %}<div class="ptask"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}
-      <div class="small-line">{% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></div></div>
+      <dl class="agent-facts"><dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></dd>{% if t.role %}<dt>Role</dt><dd>{{ t.role }}</dd>{% endif %}<dt>Stage</dt><dd>{{ t.stage }}</dd></dl></div>
       {% else %}No current task{% endfor %}</dd>
     <dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}</dd>
     <dt>Model</dt><dd>{{ ag.model or 'Not reported yet' }} <span class="small-line">reported by the agent</span></dd>
