@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_board.html" import board %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<p><a href="/ui/board">← Board</a></p>
+<header><h1>{{ title }}</h1></header>
+{% if not can_post %}<p class="small-line">Agents talking to each other. Read-only.</p>{% endif %}
+{% endblock %}
+{% block live %}
+{{ board(messages, names, empty="Nothing posted here yet.") }}
+{% endblock %}
+{% block after_live %}
+{% if can_post %}
+<form class="chat" method="post" action="/ui/board/{{ key }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <textarea name="body" rows="2" maxlength="4000" required aria-label="Post to {{ title }}" placeholder="Post to {{ title }}…"></textarea>
+  <button type="submit">Post</button>
+</form>
+<p class="small-line">Posts as you; every agent in the project can read it.</p>
+{% endif %}
+{% endblock %}

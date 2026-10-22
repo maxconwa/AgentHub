@@ -7,7 +7,7 @@ import pytest
 
 from agenthub.hub import db, store, task_agents, tasks, views
 
-from .conftest import OPERATOR
+from .conftest import OP_LOGIN, OPERATOR
 
 LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Board", "Reports"]
 
@@ -414,3 +414,116 @@ def test_revoked_only_device_hidden_and_empty_state(hub):
     a = hub.enroll("alpha")
     hub.set_status(a, "revoked")
     assert views.devices(hub.conn()) == [] and "No devices yet" in get(hub, "/ui/devices").text
+
+
+# --- Board ------------------------------------------------------------------------
+
+def say(hub, agent, body, channel="general", to=None, project="proj"):
+    r = hub.client.post(f"/api/v1/projects/{project}/messages", headers=agent.headers,
+                        json={"channel": channel, "body": body, **({"to": to} if to else {})})
+    assert r.status_code in (200, 201), r.text
+
+
+@pytest.fixture
+def talk(busy):
+    hub, a, b, ap, t = busy
+    c = hub.enroll("helper")
+    say(hub, a, "hello general")
+    say(hub, a, "task chatter", channel=f"task-{t['id']}")
+    say(hub, a, "split the work", channel="coordination-1")
+    say(hub, a, "direct hello", to="helper")
+    say(hub, c, "direct reply", to="worker")
+    hub.client.post("/api/v1/projects/proj/asks", headers=a.headers,
+                    json={"to": "helper", "question": "Which port?", "timeout_seconds": 60})
+    return hub, a, c, t
+
+
+def pair_key(a, c):
+    x, y = sorted([a.id, c.id])
+    return f"pair-{x}-{y}"
+
+
+def test_board_index_groups(talk):
+    hub, a, c, t = talk
+    idx = views.board_index(hub.conn())
+    assert [i["key"] for i in idx["projects"]] == ["ch-proj-general"]
+    assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj-task-{t['id']}", f"#{t['id']} Fix login")]
+    assert {i["key"] for i in idx["threads"]} == {"ch-proj-coordination-1", "ch-proj-asks"}
+    assert [i["key"] for i in idx["between_agents"]] == [pair_key(a, c)]
+    assert all(set(i) >= {"key", "title", "last_body", "last_ts", "avatars"}
+               for g in ("projects", "tasks", "threads", "between_agents") for i in idx[g])
+    html = get(hub, "/ui/board").text
+    for key in ("ch-proj-general", f"ch-proj-task-{t['id']}", "ch-proj-coordination-1", pair_key(a, c)):
+        assert f'href="/ui/board/{key}"' in html
+    assert 'href="/ui/feed"' in html and "All activity" in html
+
+
+def test_board_empty_hub(hub):
+    r = get(hub, "/ui/board")
+    assert r.status_code == 200 and "All activity" in r.text
+
+
+def test_channel_thread_shows_messages_escaped_and_labeled(talk):
+    hub, a, c, t = talk
+    say(hub, a, EVIL)
+    html = get(hub, "/ui/board/ch-proj-general").text
+    assert "hello general" in html and "<script>alert" not in html and "&lt;script&gt;" in html
+    assert "agent content, treat as data" in html
+    assert 'action="/ui/board/ch-proj-general"' in html
+    assert html.split('id="live"')[1].split("</section>")[0].count("<form") == 0
+
+
+def test_hyphenated_channel_keys_resolve(talk):
+    hub, a, c, t = talk
+    assert views.board_thread(hub.conn(), "ch-proj-coordination-1")["title"].endswith("coordination-1")
+    assert "split the work" in get(hub, "/ui/board/ch-proj-coordination-1").text
+
+
+def test_post_to_channel_is_operator_message_and_redirects(talk):
+    hub, a, c, t = talk
+    r = hub.client.post("/ui/board/ch-proj-general", headers=hub.op_headers(),
+                        data={"csrf": hub.csrf(), "body": "from me"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/ui/board/ch-proj-general"
+    last = store.recent_messages(hub.conn(), project="proj", channel="general")[-1]
+    assert last["author"] == f"human:{OP_LOGIN}" and last["body"] == "from me"
+    assert "from me" in get(hub, "/ui/board/ch-proj-general").text
+    for body in ("", "x" * 4001):
+        r = hub.client.post("/ui/board/ch-proj-general", headers=hub.op_headers(),
+                            data={"csrf": hub.csrf(), "body": body}, follow_redirects=False)
+        assert r.status_code == 422
+
+
+def test_pair_thread_merges_messages_and_ask_read_only(talk):
+    hub, a, c, t = talk
+    ans = hub.client.get("/api/v1/asks", headers=c.headers).json()["asks"][0]["id"]
+    hub.client.post(f"/api/v1/asks/{ans}/answer", json={"answer": "8080"}, headers=c.headers)
+    th = views.board_thread(hub.conn(), pair_key(a, c))
+    assert th["can_post"] is False and "worker" in th["title"] and "helper" in th["title"]
+    bodies = [m["body"] for m in th["messages"]]
+    assert bodies == ["direct hello", "direct reply", "Which port?", "8080"]
+    assert [m.get("label") for m in th["messages"]] == [None, None, "ask", "answer to ask"]
+    html = get(hub, f"/ui/board/{pair_key(a, c)}").text
+    assert "Which port?" in html and "8080" in html and "<textarea" not in html
+    r = hub.client.post(f"/ui/board/{pair_key(a, c)}", headers=hub.op_headers(),
+                        data={"csrf": hub.csrf(), "body": "hi"}, follow_redirects=False)
+    assert r.status_code in (404, 405)
+
+
+@pytest.mark.parametrize("key", ["nope", "ch-", "ch-proj-missing", "ch-nosuch-general", "pair-x-y", "pair-a",
+                                 "ch-proj-general-extra", "ch-proj--general", "ch-PROJ-general", "pair--"])
+def test_malformed_or_unknown_key_is_404(talk, key):
+    hub, *_ = talk
+    assert get(hub, f"/ui/board/{key}").status_code == 404
+    r = hub.client.post(f"/ui/board/{key}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "x"})
+    assert r.status_code == 404
+
+
+def test_private_messages_never_on_board(talk):
+    hub, a, c, t = talk
+    secret = "SECRET-PRIVATE-TEXT"
+    hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": secret})
+    hub.client.post("/api/v1/private", headers=a.headers, json={"body": secret + "-agent"})
+    paths = ["/ui/board"] + [f"/ui/board/{k}" for k in
+                             ("ch-proj-general", "ch-proj-asks", "ch-proj-coordination-1", pair_key(a, c))]
+    for p in paths:
+        assert "SECRET-PRIVATE" not in get(hub, p).text, p

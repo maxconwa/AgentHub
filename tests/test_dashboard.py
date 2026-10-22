@@ -47,7 +47,7 @@ def world(hub):
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
     return hub, a, {"approval_id": ap["id"], "task_id": t["id"], "agent_id": a.id,
-                    "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
+                    "key": "ch-proj-general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
 def test_route_inventory_is_not_empty(hub):

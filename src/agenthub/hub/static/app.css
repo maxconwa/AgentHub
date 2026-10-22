@@ -208,3 +208,6 @@ header.top nav::-webkit-scrollbar { display: none; }
 .chip-unread { color: #fff; background: var(--bad); flex: none; }
 .agent-head h1 { min-width: 0; }
 .agent-text figcaption, .msg .meta { overflow-wrap: anywhere; }
+
+/* Board */
+.chat-list .avatar-wrap { flex: none; }

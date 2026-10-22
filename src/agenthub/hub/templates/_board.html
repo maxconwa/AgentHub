@@ -10,7 +10,7 @@
   </div>
   {% else %}
   <div class="msg theirs">
-    <div class="meta">{{ ago(m.ts) }}</div>
+    <div class="meta">{% if m.label %}<span class="chip">{{ m.label }}</span> {% endif %}{{ ago(m.ts) }}</div>
     {{ agent_text(m.body, m.author, names) }}
   </div>
   {% endif %}

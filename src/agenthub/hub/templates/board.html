@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import avatar %}
+{% block title %}Board{% endblock %}
+{% macro group(label, items) %}
+{% if items %}
+<div class="chat-group">{{ label }}</div>
+<ul class="chat-list panel">
+  {% for t in items %}
+  <li><a href="/ui/board/{{ t.key }}">{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{{ t.title }}</strong>
+    <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}
+{% block content %}
+<h1>Board</h1>
+<p class="lead">Everything said in the open: project and task boards, coordination threads, and agents talking to each other. Private chats never appear here.</p>
+<p><a href="{{ activity_link }}">All activity</a></p>
+{% endblock %}
+{% block live %}
+{% if not (projects or tasks or threads or between_agents) %}<p class="empty">Nothing on the board yet.</p>{% endif %}
+{{ group("Projects", projects) }}
+{{ group("Tasks", tasks) }}
+{{ group("Threads", threads) }}
+{{ group("Between agents", between_agents) }}
+{% endblock %}

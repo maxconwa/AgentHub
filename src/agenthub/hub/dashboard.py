@@ -284,6 +284,28 @@ def build_router() -> APIRouter:
             private.send(conn, agent_id, author=operator.actor, body=body)
         return done(request, next if SAFE_NEXT.fullmatch(next) and ".." not in next else f"/ui/chats/{agent_id}")
 
+    # board (public channels and agent-to-agent threads) ----------------------------------
+
+    @router.get("/board", response_class=HTMLResponse)
+    def board_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "board.html", conn, nav="board", activity_link=views.ACTIVITY_LINK,
+                      **views.board_index(conn))
+
+    @router.get("/board/{key}", response_class=HTMLResponse)
+    def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "board_thread.html", conn, nav="board", key=key, **views.board_thread(conn, key))
+
+    @router.post("/board/{key}")
+    def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
+                   body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+        thread = views.board_thread(conn, key)
+        if not thread["can_post"]:
+            raise HTTPException(405, "this thread is read-only")
+        with db.transaction(conn):
+            store.post_message(conn, author=operator.actor, project=thread["project"], channel=thread["channel"],
+                               body=body)
+        return done(request, f"/ui/board/{key}")
+
     # approvals ----------------------------------------------------------------------
 
     @router.get("/approvals", response_class=HTMLResponse)

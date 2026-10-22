@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any
 
-from agenthub.hub import avatars, private
+from agenthub.hub import avatars, private, store
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
@@ -102,3 +103,110 @@ def chat_list(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             others.append(row)
     threads.sort(key=lambda t: t["last_id"], reverse=True)
     return {"threads": threads, "others": others}
+
+
+# --- Board: public channels and agent-to-agent threads -----------------------------------
+
+BOARD_LIMIT = 200
+ACTIVITY_LINK = "/ui/feed"  # Task 11 moves "All activity"
+_TASK_CHANNEL = re.compile(r"task-(\d+)")
+_PAIR_KEY = re.compile(r"pair-(ag[0-9a-f]+)-(ag[0-9a-f]+)")
+# The messages an ask and its answer post into the ``asks`` channel; a pair thread shows the ask itself.
+_ASK_ECHO = "NOT (c.name = 'asks' AND (m.body LIKE '[ask #%' OR m.body LIKE '[answer to ask #%'))"
+
+
+def _ts_key(item: dict[str, Any]) -> str:
+    return item["last_ts"] or ""
+
+
+def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """The Board page's thread list: project boards, task boards, other channels, agent pairs.
+
+    Each item is ``{key, title, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
+    None: agent-written snippets stay out of lists, so a row shows who spoke last and when.
+    """
+    board = avatars.board(conn)
+    task_titles = {(r["project"], r["id"]): r["title"] for r in conn.execute("SELECT id, project, title FROM tasks")}
+    authors: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT channel_id, author FROM messages GROUP BY channel_id, author ORDER BY MAX(id) DESC"):
+        authors.setdefault(r["channel_id"], []).append(r["author"])
+    last = {r["channel_id"]: r["ts"] for r in conn.execute(
+        "SELECT channel_id, ts FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY channel_id)")}
+    out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": [], "between_agents": []}
+    for c in conn.execute("SELECT id, project, name, created_at FROM channels"):
+        item = {"key": f"ch-{c['project']}-{c['name']}", "title": f"{c['project']} / {c['name']}", "last_body": None,
+                "last_ts": last.get(c["id"]), "project": c["project"],
+                "avatars": [board[a] for a in authors.get(c["id"], []) if a in board][:3]}
+        m = _TASK_CHANNEL.fullmatch(c["name"])
+        if c["name"] == "general":
+            out["projects"].append(item | {"title": c["project"]})
+        elif m and (c["project"], int(m[1])) in task_titles:
+            out["tasks"].append(item | {"title": f"#{m[1]} {task_titles[(c['project'], int(m[1]))]}"})
+        else:
+            out["threads"].append(item)
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+    pairs: dict[tuple[str, str], str] = {}
+    for r in conn.execute(
+            f"SELECT m.author, m.to_agent, m.ts FROM messages m JOIN channels c ON c.id = m.channel_id "
+            f"WHERE m.to_agent IS NOT NULL AND {_ASK_ECHO} UNION ALL SELECT from_agent, to_agent, created_at FROM asks"):
+        if r["author"] in names and r["to_agent"] in names and r["author"] != r["to_agent"]:
+            k = tuple(sorted((r["author"], r["to_agent"])))
+            pairs[k] = max(pairs.get(k, ""), r["ts"])
+    for (x, y), ts in pairs.items():
+        out["between_agents"].append({"key": f"pair-{x}-{y}", "title": f"{names[x]} ↔ {names[y]}", "last_body": None,
+                                      "last_ts": ts, "avatars": [board[i] for i in (x, y) if i in board]})
+    for g in out.values():
+        g.sort(key=_ts_key, reverse=True)
+    return out
+
+
+def _channel_for_key(conn: sqlite3.Connection, key: str) -> tuple[str, str] | None:
+    """The existing (project, channel) behind ``ch-<project>-<channel>``; names may contain ``-``."""
+    if not key.startswith("ch-"):
+        return None
+    rest = key[3:]
+    for i, ch in enumerate(rest):
+        project, channel = rest[:i], rest[i + 1:]
+        if ch == "-" and store.NAME_RE.fullmatch(project) and store.NAME_RE.fullmatch(channel) and conn.execute(
+                "SELECT 1 FROM channels WHERE project = ? AND name = ?", (project, channel)).fetchone():
+            return project, channel
+    return None
+
+
+def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """One Board thread: ``{title, messages, can_post}`` (plus ``project``/``channel`` for channels).
+
+    Channel keys are ``ch-<project>-<channel>``; pair keys ``pair-<a>-<b>`` (agent ids sorted) show
+    addressed messages between two agents and their asks, read-only. Raises store.NotFound if unknown.
+    """
+    found = _channel_for_key(conn, key)
+    if found:
+        project, channel = found
+        msgs = [{"author": m["author"], "ts": m["ts"], "body": m["body"]}
+                for m in store.recent_messages(conn, project=project, channel=channel, limit=BOARD_LIMIT)]
+        return {"title": f"{project} / {channel}", "messages": msgs, "can_post": True,
+                "project": project, "channel": channel}
+    m = _PAIR_KEY.fullmatch(key)
+    if not m or m[1] >= m[2]:
+        raise store.NotFound(f"no board thread {key!r}")
+    x, y = m[1], m[2]
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents WHERE id IN (?, ?)", (x, y))}
+    if len(names) != 2:
+        raise store.NotFound(f"no board thread {key!r}")
+    entries: list[tuple[str, int, dict[str, Any]]] = []
+    both = f"((m.author = ? AND m.to_agent = ?) OR (m.author = ? AND m.to_agent = ?))"
+    for r in conn.execute(
+            f"SELECT m.id, m.author, m.ts, m.body FROM messages m JOIN channels c ON c.id = m.channel_id "
+            f"WHERE {both} AND {_ASK_ECHO} ORDER BY m.id DESC LIMIT ?", (x, y, y, x, BOARD_LIMIT)):
+        entries.append((r["ts"], 0, {"author": r["author"], "ts": r["ts"], "body": r["body"]}))
+    for r in conn.execute(
+            "SELECT id, from_agent, to_agent, question, answer, created_at, answered_at FROM asks "
+            "WHERE (from_agent = ? AND to_agent = ?) OR (from_agent = ? AND to_agent = ?) ORDER BY id DESC LIMIT ?",
+            (x, y, y, x, BOARD_LIMIT)):
+        entries.append((r["created_at"], 1, {"author": r["from_agent"], "ts": r["created_at"], "label": "ask",
+                                             "body": r["question"]}))
+        if r["answer"] is not None:
+            entries.append((r["answered_at"], 2, {"author": r["to_agent"], "ts": r["answered_at"],
+                                                  "label": "answer to ask", "body": r["answer"]}))
+    entries.sort(key=lambda e: e[:2])
+    return {"title": f"{names[x]} ↔ {names[y]}", "messages": [e[2] for e in entries[-BOARD_LIMIT:]], "can_post": False}
