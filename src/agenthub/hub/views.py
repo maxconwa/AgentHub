@@ -168,6 +168,7 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
 # --- Board: public channels; Chats: agent-to-agent threads -----------------------------------
 
 BOARD_LIMIT = 200
+RECENT_AUTHORS_WINDOW = device_board.RECENT_AUTHORS_WINDOW
 ACTIVITY_LINK = "/ui/activity"
 _TASK_CHANNEL = re.compile(r"task-(\d+)")
 _PAIR_KEY = re.compile(r"pair-(ag[0-9a-f]+)-(ag[0-9a-f]+)")
@@ -190,9 +191,11 @@ def agent_pairs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     board = avatars.board(conn)
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
     pairs: dict[tuple[str, str], str] = {}
+    # Addressed messages walk the partial index messages_to_agent, not every message.
     for r in conn.execute(
-            f"SELECT m.author, m.to_agent, m.ts FROM messages m JOIN channels c ON c.id = m.channel_id "
-            f"WHERE m.to_agent IS NOT NULL AND {_ASK_ECHO} UNION ALL SELECT from_agent, to_agent, created_at FROM asks"):
+            f"SELECT m.author, m.to_agent, MAX(m.ts) AS ts FROM messages m JOIN channels c ON c.id = m.channel_id "
+            f"WHERE m.to_agent IS NOT NULL AND {_ASK_ECHO} GROUP BY m.author, m.to_agent "
+            f"UNION ALL SELECT from_agent, to_agent, MAX(created_at) FROM asks GROUP BY from_agent, to_agent"):
         if r["author"] in names and r["to_agent"] in names and r["author"] != r["to_agent"]:
             k = tuple(sorted((r["author"], r["to_agent"])))
             pairs[k] = max(pairs.get(k, ""), r["ts"])
@@ -212,16 +215,15 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     board = avatars.board(conn)
     task_titles = {(r["project"], r["id"]): (r["title"], r["created_by"])
                    for r in conn.execute("SELECT id, project, title, created_by FROM tasks")}
-    authors: dict[int, list[str]] = {}
-    for r in conn.execute("SELECT channel_id, author FROM messages GROUP BY channel_id, author ORDER BY MAX(id) DESC"):
-        authors.setdefault(r["channel_id"], []).append(r["author"])
-    last = {r["channel_id"]: r["ts"] for r in conn.execute(
-        "SELECT channel_id, ts FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY channel_id)")}
     out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": []}
-    for c in conn.execute("SELECT id, project, name, created_by FROM channels"):
+    for c in conn.execute("SELECT id, project, name, created_by FROM channels").fetchall():
+        # The channel's latest posts, one short range of messages_channel_id: when, and who (faces of the last few).
+        recent = conn.execute("SELECT author, ts FROM messages WHERE channel_id = ? ORDER BY id DESC LIMIT ?",
+                              (c["id"], RECENT_AUTHORS_WINDOW)).fetchall()
+        authors = dict.fromkeys(r["author"] for r in recent)
         item = {"key": f"ch-{c['project']}~{c['name']}", "created_by": c["created_by"], "title": f"{c['project']} / {c['name']}", "last_body": None,
-                "last_ts": last.get(c["id"]), "project": c["project"],
-                "avatars": [board[a] for a in authors.get(c["id"], []) if a in board][:3]}
+                "last_ts": recent[0]["ts"] if recent else None, "project": c["project"],
+                "avatars": [board[a] for a in authors if a in board][:3]}
         m = _TASK_CHANNEL.fullmatch(c["name"])
         if c["name"] == "general":
             out["projects"].append(item | {"title": c["project"]})
@@ -230,9 +232,10 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by, "task_id": int(m[1])})
         else:
             out["threads"].append(item)
-    posts = device_board.last_posts(conn)
+    machines = devices(conn)
+    posts = device_board.last_posts(conn, [d["node_id"] for d in machines])
     out["devices"] = []
-    for d in devices(conn):  # every machine with a non-revoked agent, so the operator can start its board
+    for d in machines:  # every machine with a non-revoked agent, so the operator can start its board
         last = posts.get(d["node_id"], {"ts": None, "authors": []})
         out["devices"].append({"key": f"dev-{d['node_id']}", "title": d["name"], "last_body": None,
                                "last_ts": last["ts"], "node_id": d["node_id"],
@@ -436,10 +439,11 @@ def messenger(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
                        "members": _faces(board, on_task.get(t["id"], []))})
     groups.sort(key=_ts_key, reverse=True)
 
-    posts = device_board.last_posts(conn)
+    machines = devices(conn)
+    posts = device_board.last_posts(conn, [d["node_id"] for d in machines])
     devs = [{"key": f"device:{d['node_id']}", "href": f"/ui/devices/{quote(d['node_id'], safe='')}",
              "title": d["name"], "last_ts": posts.get(d["node_id"], {}).get("ts"),
-             "members": _faces(board, [a["id"] for a in d["agents"]])} for d in devices(conn)]
+             "members": _faces(board, [a["id"] for a in d["agents"]])} for d in machines]
     devs.sort(key=_ts_key, reverse=True)
     return {"agents": agents, "pairs": pairs, "groups": groups, "devices": devs}
 

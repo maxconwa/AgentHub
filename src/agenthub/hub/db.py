@@ -326,6 +326,12 @@ MIGRATIONS: list[str] = [
         last_read_id INTEGER NOT NULL DEFAULT 0
     );
     """,
+    # 13: indexes for the pages' 10 s polls (Board, Chats, the chat window, unread badges); additive only
+    """
+    CREATE INDEX IF NOT EXISTS messages_channel_id ON messages(channel_id, id);
+    CREATE INDEX IF NOT EXISTS messages_to_agent ON messages(to_agent, author, id) WHERE to_agent IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS private_messages_unread ON private_messages(agent_id) WHERE read_at IS NULL;
+    """,
 ]
 
 

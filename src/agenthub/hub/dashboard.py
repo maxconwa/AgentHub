@@ -601,7 +601,8 @@ def build_router() -> APIRouter:
     def task_page(task_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         t = tasks.get_task(conn, task_id)
         rows = conn.execute(
-            "SELECT * FROM events WHERE type LIKE 'task.%' AND json_extract(payload, '$.task_id') = ? "
+            # A range on type (not LIKE, which can't use an index) walks events_type_id over task events only.
+            "SELECT * FROM events WHERE type >= 'task.' AND type < 'task/' AND json_extract(payload, '$.task_id') = ? "
             "ORDER BY id DESC LIMIT 100", (task_id,)).fetchall()
         history = [events.row_to_event(r) for r in rows]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active" and t["project"] in a["allowed_projects"]]

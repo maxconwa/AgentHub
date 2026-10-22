@@ -387,9 +387,9 @@ def recent_messages(
 ) -> list[dict[str, Any]]:
     sql = _MESSAGE_SELECT + "WHERE m.project = ? "
     params: list[Any] = [project]
-    if channel is not None:
-        sql += "AND c.name = ? "
-        params.append(channel)
+    if channel is not None:  # by channel id, so a quiet board in a busy project is one index range
+        sql += "AND m.channel_id = (SELECT id FROM channels WHERE project = ? AND name = ?) "
+        params += [project, channel]
     rows = conn.execute(sql + "ORDER BY m.id DESC LIMIT ?", [*params, limit]).fetchall()
     return [dict(r) for r in reversed(rows)]
 

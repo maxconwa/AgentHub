@@ -15,6 +15,7 @@ token, so an agent writes only on its own machine's board.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from typing import Any
 
 from agenthub.hub import events
@@ -97,13 +98,19 @@ def unread_for_agent(
     return rows
 
 
-def last_posts(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
-    """Node id -> ``{ts, authors}`` of its board: the newest note's time and its authors, newest first."""
+# How far back a board list looks for the faces of who posted last (the list shows three).
+RECENT_AUTHORS_WINDOW = 30
+
+
+def last_posts(conn: sqlite3.Connection, node_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Node id -> ``{ts, authors}`` for each of ``node_ids`` whose board has notes: the newest note's time and
+    the authors of its latest notes, newest first. One short index range per node, so a poll stays cheap."""
     out: dict[str, dict[str, Any]] = {}
-    for r in conn.execute("SELECT node_id, author, MAX(id) AS last, MAX(ts) AS ts FROM device_messages "
-                          "GROUP BY node_id, author ORDER BY last DESC"):
-        entry = out.setdefault(r["node_id"], {"ts": r["ts"], "authors": []})
-        entry["authors"].append(r["author"])
+    for node_id in dict.fromkeys(node_ids):
+        rows = conn.execute("SELECT author, ts FROM device_messages WHERE node_id = ? ORDER BY id DESC LIMIT ?",
+                            (node_id, RECENT_AUTHORS_WINDOW)).fetchall()
+        if rows:
+            out[node_id] = {"ts": rows[0]["ts"], "authors": list(dict.fromkeys(r["author"] for r in rows))}
     return out
 
 
