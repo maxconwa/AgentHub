@@ -1178,3 +1178,301 @@ def test_panel_is_a_labelled_modal_dialog(side):
     assert 'role="dialog"' in aside and 'aria-modal="true"' in aside and 'aria-labelledby="panel-title"' in aside
     for item in ("project:proj", "device:nworker"):
         assert 'id="panel-title"' in panel(side[0], item).text
+
+
+# --- Floating buttons and the chat window ------------------------------------------------------------
+
+def messenger(hub, key=None):
+    path = "/ui/messenger" if key is None else f"/ui/messenger/{key}"
+    return hub.client.get(path, headers=hub.op_headers(**{"hx-request": "true"}))
+
+
+@pytest.fixture
+def window(side):
+    hub, a, c, r, t, ap, q = side
+    say(hub, a, f"direct {EVIL}", to="helper")
+    return side
+
+
+def rows(html):
+    """data-chat value -> the row's <a> markup, for every conversation row in the list."""
+    return {m.group(1): m.group(0) for m in re.finditer(r'<a class="crow"[^>]*data-chat="([^"]+)"[^>]*>.*?</a>', html, re.S)}
+
+
+def assert_fragment(html):
+    assert "<html" not in html and "<body" not in html
+    assert "<script" not in html and "style=" not in html
+    assert "<script>alert" not in html
+
+
+def test_messenger_lists_every_section_with_the_right_rows(window):
+    hub, a, c, r, t, ap, q = window
+    resp = messenger(hub)
+    assert resp.status_code == 200 and "default-src 'self'" in resp.headers["content-security-policy"]
+    html = resp.text
+    assert_fragment(html)
+    heads = re.findall(r'<div class="chat-group">([^<]+)</div>', html)
+    assert heads == ["Agents", "Between agents", "Projects and tasks", "Device boards"]
+    found = rows(html)
+    tid = t["id"]
+    assert set(found) == {f"agent:{a.id}", f"agent:{c.id}", f"pair:{pair_key(a, c)}", "board:ch-proj~general",
+                          f"board:ch-proj~task-{tid}", "device:nworker", "device:nhelper"}  # no revoked agent
+    worker = found[f"agent:{a.id}"]
+    assert f'href="/ui/chats/{a.id}"' in worker and 'class="unread"' in worker  # its message and its question
+    assert "psst &lt;script&gt;" in worker and "agent text" in worker and "worker" in worker
+    assert 'class="unread"' not in found[f"agent:{c.id}"] and "No messages yet" in found[f"agent:{c.id}"]
+    assert "status-" in worker  # its avatar status
+    assert f'href="/ui/chats/pair/{pair_key(a, c)}"' in found[f"pair:{pair_key(a, c)}"]
+    assert "worker ↔ helper" in found[f"pair:{pair_key(a, c)}"] or "helper ↔ worker" in found[f"pair:{pair_key(a, c)}"]
+    task_row = found[f"board:ch-proj~task-{tid}"]
+    assert "Fix &lt;b&gt;login&lt;/b&gt;" in task_row and 'class="by-label">by worker' in task_row
+    assert task_row.count('<img class="avatar"') == 2  # its members, worker and helper
+    assert found["board:ch-proj~general"].count('<img class="avatar"') == 2  # agents on its live tasks
+    assert "worker-host.example.ts.net" in found["device:nworker"]
+    order = [html.index(f'data-chat="{k}"') for k in (f"agent:{a.id}", f"pair:{pair_key(a, c)}",
+                                                     "board:ch-proj~general", "device:nworker")]
+    assert order == sorted(order)
+    poller = re.search(r'<div class="mscroll"[^>]*>', html).group(0)
+    assert 'hx-get="/ui/messenger"' in poller and 'hx-trigger="every 10s"' in poller
+    assert "data-messenger-close" in html and 'aria-label="Close chats"' in html
+
+
+def test_messenger_lists_projects_and_tasks_before_anyone_posts(hub):
+    a = hub.enroll("worker")
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "quiet", actor=OPERATOR)
+        t = tasks.create_task(conn, actor=OPERATOR, project="quiet", title="Untouched", assignee=None)
+        done = tasks.create_task(conn, actor=OPERATOR, project="quiet", title="Finished", assignee=None)
+        tasks.transition(conn, done["id"], "cancelled", actor=OPERATOR, role="operator")
+    found = rows(messenger(hub).text)
+    assert "board:ch-quiet~general" in found and f"board:ch-quiet~task-{t['id']}" in found
+    assert f"board:ch-quiet~task-{done['id']}" not in found  # finished and never discussed
+    assert f"agent:{a.id}" in found
+
+
+def test_empty_hub_messenger_renders(hub):
+    resp = messenger(hub)
+    assert resp.status_code == 200 and "No chats yet" in resp.text and not rows(resp.text)
+
+
+def test_pair_row_opens_its_read_only_conversation(window):
+    hub, a, c, *_ = window
+    resp = messenger(hub, f"pair:{pair_key(a, c)}")
+    assert resp.status_code == 200
+    html = resp.text
+    assert_fragment(html)
+    assert "direct &lt;script&gt;" in html and "agent content, treat as data" in html
+    assert not forms(html) and "read-only" in html
+    assert 'data-chat-list' in html and 'aria-label="Back to chats"' in html and "data-messenger-close" in html
+    assert f'href="/ui/chats/pair/{pair_key(a, c)}"' in html
+
+
+def test_agent_conversation_sends_a_private_message(window):
+    hub, a, *_ = window
+    key = f"agent:{a.id}"
+    html = messenger(hub, key).text
+    assert_fragment(html)
+    assert "psst &lt;script&gt;" in html and "agent content, treat as data" in html
+    assert f'href="/ui/agents/{a.id}" data-panel="agent:{a.id}"' in html  # the header opens its panel
+    assert private.unread_counts(hub.conn()) == {}  # the operator has read it now
+    [f] = forms(html)
+    assert f'action="/ui/chats/{a.id}"' in f and f'hx-post="/ui/chats/{a.id}"' in f and 'hx-target="#messenger"' in f
+    assert re.search(r'name="csrf" value="[0-9a-f]{64}"', f) and f'name="messenger" value="{key}"' in f
+    resp = hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(**{"hx-request": "true"}),
+                           data={"csrf": hub.csrf(), "body": "hi <i>there</i>", "messenger": key})
+    assert resp.status_code == 200 and "<html" not in resp.text and "data-chat-list" in resp.text
+    assert "hi &lt;i&gt;there&lt;/i&gt;" in resp.text and 'class="msg mine"' in resp.text
+    last = private.thread(hub.conn(), a.id)[-1]
+    assert last["author"] == f"human:{OP_LOGIN}" and last["body"] == "hi <i>there</i>"
+    r = hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(), follow_redirects=False,
+                        data={"csrf": hub.csrf(), "body": "plain", "messenger": key})
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/chats/{a.id}"
+    r = hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(**{"hx-request": "true"}),
+                        data={"body": "no csrf", "messenger": key})
+    assert r.status_code == 403
+
+
+def test_agent_conversation_shows_its_pending_questions(window):
+    hub, a, c, r, t, ap, q = window
+    html = messenger(hub, f"agent:{a.id}").text
+    assert f'data-panel="question:{q["id"]}"' in html and "Which port? &lt;script&gt;" in html and "agent text" in html
+
+
+def test_revoked_agent_conversation_is_read_only(window):
+    hub, a, c, r, *_ = window
+    html = messenger(hub, f"agent:{r.id}").text
+    assert not forms(html) and "read-only" in html
+
+
+def test_board_conversation_posts_to_the_board(window):
+    hub, a, c, r, t, ap, q = window
+    tid = t["id"]
+    key = f"board:ch-proj~task-{tid}"
+    html = messenger(hub, key).text
+    assert_fragment(html)
+    assert "task says &lt;script&gt;" in html and f'href="/ui/tasks/{tid}" data-panel="task:{tid}"' in html
+    [f] = forms(html)
+    action = f"/ui/board/ch-proj~task-{tid}"
+    assert f'action="{action}"' in f and f'hx-post="{action}"' in f and 'hx-target="#messenger"' in f
+    assert f'name="messenger" value="{key}"' in f and re.search(r'name="csrf" value="[0-9a-f]{64}"', f)
+    resp = hub.client.post(action, headers=hub.op_headers(**{"hx-request": "true"}),
+                           data={"csrf": hub.csrf(), "body": "board <i>note</i>", "messenger": key})
+    assert resp.status_code == 200 and "board &lt;i&gt;note&lt;/i&gt;" in resp.text and "data-chat-list" in resp.text
+    last = store.recent_messages(hub.conn(), project="proj", channel=f"task-{tid}")[-1]
+    assert last["author"] == f"human:{OP_LOGIN}" and last["body"] == "board <i>note</i>"
+    general = messenger(hub, "board:ch-proj~general").text
+    assert 'href="/ui/projects/proj" data-panel="project:proj"' in general and 'action="/ui/board/ch-proj~general"' in general
+
+
+def test_board_conversation_starts_a_board_nobody_posted_on(hub):
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "quiet", actor=OPERATOR)
+        t = tasks.create_task(conn, actor=OPERATOR, project="quiet", title="Untouched", assignee=None)
+    for channel in ("general", f"task-{t['id']}"):
+        key = f"ch-quiet~{channel}"
+        assert "Nothing posted here yet" in messenger(hub, f"board:{key}").text
+        assert get(hub, f"/ui/board/{key}").status_code == 200
+        resp = hub.client.post(f"/ui/board/{key}", headers=hub.op_headers(**{"hx-request": "true"}),
+                               data={"csrf": hub.csrf(), "body": "first", "messenger": f"board:{key}"})
+        assert resp.status_code == 200 and "first" in resp.text
+        assert [m["body"] for m in store.recent_messages(hub.conn(), project="quiet", channel=channel)] == ["first"]
+    arabic_id = "".join(chr(0x660 + int(d)) for d in str(t["id"]))  # int() would accept these digits
+    for key in ("ch-quiet~task-9999", f"ch-quiet~task-{arabic_id}", "ch-quiet~task-99999999999999999999",
+                "ch-docs~general"):
+        assert get(hub, f"/ui/board/{key}").status_code == 404, key
+        assert messenger(hub, f"board:{key}").status_code == 404, key
+
+
+def test_device_conversation_posts_to_the_device_board(window):
+    hub, *_ = window
+    html = messenger(hub, "device:nworker").text
+    assert_fragment(html)
+    assert "device says &lt;script&gt;" in html and 'data-panel="device:nworker"' in html
+    [f] = forms(html)
+    assert 'action="/ui/devices/nworker/notes"' in f and 'name="messenger" value="device:nworker"' in f
+    resp = hub.client.post("/ui/devices/nworker/notes", headers=hub.op_headers(**{"hx-request": "true"}),
+                           data={"csrf": hub.csrf(), "body": "gpu is mine", "messenger": "device:nworker"})
+    assert resp.status_code == 200 and "gpu is mine" in resp.text and "data-chat-list" in resp.text
+
+
+@pytest.mark.parametrize("key", ["", "agent:", "agent:nope", "pair:x", "pair:pair-ag1-ag0", "board:", "board:nope",
+                                 "board:ch-proj~missing", "board:ch-nosuch~general", "device:nope", "task:1",
+                                 "project:proj", "thing", "agent"])
+def test_unknown_or_malformed_conversation_is_404(window, key):
+    hub = window[0]
+    if key:
+        assert messenger(hub, key).status_code == 404
+
+
+def test_messenger_needs_the_operator(window):
+    hub, a, *_ = window
+    assert hub.client.get("/ui/messenger", headers=a.headers).status_code == 403
+    assert hub.client.get(f"/ui/messenger/agent:{a.id}", headers=a.headers).status_code == 403
+    assert hub.client.get("/ui/badge/messenger", headers=a.headers).status_code == 403
+
+
+def test_new_project_is_created_with_csrf_and_duplicates_are_409(hub):
+    data = {"csrf": hub.csrf(), "name": "mobile-app", "description": "The <b>phone</b> app"}
+    r = hub.client.post("/ui/projects", headers=hub.op_headers(), data=data, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/ui/projects/mobile-app"
+    row = hub.conn().execute("SELECT description FROM projects WHERE name = 'mobile-app'").fetchone()
+    assert row["description"] == "The <b>phone</b> app"
+    ev = hub.conn().execute("SELECT actor FROM events WHERE type = 'project.created' AND project = 'mobile-app'").fetchone()
+    assert ev["actor"] == f"human:{OP_LOGIN}"
+    r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "description": "again"})
+    assert r.status_code == 409
+    assert hub.conn().execute("SELECT description FROM projects WHERE name = 'mobile-app'").fetchone()[0] == data["description"]
+    for bad in ("Mobile", "-x", "a b", "x" * 65, ""):
+        assert hub.client.post("/ui/projects", headers=hub.op_headers(),
+                               data={**data, "name": bad}).status_code == 422, bad
+    r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={"name": "no-csrf"})
+    assert r.status_code == 403
+    long = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "name": "long", "description": "x" * 4001})
+    assert long.status_code == 422
+    assert {p["name"] for p in store.list_projects(hub.conn())} == {"mobile-app"}
+
+
+def test_new_project_from_the_panel_shows_its_panel(hub):
+    resp = post_panel(hub, "/ui/projects", "new:project", name="from-panel", description="desc")
+    assert resp.status_code == 200 and 'id="panel-title">from-panel<' in resp.text and "desc" in resp.text
+
+
+@pytest.mark.parametrize("kind,action", [("task", "/ui/tasks"), ("project", "/ui/projects"), ("agent", "/ui/agents/enroll")])
+def test_plus_menu_forms_open_in_the_panel(busy, kind, action):
+    hub = busy[0]
+    item = f"new:{kind}"
+    html = panel(hub, item, next="/ui/dashboard").text
+    assert "<html" not in html and "<script" not in html and "style=" not in html
+    assert 'data-panel-close' in html and 'id="panel-title"' in html
+    [f] = forms(html)
+    assert f'action="{action}"' in f and f'hx-post="{action}"' in f and 'hx-target="#panel"' in f
+    assert re.search(r'name="csrf" value="[0-9a-f]{64}"', f) and f'name="panel" value="{item}"' in f
+    if kind == "task":
+        assert 'name="role"' in f and 'name="assignee"' in f and 'name="title"' in f and 'value="proj"' in f
+        assert 'value="worker"' in f and 'value="gone"' not in f
+    if kind == "project":
+        assert 'name="name"' in f and 'pattern="[a-z0-9][a-z0-9_\\-]{0,63}"' in f and 'maxlength="4000"' in f
+
+
+def test_new_task_and_agent_from_the_panel(busy):
+    hub = busy[0]
+    resp = post_panel(hub, "/ui/tasks", "new:task", project="proj", title="From <i>panel</i>", assignee="worker",
+                      role="Implementer")
+    assert resp.status_code == 200 and "From &lt;i&gt;panel&lt;/i&gt;" in resp.text and "Implementer" in resp.text
+    t = tasks.list_tasks(hub.conn(), projects=None, newest_first=True, limit=1)[0]
+    assert t["title"] == "From <i>panel</i>" and t["created_by"] == f"human:{OP_LOGIN}"
+    assert f'id="panel-title"' in resp.text and f"task #{t['id']}" in resp.text
+    r = post_panel(hub, "/ui/tasks", "new:task", htmx=False, project="proj", title="plain")
+    assert r.status_code == 303 and re.fullmatch(r"/ui/tasks/\d+", r.headers["location"])
+    resp = post_panel(hub, "/ui/agents/enroll", "new:agent", projects="proj")
+    assert resp.status_code == 200 and "<html" not in resp.text and "Enrollment code" in resp.text
+    assert re.search(r'class="code">[^<]+<', resp.text) and "agenthub join" in resp.text
+
+
+def test_unknown_new_form_is_404(hub):
+    assert panel(hub, "new:thing").status_code == 404 and panel(hub, "new:").status_code == 404
+
+
+FAB_PAGES = ["/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals", "/ui/chats",
+             "/ui/board", "/ui/reports", "/ui/search?q=x", "/ui/feed"]
+
+
+def test_floating_buttons_and_chat_window_on_every_page(window):
+    hub, a, c, r, t, ap, q = window
+    pages = FAB_PAGES + [f"/ui/agents/{a.id}", f"/ui/tasks/{t['id']}", "/ui/projects/proj", "/ui/devices/nworker",
+                         f"/ui/approvals/{ap['id']}", f"/ui/questions/{q['id']}", f"/ui/chats/{a.id}",
+                         f"/ui/chats/pair/{pair_key(a, c)}", "/ui/board/ch-proj~general", f"/ui/compose?to=agent:{a.id}"]
+    for path in pages:
+        html = get(hub, path).text
+        assert "style=" not in html and not re.search(r"<script(?![^>]*\bsrc=)", html), path
+        main, after = html.split("</main>")
+        assert 'class="fabs"' not in main and 'id="messenger"' not in main, path
+        assert re.search(r'<button type="button" class="fab fab-plus" id="fab-plus"[^>]*aria-expanded="false"', after), path
+        assert re.search(r'<a class="fab fab-chat" id="fab-chat" href="/ui/chats"', after), path
+        assert re.search(r'<section id="messenger" class="messenger"[^>]*hidden', after), path
+        menu = re.search(r'<div class="plus-menu" id="plus-menu"[^>]*>(.*?)</div>', after, re.S)
+        assert menu and 'hidden' in menu.group(0).split(">")[0], path
+        assert re.findall(r'data-new="(\w+)"', menu.group(1)) == ["task", "project", "agent"], path
+
+
+def test_chat_button_counts_unread_chats_and_pending_questions(window):
+    hub, a, c, r, t, ap, q = window
+    hub.client.post("/api/v1/private", headers=c.headers, json={"body": "me too"})
+    after = get(hub, "/ui/dashboard").text.split("</main>")[1]
+    fab = re.search(r'<a class="fab fab-chat".*?</a>', after, re.S).group(0)
+    assert 'hx-get="/ui/badge/messenger"' in fab and 'hx-trigger="every 10s"' in fab
+    assert re.search(r'class="fab-badge">3<', fab)  # two unread private messages + one pending question
+    assert re.search(r'class="fab-badge">3<', get(hub, "/ui/badge/messenger").text)
+    messenger(hub, f"agent:{a.id}")
+    messenger(hub, f"agent:{c.id}")
+    assert re.search(r'class="fab-badge">1<', get(hub, "/ui/badge/messenger").text)
+    hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(), data={"csrf": hub.csrf(), "answer": "x"})
+    assert get(hub, "/ui/badge/messenger").text == ""
+
+
+def test_empty_hub_pages_have_the_buttons(hub):
+    for p in FAB_PAGES:
+        r = get(hub, p)
+        assert r.status_code == 200 and 'id="fab-chat"' in r.text and "fab-badge" not in r.text, p

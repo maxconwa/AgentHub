@@ -82,6 +82,8 @@ PostOp = Annotated[Operator, Depends(csrf_operator)]
 # A form inside the slide-in panel names its item (so the response can re-render the panel) and the page under it.
 PanelField = Annotated[str, Form(max_length=300)]
 NextField = Annotated[str, Form(max_length=500)]
+# A form inside the chat window names its conversation, so the response can re-render it.
+MessengerField = Annotated[str, Form(max_length=300)]
 
 
 # --- template helpers ------------------------------------------------------------
@@ -174,10 +176,10 @@ def pending_total(conn: sqlite3.Connection) -> int:
 
 
 def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connection, **ctx: Any) -> HTMLResponse:
-    pending = pending_total(conn)
+    pending, chat_unread = pending_total(conn), sum(private.unread_counts(conn).values())
     html = templates.get_template(name).render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
-        pending_count=pending, chat_unread=sum(private.unread_counts(conn).values()),
+        pending_count=pending, chat_unread=chat_unread, messenger_unread=chat_unread + questions.pending_count(conn),
         names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
         active_ids={r[0] for r in conn.execute("SELECT id FROM agents WHERE status = 'active'")},
         **ctx,
@@ -206,8 +208,22 @@ def done(request: Request, url: str) -> Response:
     return RedirectResponse(url, status_code=303, headers=SECURITY_HEADERS)
 
 
+# The + button's forms, shown in the slide-in panel as items ``new:<kind>``.
+NEW_FORMS = ("new:task", "new:project", "new:agent")
+
+
+def render_new(request: Request, operator: Operator, conn: sqlite3.Connection, item: str, next: str,
+               new_code: dict | None = None) -> HTMLResponse:
+    """A New task / New project / New agent form in the slide-in panel (New agent shows a code once made)."""
+    return render(request, operator, "_new.html", conn, item=item, kind=item.removeprefix("new:"), next=safe_next(next),
+                  projects=store.list_projects(conn), new_code=new_code, default_budget=tasks.DEFAULT_BUDGET,
+                  agents=[a for a in store.list_agents(conn) if a["status"] == "active"])
+
+
 def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection, item: str, next: str) -> HTMLResponse:
     """The slide-in panel fragment for ``item``; its forms post back with ``panel`` and ``next``."""
+    if item in NEW_FORMS:
+        return render_new(request, operator, conn, item, next)
     data = views.panel(conn, item)
     if data["kind"] == "agent" and data["chat"]:  # the operator is looking at these now
         with db.transaction(conn):
@@ -215,15 +231,26 @@ def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection,
     return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next), **data)
 
 
-def finish(request: Request, operator: Operator, conn: sqlite3.Connection, panel: str, next: str,
-           default: str) -> Response:
-    """After a form post: re-render the panel it came from (HTMX), else redirect (PRG).
+def render_conversation(request: Request, operator: Operator, conn: sqlite3.Connection, key: str) -> HTMLResponse:
+    """One conversation in the chat window; an agent's private chat is marked read, as on its chat page."""
+    data = views.conversation(conn, key)
+    if data["kind"] == "agent" and data["messages"]:  # the operator is looking at these now
+        with db.transaction(conn):
+            private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["messages"][0]["id"])
+    return render(request, operator, "_messenger.html", conn, view="conversation", **data)
 
-    The post has already committed, so a panel that can't be rendered (its item is gone) falls back
-    to the redirect rather than an error that would invite posting again.
+
+def finish(request: Request, operator: Operator, conn: sqlite3.Connection, panel: str, next: str,
+           default: str, messenger: str = "") -> Response:
+    """After a form post: re-render the panel or chat-window conversation it came from (HTMX), else redirect (PRG).
+
+    The post has already committed, so a panel or conversation that can't be rendered (its item is gone)
+    falls back to the redirect rather than an error that would invite posting again.
     """
-    if panel and request.headers.get("hx-request"):
+    if (panel or messenger) and request.headers.get("hx-request"):
         try:
+            if messenger:
+                return render_conversation(request, operator, conn, messenger)
             return render_panel(request, operator, conn, panel, next)
         except store.NotFound:
             pass
@@ -270,6 +297,18 @@ def build_router() -> APIRouter:
         return render(request, operator, "projects.html", conn, nav="projects", projects=views.project_tree(conn),
                       all_projects=store.list_projects(conn))
 
+    @router.post("/projects")
+    def project_create(request: Request, operator: PostOp, conn: Conn,
+                       name: Annotated[str, Form(max_length=64)],
+                       description: Annotated[str, Form(max_length=store.MAX_DESCRIPTION_CHARS)] = "",
+                       panel: PanelField = "", next: NextField = "") -> Response:
+        with db.transaction(conn):
+            if not store.ensure_project(conn, name, actor=operator.actor, description=description):
+                raise store.Conflict(f"project {name!r} already exists")
+        if panel and request.headers.get("hx-request"):
+            return render_panel(request, operator, conn, f"project:{name}", next)
+        return done(request, f"/ui/projects/{name}")
+
     @router.get("/projects/{name}", response_class=HTMLResponse)
     def project_page(name: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         project = next((p for p in store.list_projects(conn) if p["name"] == name), None)
@@ -311,6 +350,13 @@ def build_router() -> APIRouter:
         n = sum(private.unread_counts(conn).values())
         return HTMLResponse(f'<span class="badge">{n}</span>' if n else "", headers=SECURITY_HEADERS)
 
+    @router.get("/badge/messenger", response_class=HTMLResponse)
+    def messenger_badge(operator: Op, conn: Conn) -> HTMLResponse:
+        """The Chat button's count: unread private messages plus pending questions."""
+        n = sum(private.unread_counts(conn).values()) + questions.pending_count(conn)
+        html = f'<span class="fab-badge">{n}<span class="sr-only"> unread</span></span>' if n else ""
+        return HTMLResponse(html, headers=SECURITY_HEADERS)
+
     # private chats --------------------------------------------------------------------
 
     @router.get("/chats", response_class=HTMLResponse)
@@ -341,16 +387,26 @@ def build_router() -> APIRouter:
     @router.post("/chats/{agent_id}")
     def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
                   body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
-                  panel: PanelField = "", next: NextField = "") -> Response:
+                  panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
         with db.transaction(conn):
             private.send(conn, agent_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/chats/{agent_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/chats/{agent_id}", messenger)
 
     # slide-in panel ------------------------------------------------------------------------
 
     @router.get("/panel", response_class=HTMLResponse)
     def panel_fragment(request: Request, operator: Op, conn: Conn, item: str = "", next: str = "") -> HTMLResponse:
         return render_panel(request, operator, conn, item[:300], next)
+
+    # chat window -------------------------------------------------------------------------------
+
+    @router.get("/messenger", response_class=HTMLResponse)
+    def messenger_list(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "_messenger.html", conn, view="list", **views.messenger(conn))
+
+    @router.get("/messenger/{key}", response_class=HTMLResponse)
+    def messenger_conversation(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render_conversation(request, operator, conn, key[:300])
 
     # tap to message ------------------------------------------------------------------------
 
@@ -406,14 +462,15 @@ def build_router() -> APIRouter:
 
     @router.post("/board/{key}")
     def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
-                   body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+                   body: Annotated[str, Form(min_length=1, max_length=4000)],
+                   messenger: MessengerField = "") -> Response:
         thread = views.board_thread(conn, key)
         if not thread["can_post"]:
             raise HTTPException(405, "this thread is read-only")
         with db.transaction(conn):
             store.post_message(conn, author=operator.actor, project=thread["project"], channel=thread["channel"],
                                body=body)
-        return done(request, f"/ui/board/{key}")
+        return finish(request, operator, conn, "", "", f"/ui/board/{key}", messenger)
 
     # approvals ----------------------------------------------------------------------
 
@@ -497,13 +554,16 @@ def build_router() -> APIRouter:
                     role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)] = "",
                     max_turns: Annotated[int | None, Form()] = None,
                     wall_clock_minutes: Annotated[int | None, Form()] = None,
-                    max_subtasks: Annotated[int | None, Form()] = None) -> Response:
+                    max_subtasks: Annotated[int | None, Form()] = None,
+                    panel: PanelField = "", next: NextField = "") -> Response:
         budget = {k: v for k, v in {"max_turns": max_turns, "wall_clock_minutes": wall_clock_minutes,
                                      "max_subtasks": max_subtasks}.items() if v is not None}
         with db.transaction(conn):
             t = tasks.create_task(conn, actor=operator.actor, project=project, title=title, body=body,
                                   assignee=assignee or None, role=role, budget=budget,
                                   state="open")
+        if panel and request.headers.get("hx-request"):  # from the + button: show the new task's panel
+            return render_panel(request, operator, conn, f"task:{t['id']}", next)
         return done(request, f"/ui/tasks/{t['id']}")
 
     @router.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -615,10 +675,10 @@ def build_router() -> APIRouter:
     @router.post("/devices/{node_id}/notes")
     def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
                     body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)],
-                    panel: PanelField = "", next: NextField = "") -> Response:
+                    panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
         with db.transaction(conn):
             device_board.post(conn, node_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}")
+        return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}", messenger)
 
     # agents -------------------------------------------------------------------------
 
@@ -632,11 +692,14 @@ def build_router() -> APIRouter:
 
     @router.post("/agents/enroll", response_class=HTMLResponse)
     def agents_enroll(request: Request, operator: PostOp, conn: Conn,
-                      projects: Annotated[str, Form(max_length=1000)] = "") -> HTMLResponse:
+                      projects: Annotated[str, Form(max_length=1000)] = "",
+                      panel: PanelField = "", next: NextField = "") -> HTMLResponse:
         names = [p.strip() for p in projects.split(",") if p.strip()]
         with db.transaction(conn):
             code = store.create_enrollment(conn, created_by=operator.actor, projects=names)
         # Shown once, never stored in plain text.
+        if panel and request.headers.get("hx-request"):  # from the + button's New agent form
+            return render_new(request, operator, conn, "new:agent", next, {"code": code, "projects": names})
         return render_agents(request, operator, conn, {"code": code, "projects": names})
 
     @router.get("/agents/{agent_id}", response_class=HTMLResponse)

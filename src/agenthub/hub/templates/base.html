@@ -31,6 +31,20 @@
   </main>
   <div class="scrim" id="panel-scrim" hidden></div>
   <aside id="panel" class="drawer" role="dialog" aria-modal="true" aria-labelledby="panel-title" inert></aside>
+  <section id="messenger" class="messenger" role="dialog" aria-modal="true" aria-labelledby="messenger-title" hidden></section>
+  <div class="fabs">
+    <button type="button" class="fab fab-plus" id="fab-plus" aria-controls="plus-menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
+      <span class="sr-only">New task, project or agent</span></button>
+    <div class="plus-menu" id="plus-menu" hidden>
+      <button type="button" data-new="task">New task</button>
+      <button type="button" data-new="project">New project</button>
+      <button type="button" data-new="agent">New agent</button>
+    </div>
+    <a class="fab fab-chat" id="fab-chat" href="/ui/chats" aria-controls="messenger" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false"><path d="M4 5h16v11H9l-5 4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></svg>
+      <span class="sr-only">Chats</span><span hx-get="/ui/badge/messenger" hx-trigger="every 10s" hx-swap="innerHTML">{% if messenger_unread %}<span class="fab-badge">{{ messenger_unread }}<span class="sr-only"> unread</span></span>{% endif %}</span></a>
+  </div>
   <footer>Signed in as {{ operator.login }}</footer>
 </body>
 </html>

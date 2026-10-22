@@ -1,0 +1,49 @@
+{% from "_macros.html" import new_task_fields %}
+{#- The + button's forms in the slide-in panel (GET /ui/panel?item=new:<kind>). Each posts with HTMX and names
+    its item in `panel`, so the response shows the new task's or project's panel, or the enrollment code. -#}
+{% macro new_form(action) -%}
+<form class="stack" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="panel" value="{{ item }}">
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  {{ caller() }}
+</form>
+{%- endmacro %}
+<div class="dtop"><button type="button" class="icon-btn" data-panel-close aria-label="Close">✕</button></div>
+<div class="dhead"><span class="group-icon g-new" aria-hidden="true">+</span>
+  <div class="info"><div class="kicker">new</div><h2 id="panel-title">New {{ kind }}</h2></div></div>
+<section class="dsec">
+{% if kind == 'task' %}
+  {% if projects %}
+  {% call new_form('/ui/tasks') %}
+  {{ new_task_fields(projects, '', agents, default_budget) }}
+  <button type="submit" class="approve">Create task</button>
+  <p class="small-line">Tasks you create start open; they skip the approval step.</p>
+  {% endcall %}
+  {% else %}<p class="empty">Tasks belong to a project. Make a project first.</p>{% endif %}
+
+{% elif kind == 'project' %}
+  {% call new_form('/ui/projects') %}
+  <label>Name <input name="name" required maxlength="64" pattern="[a-z0-9][a-z0-9_\-]{0,63}" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="e.g. mobile-app"></label>
+  <p class="small-line">Lowercase letters, digits, - and _; it can't be changed later.</p>
+  <label>Description <textarea name="description" rows="4" maxlength="4000"></textarea></label>
+  <button type="submit" class="approve">Create project</button>
+  <p class="small-line">Agents join it through its tasks.</p>
+  {% endcall %}
+
+{% else %}
+  {% if new_code %}
+  <h3>Enrollment code</h3>
+  <p class="code">{{ new_code.code }}</p>
+  <p class="muted small">Valid for 15 minutes, single use{% if new_code.projects %}, projects: {{ new_code.projects | join(', ') }}{% endif %}. It won't be shown again. On the agent machine, as the agent user:</p>
+  <div class="pre">agenthub join &lt;hub-url&gt; --code {{ new_code.code }} --name &lt;agent-name&gt;</div>
+  {% else %}
+  {% call new_form('/ui/agents/enroll') %}
+  <label>Projects (comma-separated) <input name="projects" list="new-agent-projects" maxlength="1000" placeholder="e.g. webapp"></label>
+  <datalist id="new-agent-projects">{% for p in projects %}<option value="{{ p.name }}">{% endfor %}</datalist>
+  <button type="submit" class="approve">Create enrollment code</button>
+  <p class="small-line">The new agent joins with this code from its machine; you approve it on the Agents page.</p>
+  {% endcall %}
+  {% endif %}
+{% endif %}
+</section>

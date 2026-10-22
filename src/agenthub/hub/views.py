@@ -171,6 +171,7 @@ BOARD_LIMIT = 200
 ACTIVITY_LINK = "/ui/feed"  # Task 11 moves "All activity"
 _TASK_CHANNEL = re.compile(r"task-(\d+)")
 _PAIR_KEY = re.compile(r"pair-(ag[0-9a-f]+)-(ag[0-9a-f]+)")
+_TASK_BOARD = re.compile(r"task-([0-9]{1,18})")  # a task board's channel, with an id SQLite can hold
 # The messages an ask and its answer post into the ``asks`` channel; a pair thread shows the ask itself.
 _ASK_ECHO = "NOT (c.name = 'asks' AND (m.body LIKE '[ask #%' OR m.body LIKE '[answer to ask #%'))"
 
@@ -254,10 +255,26 @@ def _channel_for_key(conn: sqlite3.Connection, key: str) -> tuple[str, str, str]
     return (project, channel, row["created_by"]) if row else None
 
 
+def _unstarted_board(conn: sqlite3.Connection, key: str) -> tuple[str, str] | None:
+    """The (project, channel) of a project's or task's board nobody has posted on yet (its channel doesn't exist)."""
+    project, sep, channel = key.removeprefix("ch-").partition("~")
+    if not key.startswith("ch-") or not sep:
+        return None
+    m = _TASK_BOARD.fullmatch(channel)
+    if channel == "general":
+        found = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
+    elif m:
+        found = conn.execute("SELECT 1 FROM tasks WHERE id = ? AND project = ?", (int(m[1]), project)).fetchone()
+    else:
+        found = None
+    return (project, channel) if found else None
+
+
 def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
     """One Board thread: ``{title, messages, can_post, project, channel, created_by}``.
 
-    Keys are ``ch-<project>~<channel>``. Raises store.NotFound if unknown.
+    Keys are ``ch-<project>~<channel>``. A project's ``general`` board and a task's ``task-<id>`` board
+    resolve before anyone has posted (empty; the first post creates the channel). Raises store.NotFound if unknown.
     """
     found = _channel_for_key(conn, key)
     if found:
@@ -266,6 +283,11 @@ def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
                 for m in store.recent_messages(conn, project=project, channel=channel, limit=BOARD_LIMIT)]
         return {"title": f"{project} / {channel}", "messages": msgs, "can_post": True,
                 "project": project, "channel": channel, "created_by": created_by}
+    unstarted = _unstarted_board(conn, key)
+    if unstarted:
+        project, channel = unstarted
+        return {"title": f"{project} / {channel}", "messages": [], "can_post": True,
+                "project": project, "channel": channel, "created_by": None}
     raise store.NotFound(f"no board thread {key!r}")
 
 
@@ -355,3 +377,119 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     q = questions.get(conn, int(key))
     return {"kind": kind, "href": f"/ui/questions/{q['id']}", "q": q,
             "task": tasks.get_task(conn, q["task_id"]) if q["task_id"] else None}
+
+
+# --- Chat window ------------------------------------------------------------------------------
+
+SNIPPET_CHARS = 200  # of the last private message in the chat window's list (the row clips it further)
+_CONVERSATION = re.compile(r"(agent|pair|board|device):(.+)")
+
+
+def messenger(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """The chat window's list: ``{agents, pairs, groups, devices}``, each newest first.
+
+    Every row has ``key`` (``agent:<id>``, ``pair:<pair-key>``, ``board:<board key>``, ``device:<node_id>``, which
+    :func:`conversation` opens), ``href`` (the full page) and ``last_ts``. agents: every non-revoked agent with
+    ``avatar``, ``status``, ``unread`` (its unread private messages plus its pending questions) and ``last``,
+    the newest private message (agent-written when its author isn't ``human:``). pairs: :func:`agent_pairs`.
+    groups: every project's board and every task's board that is live or has posts, with ``kind``, ``item``
+    (its panel), ``title``, ``created_by`` and ``members`` (avatars of the agents on it). devices: every machine
+    with a non-revoked agent, ``members`` being its agents.
+    """
+    board = avatars.board(conn)
+    unread = private.unread_counts(conn)
+    for q in questions.pending(conn):
+        unread[q["agent_id"]] = unread.get(q["agent_id"], 0) + 1
+    last = {r["agent_id"]: dict(r) for r in conn.execute(
+        "SELECT p.agent_id, p.id, p.ts, p.author, substr(p.body, 1, ?) AS body FROM private_messages p "
+        "JOIN (SELECT agent_id, MAX(id) AS id FROM private_messages GROUP BY agent_id) m ON m.id = p.id",
+        (SNIPPET_CHARS,))}
+    agents = [{"key": f"agent:{a['id']}", "href": f"/ui/chats/{a['id']}", "id": a["id"], "name": a["name"],
+               "status": a["status"], "avatar": a["avatar"], "unread": unread.get(a["id"], 0),
+               "last": last.get(a["id"]), "last_ts": (last.get(a["id"]) or {}).get("ts")}
+              for a in agent_rows(conn)]
+    agents.sort(key=lambda a: (a["last"] or {}).get("id", 0), reverse=True)
+
+    pairs = [p | {"key": f"pair:{p['key']}", "href": f"/ui/chats/pair/{p['key']}"} for p in agent_pairs(conn)]
+
+    on_task: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT task_id, agent_id FROM task_agents ORDER BY added_at, rowid"):
+        on_task.setdefault(r["task_id"], []).append(r["agent_id"])
+    index = board_index(conn)
+    posted = {i["key"]: i["last_ts"] for i in index["projects"] + index["tasks"]}
+    groups, live_members = [], {}
+    tasks_rows = conn.execute("SELECT id, project, title, state, created_by FROM tasks ORDER BY id").fetchall()
+    for t in tasks_rows:
+        if t["state"] not in TERMINAL_STATES:
+            live_members.setdefault(t["project"], []).extend(on_task.get(t["id"], []))
+    for p in conn.execute("SELECT name FROM projects ORDER BY name"):
+        key = f"ch-{p['name']}~general"
+        groups.append({"key": f"board:{key}", "href": f"/ui/board/{key}", "kind": "project",
+                       "item": f"project:{p['name']}", "title": p["name"], "created_by": None,
+                       "last_ts": posted.get(key), "members": _faces(board, live_members.get(p["name"], []))})
+    for t in tasks_rows:
+        key = f"ch-{t['project']}~task-{t['id']}"
+        if t["state"] in TERMINAL_STATES and key not in posted:
+            continue
+        groups.append({"key": f"board:{key}", "href": f"/ui/board/{key}", "kind": "task", "item": f"task:{t['id']}",
+                       "title": f"#{t['id']} {t['title']}", "created_by": t["created_by"], "last_ts": posted.get(key),
+                       "members": _faces(board, on_task.get(t["id"], []))})
+    groups.sort(key=_ts_key, reverse=True)
+
+    posts = device_board.last_posts(conn)
+    devs = [{"key": f"device:{d['node_id']}", "href": f"/ui/devices/{quote(d['node_id'], safe='')}",
+             "title": d["name"], "last_ts": posts.get(d["node_id"], {}).get("ts"),
+             "members": _faces(board, [a["id"] for a in d["agents"]])} for d in devices(conn)]
+    devs.sort(key=_ts_key, reverse=True)
+    return {"agents": agents, "pairs": pairs, "groups": groups, "devices": devs}
+
+
+def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -> list[dict[str, Any]]:
+    """The avatars of the first ``n`` distinct non-revoked agents in ``agent_ids``."""
+    return [board[i] for i in dict.fromkeys(agent_ids) if i in board][:n]
+
+
+def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """One conversation in the chat window: ``{kind, key, title, messages, action, href, item, ...}``.
+
+    ``action`` is where its form posts (None when read-only), ``href`` the full page and ``item`` the slide-in
+    panel its header opens (None for agent-to-agent chats and other threads). agent: ``ag`` (revoked agents
+    are read-only) and its pending ``questions``; pair: read-only; board: ``created_by``; device: ``d``.
+    Raises store.NotFound for a malformed or unknown key.
+    """
+    m = _CONVERSATION.fullmatch(key)
+    if not m:
+        raise store.NotFound(f"no conversation {key!r}")
+    kind, ref = m[1], m[2]
+    if kind == "agent":
+        rows = agent_rows(conn, agent_id=ref)
+        if not rows:
+            raise store.NotFound(f"no agent {ref!r}")
+        ag = rows[0]
+        return {"kind": kind, "key": key, "title": ag["name"], "ag": ag, "messages": private.thread(conn, ref),
+                "questions": [q for q in questions.pending(conn) if q["agent_id"] == ref],
+                "action": f"/ui/chats/{ref}" if ag["status"] != "revoked" else None,
+                "href": f"/ui/agents/{ref}", "item": f"agent:{ref}"}
+    if kind == "pair":
+        thread = pair_thread(conn, ref)
+        x, y = _PAIR_KEY.fullmatch(ref).groups()
+        return {"kind": kind, "key": key, "title": thread["title"], "messages": thread["messages"], "action": None,
+                "href": f"/ui/chats/pair/{ref}", "item": None, "members": _faces(avatars.board(conn), [x, y])}
+    if kind == "board":
+        thread = board_thread(conn, ref)
+        project, channel = thread["project"], thread["channel"]
+        out = {"kind": kind, "key": key, "messages": thread["messages"], "action": f"/ui/board/{ref}",
+               "title": thread["title"], "created_by": thread["created_by"], "href": f"/ui/board/{ref}", "item": None}
+        m = _TASK_BOARD.fullmatch(channel)
+        t = (conn.execute("SELECT id, title, created_by FROM tasks WHERE id = ? AND project = ?",
+                          (int(m[1]), project)).fetchone() if m else None)
+        if channel == "general":
+            out |= {"title": project, "href": f"/ui/projects/{quote(project, safe='')}", "item": f"project:{project}"}
+        elif t:  # the title and its "by" label are the task's
+            out |= {"title": f"#{t['id']} {t['title']}", "created_by": t["created_by"], "href": f"/ui/tasks/{t['id']}",
+                    "item": f"task:{t['id']}"}
+        return out
+    d = device(conn, ref)
+    return {"kind": kind, "key": key, "title": d["name"], "d": d, "messages": device_messages(conn, ref),
+            "action": f"/ui/devices/{quote(ref, safe='')}/notes", "href": f"/ui/devices/{quote(ref, safe='')}",
+            "item": f"device:{ref}", "members": _faces(avatars.board(conn), [a["id"] for a in d["agents"]])}
