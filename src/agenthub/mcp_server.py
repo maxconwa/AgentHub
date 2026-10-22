@@ -150,6 +150,16 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
                 "The answer will arrive in your inbox as a private message.")
 
     @server.tool()
+    async def get_question(question_id: int) -> str:
+        """Look up one of your own questions to the operator: its status and, once answered, the
+        operator's full answer."""
+        q = await call(lambda c: c.get_question(question_id))
+        out = f"Question #{q['id']} [{q['status']}]: {q['question']}"
+        if q["status"] == "answered":  # the hub sets the author from the operator's identity
+            out += f"\n\n{OPERATOR_HEADING}\n{q['answer']}"
+        return out
+
+    @server.tool()
     async def search_history(query: str, project: str | None = None, limit: int = 10) -> str:
         """Full-text search over the event history of your projects."""
         results = await call(lambda c: c.search(query, project=project, limit=limit))

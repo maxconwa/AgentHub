@@ -70,7 +70,7 @@ def test_long_answer_still_reaches_the_agent(pair):
     qid = ask(hub, alice).json()["id"]
     assert op_answer(hub, qid, "x" * 4000).status_code == 303
     body = hub.client.get("/api/v1/inbox", headers=alice.headers).json()["messages"][0]["body"]
-    assert body.startswith(f"Answer to your question #{qid}: xxx") and f"/questions/{qid}" in body
+    assert body.startswith(f"Answer to your question #{qid}: xxx") and f"get_question with question_id={qid}" in body
     full = hub.client.get(f"/api/v1/questions/{qid}", headers=alice.headers).json()
     assert full["answer"] == "x" * 4000
 
@@ -223,3 +223,39 @@ async def test_mcp_ask_operator_tool(dev_hub):
                        "The answer will arrive in your inbox as a private message.")
         bad = await c.call_tool("ask_operator", {"project": "nope", "question": "x"})
         assert bad.is_error and "403" in "\n".join(x.text for x in bad.content)
+
+
+def test_lists_label_question_text_as_agent_text(pair):
+    hub, alice, _ = pair
+    ask(hub, alice)
+    for path in ("/ui/approvals", "/ui/dashboard"):
+        assert "agent text" in op_get(hub, path).text
+
+
+def test_answer_for_revoked_agent_is_recorded_but_page_says_not_delivered(pair):
+    hub, alice, _ = pair
+    qid = ask(hub, alice).json()["id"]
+    hub.conn().execute("UPDATE agents SET status = 'revoked' WHERE id = ?", (alice.id,))
+    assert op_answer(hub, qid).status_code == 303
+    html = op_get(hub, f"/ui/questions/{qid}").text
+    assert "not delivered because alice is revoked" in html and "sent to alice" not in html
+    assert hub.conn().execute("SELECT COUNT(*) FROM private_messages").fetchone()[0] == 0
+
+
+async def test_mcp_get_question_tool(dev_hub):
+    transport = httpx.ASGITransport(app=dev_hub.client.app)
+    a, b = dev_hub.enroll("alice"), dev_hub.enroll("bob")
+    mk = lambda ag: build_server(lambda: HubClient("http://hub", ag.token, transport=transport))  # noqa: E731
+    async with Client(mk(a)) as ca, Client(mk(b)) as cb:
+        await ca.call_tool("ask_operator", {"project": "proj", "question": "Ship it?"})
+        qid = questions.pending(dev_hub.conn())[0]["id"]
+        t = lambda r: "\n".join(x.text for x in r.content)  # noqa: E731
+        assert "[pending]: Ship it?" in t(await ca.call_tool("get_question", {"question_id": qid}))
+        conn = dev_hub.conn()
+        with db.transaction(conn):
+            questions.answer(conn, qid, answer="x" * 4000, actor=OPERATOR)
+        out = t(await ca.call_tool("get_question", {"question_id": qid}))
+        assert "[answered]" in out and "From the operator (private, verified by the hub):\n" + "x" * 4000 in out
+        assert "untrusted" not in out
+        other = await cb.call_tool("get_question", {"question_id": qid})
+        assert other.is_error and "404" in t(other)

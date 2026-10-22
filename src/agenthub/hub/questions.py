@@ -18,7 +18,7 @@ from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, ge
 MAX_CHARS = 4000
 MAX_PENDING_PER_AGENT = 5
 
-_SELECT = "SELECT q.*, a.name AS agent_name FROM questions q LEFT JOIN agents a ON a.id = q.agent_id "
+_SELECT = "SELECT q.*, a.name AS agent_name, a.status AS agent_status FROM questions q LEFT JOIN agents a ON a.id = q.agent_id "
 
 
 def _payload(q: dict[str, Any]) -> dict[str, Any]:
@@ -93,7 +93,7 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
         prefix = f"Answer to your question #{qid}: "
         text = prefix + answer
         if len(text) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
-            note = f"… [truncated; full answer: GET /questions/{qid}]"
+            note = f"… [truncated; full answer: call get_question with question_id={qid}]"
             text = text[: private.MAX_BODY_CHARS - len(note)] + note
         private.send(conn, agent.id, author=actor, body=text)
     return get(conn, qid)
