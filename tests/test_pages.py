@@ -449,12 +449,13 @@ def test_board_index_groups(talk):
     assert [i["key"] for i in idx["projects"]] == ["ch-proj~general"]
     assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj~task-{t['id']}", f"#{t['id']} Fix login")]
     assert {i["key"] for i in idx["threads"]} == {"ch-proj~coordination-1", "ch-proj~asks"}
-    assert [i["key"] for i in idx["between_agents"]] == [pair_key(a, c)]
+    assert "between_agents" not in idx
     assert all(set(i) >= {"key", "title", "last_body", "last_ts", "avatars"}
-               for g in ("projects", "tasks", "threads", "between_agents") for i in idx[g])
+               for g in ("projects", "tasks", "threads") for i in idx[g])
     html = get(hub, "/ui/board").text
-    for key in ("ch-proj~general", f"ch-proj~task-{t['id']}", "ch-proj~coordination-1", pair_key(a, c)):
+    for key in ("ch-proj~general", f"ch-proj~task-{t['id']}", "ch-proj~coordination-1"):
         assert f'href="/ui/board/{key}"' in html
+    assert "Between agents" not in html and pair_key(a, c) not in html
     assert 'href="/ui/feed"' in html and "All activity" in html
 
 
@@ -497,25 +498,69 @@ def test_pair_thread_merges_messages_and_ask_read_only(talk):
     hub, a, c, t = talk
     ans = hub.client.get("/api/v1/asks", headers=c.headers).json()["asks"][0]["id"]
     hub.client.post(f"/api/v1/asks/{ans}/answer", json={"answer": "8080"}, headers=c.headers)
-    th = views.board_thread(hub.conn(), pair_key(a, c))
+    th = views.pair_thread(hub.conn(), pair_key(a, c))
     assert th["can_post"] is False and "worker" in th["title"] and "helper" in th["title"]
     bodies = [m["body"] for m in th["messages"]]
     assert bodies == ["direct hello", "direct reply", "Which port?", "8080"]
     assert [m.get("label") for m in th["messages"]] == [None, None, "ask", "answer to ask"]
-    html = get(hub, f"/ui/board/{pair_key(a, c)}").text
+    html = get(hub, f"/ui/chats/pair/{pair_key(a, c)}").text
     assert "Which port?" in html and "8080" in html and "<textarea" not in html
-    r = hub.client.post(f"/ui/board/{pair_key(a, c)}", headers=hub.op_headers(),
+    assert "agent content, treat as data" in html
+    r = hub.client.post(f"/ui/chats/pair/{pair_key(a, c)}", headers=hub.op_headers(),
                         data={"csrf": hub.csrf(), "body": "hi"}, follow_redirects=False)
-    assert r.status_code in (404, 405)
+    assert r.status_code == 405
 
 
-@pytest.mark.parametrize("key", ["nope", "ch-", "ch-proj~missing", "ch-nosuch~general", "ch-proj-general", "ch-proj~", "ch-~general", "ch-proj~~general", "pair-x-y", "pair-a",
-                                 "ch-proj~general~x", "ch-PROJ~general", "pair--"])
+def test_old_board_pair_url_redirects_308(talk):
+    hub, a, c, t = talk
+    r = hub.client.get(f"/ui/board/{pair_key(a, c)}", headers=hub.op_headers(), follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == f"/ui/chats/pair/{pair_key(a, c)}"
+    assert get(hub, "/ui/board/ch-proj~general").status_code == 200
+
+
+def test_agent_pairs_newest_first_with_labels(talk):
+    hub, a, c, t = talk
+    d = hub.enroll("third")
+    say(hub, d, "psst", to="worker")
+    pairs = views.agent_pairs(hub.conn())
+    assert [p["key"] for p in pairs] == [pair_key(a, d), pair_key(a, c)]
+    assert pairs[1]["title"] in ("worker ↔ helper", "helper ↔ worker")
+    html = get(hub, "/ui/chats").text
+    assert "Between agents" in html and f'href="/ui/chats/pair/{pair_key(a, c)}"' in html
+    assert html.index(f"/ui/chats/pair/{pair_key(a, d)}") < html.index(f"/ui/chats/pair/{pair_key(a, c)}")
+    assert html.index("Between agents") < html.index("Start a chat")
+    assert "Message helper" in html
+
+
+def test_chats_page_lists_private_chats_before_pairs(talk):
+    hub, a, c, t = talk
+    hub.client.post("/api/v1/private", headers=a.headers, json={"body": "hi operator"})
+    html = get(hub, "/ui/chats").text
+    assert html.index("With you") < html.index("Between agents") < html.index("Start a chat")
+
+
+def test_agent_page_links_its_pair_chats(talk):
+    hub, a, c, t = talk
+    html = get(hub, f"/ui/agents/{a.id}").text
+    assert f'href="/ui/chats/pair/{pair_key(a, c)}"' in html
+    gone = hub.conn().execute("SELECT id FROM agents WHERE name = 'gone'").fetchone()["id"]
+    assert pair_key(a, c) not in get(hub, f"/ui/agents/{gone}").text
+
+
+@pytest.mark.parametrize("key", ["nope", "ch-", "ch-proj~missing", "ch-nosuch~general", "ch-proj-general", "ch-proj~", "ch-~general", "ch-proj~~general", "ch-proj~general~x", "ch-PROJ~general"])
 def test_malformed_or_unknown_key_is_404(talk, key):
     hub, *_ = talk
     assert get(hub, f"/ui/board/{key}").status_code == 404
     r = hub.client.post(f"/ui/board/{key}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "x"})
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize("key", ["pair-x-y", "pair-a", "pair--", "nope", "pair-ag01-ag02"])
+def test_malformed_or_unknown_pair_key_is_404(talk, key):
+    hub, *_ = talk
+    assert get(hub, f"/ui/chats/pair/{key}").status_code == 404
+    r = hub.client.post(f"/ui/chats/pair/{key}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "x"})
+    assert r.status_code in (404, 405)
 
 
 def test_private_messages_never_on_board(talk):
@@ -524,7 +569,7 @@ def test_private_messages_never_on_board(talk):
     hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": secret})
     hub.client.post("/api/v1/private", headers=a.headers, json={"body": secret + "-agent"})
     paths = ["/ui/board"] + [f"/ui/board/{k}" for k in
-                             ("ch-proj~general", "ch-proj~asks", "ch-proj~coordination-1", pair_key(a, c))]
+                             ("ch-proj~general", "ch-proj~asks", "ch-proj~coordination-1")] + [f"/ui/chats/pair/{pair_key(a, c)}"]
     for p in paths:
         assert "SECRET-PRIVATE" not in get(hub, p).text, p
 
@@ -750,7 +795,7 @@ def test_compose_links_cover_every_task_project_and_pair_agent(reach):
     for path in ("/ui/dashboard", "/ui/agents"):
         found = links(get(hub, path).text)
         assert {f"task%3A{t['id']}", f"task%3A{t2['id']}", "project%3Aproj"} <= found, path
-    assert {f"agent%3A{a.id}", f"agent%3A{b.id}"} <= links(get(hub, "/ui/board").text)
+    assert {f"agent%3A{a.id}", f"agent%3A{b.id}"} <= links(get(hub, "/ui/chats").text)
 
 
 def test_agent_buttons_hidden_for_pending_and_revoked_agents(reach):

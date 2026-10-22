@@ -165,7 +165,7 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
     return {"label": label, "agents": agents, "board": board}
 
 
-# --- Board: public channels and agent-to-agent threads -----------------------------------
+# --- Board: public channels; Chats: agent-to-agent threads -----------------------------------
 
 BOARD_LIMIT = 200
 ACTIVITY_LINK = "/ui/feed"  # Task 11 moves "All activity"
@@ -179,8 +179,30 @@ def _ts_key(item: dict[str, Any]) -> str:
     return item["last_ts"] or ""
 
 
+def agent_pairs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The Chats page's "Between agents" rows: one per pair of agents that have addressed each other.
+
+    Built from addressed agent-to-agent messages plus asks, newest first. Each item is
+    ``{key, title, last_body, last_ts, avatars, agents}``; ``last_body`` is always None (agent-written
+    snippets stay out of lists). Keys are ``pair-<a>-<b>`` with the agent ids sorted.
+    """
+    board = avatars.board(conn)
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+    pairs: dict[tuple[str, str], str] = {}
+    for r in conn.execute(
+            f"SELECT m.author, m.to_agent, m.ts FROM messages m JOIN channels c ON c.id = m.channel_id "
+            f"WHERE m.to_agent IS NOT NULL AND {_ASK_ECHO} UNION ALL SELECT from_agent, to_agent, created_at FROM asks"):
+        if r["author"] in names and r["to_agent"] in names and r["author"] != r["to_agent"]:
+            k = tuple(sorted((r["author"], r["to_agent"])))
+            pairs[k] = max(pairs.get(k, ""), r["ts"])
+    out = [{"key": f"pair-{x}-{y}", "title": f"{names[x]} ↔ {names[y]}", "last_body": None, "last_ts": ts,
+            "avatars": [board[i] for i in (x, y) if i in board],
+            "agents": [{"id": i, "name": names[i]} for i in (x, y)]} for (x, y), ts in pairs.items()]
+    return sorted(out, key=_ts_key, reverse=True)
+
+
 def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """The Board page's thread list: project boards, task boards, other channels, agent pairs, device boards.
+    """The Board page's thread list: project boards, task boards, other channels, device boards.
 
     Each item is ``{key, title, created_by, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
     None: agent-written snippets stay out of lists, so a row shows who spoke last and when. Device items
@@ -194,7 +216,7 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
         authors.setdefault(r["channel_id"], []).append(r["author"])
     last = {r["channel_id"]: r["ts"] for r in conn.execute(
         "SELECT channel_id, ts FROM messages WHERE id IN (SELECT MAX(id) FROM messages GROUP BY channel_id)")}
-    out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": [], "between_agents": []}
+    out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": []}
     for c in conn.execute("SELECT id, project, name, created_by FROM channels"):
         item = {"key": f"ch-{c['project']}~{c['name']}", "created_by": c["created_by"], "title": f"{c['project']} / {c['name']}", "last_body": None,
                 "last_ts": last.get(c["id"]), "project": c["project"],
@@ -207,18 +229,6 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by, "task_id": int(m[1])})
         else:
             out["threads"].append(item)
-    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
-    pairs: dict[tuple[str, str], str] = {}
-    for r in conn.execute(
-            f"SELECT m.author, m.to_agent, m.ts FROM messages m JOIN channels c ON c.id = m.channel_id "
-            f"WHERE m.to_agent IS NOT NULL AND {_ASK_ECHO} UNION ALL SELECT from_agent, to_agent, created_at FROM asks"):
-        if r["author"] in names and r["to_agent"] in names and r["author"] != r["to_agent"]:
-            k = tuple(sorted((r["author"], r["to_agent"])))
-            pairs[k] = max(pairs.get(k, ""), r["ts"])
-    for (x, y), ts in pairs.items():
-        out["between_agents"].append({"key": f"pair-{x}-{y}", "title": f"{names[x]} ↔ {names[y]}", "last_body": None,
-                                      "last_ts": ts, "avatars": [board[i] for i in (x, y) if i in board],
-                                      "agents": [{"id": i, "name": names[i]} for i in (x, y)]})
     posts = device_board.last_posts(conn)
     out["devices"] = []
     for d in devices(conn):  # every machine with a non-revoked agent, so the operator can start its board
@@ -245,10 +255,9 @@ def _channel_for_key(conn: sqlite3.Connection, key: str) -> tuple[str, str, str]
 
 
 def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
-    """One Board thread: ``{title, messages, can_post}`` (plus ``project``/``channel`` for channels).
+    """One Board thread: ``{title, messages, can_post, project, channel, created_by}``.
 
-    Channel keys are ``ch-<project>~<channel>``; pair keys ``pair-<a>-<b>`` (agent ids sorted) show
-    addressed messages between two agents and their asks, read-only. Raises store.NotFound if unknown.
+    Keys are ``ch-<project>~<channel>``. Raises store.NotFound if unknown.
     """
     found = _channel_for_key(conn, key)
     if found:
@@ -257,13 +266,22 @@ def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
                 for m in store.recent_messages(conn, project=project, channel=channel, limit=BOARD_LIMIT)]
         return {"title": f"{project} / {channel}", "messages": msgs, "can_post": True,
                 "project": project, "channel": channel, "created_by": created_by}
+    raise store.NotFound(f"no board thread {key!r}")
+
+
+def pair_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """One agent-to-agent chat, ``pair-<a>-<b>`` (agent ids sorted): ``{title, messages, can_post}``.
+
+    Addressed messages both ways plus their asks and answers, read-only. Raises store.NotFound if unknown.
+    """
+
     m = _PAIR_KEY.fullmatch(key)
     if not m or m[1] >= m[2]:
-        raise store.NotFound(f"no board thread {key!r}")
+        raise store.NotFound(f"no agent chat {key!r}")
     x, y = m[1], m[2]
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents WHERE id IN (?, ?)", (x, y))}
     if len(names) != 2:
-        raise store.NotFound(f"no board thread {key!r}")
+        raise store.NotFound(f"no agent chat {key!r}")
     entries: list[tuple[str, int, dict[str, Any]]] = []
     both = f"((m.author = ? AND m.to_agent = ?) OR (m.author = ? AND m.to_agent = ?))"
     for r in conn.execute(

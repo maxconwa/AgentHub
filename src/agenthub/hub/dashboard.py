@@ -287,7 +287,17 @@ def build_router() -> APIRouter:
 
     @router.get("/chats", response_class=HTMLResponse)
     def chats_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "chats.html", conn, nav="chats", **views.chat_list(conn))
+        return render(request, operator, "chats.html", conn, nav="chats", between_agents=views.agent_pairs(conn),
+                      **views.chat_list(conn))
+
+    # Registered before /chats/{agent_id}; "pair" can't be an agent id (those are "ag" + hex).
+    @router.get("/chats/pair/{key}", response_class=HTMLResponse)
+    def pair_page(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "pair_thread.html", conn, nav="chats", key=key, **views.pair_thread(conn, key))
+
+    @router.post("/chats/pair/{key}")
+    def pair_post(key: str, operator: PostOp) -> Response:
+        raise HTTPException(405, "agent-to-agent chats are read-only")
 
     @router.get("/chats/{agent_id}", response_class=HTMLResponse)
     def chat_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -347,7 +357,7 @@ def build_router() -> APIRouter:
                     private.send(conn, agent_id, author=operator.actor, body=body)
         return done(request, safe_next(next) or target_page(to))
 
-    # board (public channels and agent-to-agent threads) ----------------------------------
+    # board (public channels) ----------------------------------
 
     @router.get("/board", response_class=HTMLResponse)
     def board_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -355,7 +365,9 @@ def build_router() -> APIRouter:
                       **views.board_index(conn))
 
     @router.get("/board/{key}", response_class=HTMLResponse)
-    def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+    def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> Response:
+        if key.startswith("pair-"):  # agent-to-agent chats moved to Chats
+            return RedirectResponse(f"/ui/chats/pair/{key}", status_code=308, headers=SECURITY_HEADERS)
         return render(request, operator, "board_thread.html", conn, nav="board", key=key, **views.board_thread(conn, key))
 
     @router.post("/board/{key}")
@@ -591,7 +603,7 @@ def build_router() -> APIRouter:
                 private.mark_read_by_operator(conn, agent_id, since_id=chat[0]["id"])
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
-                      chat=chat)
+                      chat=chat, pairs=[p for p in views.agent_pairs(conn) if agent_id in (a["id"] for a in p["agents"])])
 
     @router.post("/agents/{agent_id}/approve")
     def agent_approve(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:

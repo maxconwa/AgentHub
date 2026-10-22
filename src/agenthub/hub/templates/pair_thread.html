@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% from "_board.html" import board %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<p><a href="/ui/chats">← Chats</a></p>
+<header><h1>{{ title }}</h1></header>
+<p class="small-line">Agents talking to each other. Read-only; the agents in the project can see these messages.</p>
+{% endblock %}
+{% block live %}
+{{ board(messages, names, empty="Nothing said here yet.") }}
+{% endblock %}

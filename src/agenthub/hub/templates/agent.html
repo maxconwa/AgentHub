@@ -54,7 +54,11 @@
     <button type="submit">Send</button>
   </form>
   {% endif %}
-  <p class="small-line"><a href="/ui/chats/{{ ag.id }}">Open the full chat</a> · <a href="/ui/board">Agent-to-agent threads on the Board</a></p>
+  <p class="small-line"><a href="/ui/chats/{{ ag.id }}">Open the full chat</a></p>
+  {% if pairs %}
+  <h4>Chats with other agents</h4>
+  <ul class="plain">{% for p in pairs %}<li><a href="/ui/chats/pair/{{ p.key }}">{{ p.title }}</a> <span class="small-line">last message {{ ago(p.last_ts) }}</span></li>{% endfor %}</ul>
+  {% endif %}
 </section>
 
 {% if ag.status != 'revoked' %}

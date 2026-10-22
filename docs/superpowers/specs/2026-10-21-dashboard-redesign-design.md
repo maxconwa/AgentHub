@@ -86,6 +86,39 @@ menus). The approvals red badge stays on its link.
 
 All pages update live, the way the feed does now.
 
+**Slide-in panel and the two floating buttons** (operator-approved mockup,
+2026-10-21: https://claude.ai/artifact/WXYyaQVveX4c9W1TCyJSfk).
+
+- **Tap anything.** Tapping an agent, project, task, device or approval on
+  any page slides a panel in from the left. It shows the item's status and
+  its chat, so the operator never leaves the page:
+  - agent: status, task, role, project, device, directory, its **waiting
+    approvals** (each one tappable), then the operator's private chat with
+    it;
+  - task: state, project, its agents with roles and statuses, then the
+    task's group chat (its board);
+  - project: description and tasks, then the project's group chat (its
+    board);
+  - device: online, metrics when available, its agents, then its device
+    board;
+  - approval: who asked, the request (agent text), project and task, the
+    **discussion thread with a Discuss box**, and Approve / Reject. A
+    question from an agent gets an answer box instead.
+
+  Links inside the panel open the next item's panel. The panel closes with
+  ✕, Escape, or a tap outside it.
+- **Two round buttons at the bottom right of every page.**
+  - **+** opens New task, New project or New agent, each a form in the same
+    panel. New agent, until dashboard agent creation arrives, shows the
+    enrollment flow.
+  - **Chat** (with the unread count) opens a texting-style window. It lists
+    agents with their last message and status, then **agent-to-agent chats**,
+    then projects and tasks as group chats, then device boards. Tapping
+    **any** chat, including one between two agents, opens that conversation
+    in the window (read-only for agent-to-agent chats), with a back arrow to
+    the list. It is full screen on phones and a floating window on larger
+    screens.
+
 **Tap to talk, everywhere** (operator, 2026-10-21). Wherever an agent, a
 project, a task or a device appears, on any page, tapping its **Message**
 action opens a compose panel right there, addressed to the appropriate
