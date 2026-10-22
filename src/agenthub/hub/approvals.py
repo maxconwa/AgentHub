@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agenthub import security
-from agenthub.hub import events, store, tasks
+from agenthub.hub import events, store, task_agents, tasks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
 
@@ -169,18 +169,22 @@ def request(
             raise Forbidden("no access to that task's project")
         project = task["project"]
         details = {"task_id": task["id"], "assignee": str(details.get("assignee") or "") or None}
+        requester = task_agents.member(task, agent.id)
+        details["role"] = requester["role"] if requester else ""
     if kind in ("budget_exceeded", "tool_permission") and "task_id" in details:
         task = tasks.get_task(conn, _int(details, "task_id"))
-        if not any(m["agent_id"] == agent.id for m in task["agents"]):  # stage rules: Task 3
-            raise Forbidden("only the task's assignee can file this approval for it")
+        member = task_agents.member(task, agent.id)
+        if member is None:
+            raise Forbidden("only agents on the task can file this approval for it")
         project = task["project"]
         if kind == "budget_exceeded":
             limit = details.get("limit")
             if limit not in tasks.BUDGET_LIMITS:
                 raise Invalid(f"details.limit must be one of {', '.join(tasks.BUDGET_LIMITS)}")
             # The hub, not the agent, decides how much an approval extends the budget.
-            details = {"task_id": task["id"], "limit": limit, "current": task["budget"][limit],
-                       "used": tasks.usage(conn, task["id"]), "extend_to": tasks.budget_extension(task, limit)}
+            details = {"task_id": task["id"], "agent_id": agent.id, "limit": limit, "current": member["budget"][limit],
+                       "used": tasks.usage(conn, task["id"], agent.id),
+                       "extend_to": tasks.budget_extension(member, limit)}
     elif kind == "budget_exceeded":
         raise Invalid("budget_exceeded approvals need details.task_id")
     if kind == "tool_permission":
@@ -250,8 +254,8 @@ def request_tool_permission(
 ) -> dict[str, Any]:
     """File (or reuse) a live permission request from a headless task session."""
     task = tasks.get_task(conn, task_id)
-    if not any(m["agent_id"] == agent.id for m in task["agents"]):  # stage rules: Task 3
-        raise Forbidden("only the task's assignee can request permissions for it")
+    if task_agents.member(task, agent.id) is None:
+        raise Forbidden("only agents on the task can request permissions for it")
     key = tool_key(agent.id, task_id, tool_name, tool_input)
     row = conn.execute(
         "SELECT id FROM approvals WHERE command_key = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", (key,)
@@ -319,13 +323,14 @@ def _apply(conn: sqlite3.Connection, approval: dict[str, Any], approve: bool, ac
         if task["state"] == "awaiting_approval":
             tasks.transition(conn, task["id"], "open" if approve else "rejected", actor=actor, role="approval")
     elif kind == "task_reassign" and approve:
-        tasks.assign(conn, details["task_id"], details.get("assignee"), actor=actor)
+        tasks.assign(conn, details["task_id"], details.get("assignee"), actor=actor, role=details.get("role") or None)
     elif kind == "agent_enrollment":
         agent = store.find_agent(conn, details["agent_id"])
         if agent.status == "pending":
             store.set_agent_status(conn, agent.id, "active" if approve else "revoked", actor=actor)
     elif kind == "budget_exceeded" and approve:
-        tasks.extend_budget(conn, details["task_id"], details["limit"], details["extend_to"], actor=actor)
+        tasks.extend_budget(conn, details["task_id"], details["agent_id"], details["limit"], details["extend_to"],
+                            actor=actor)
     # command, tool_permission, rejected budgets: the requester acts on the decision itself.
 
 

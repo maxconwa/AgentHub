@@ -153,6 +153,10 @@ def test_assignee_column_is_dead():
     """
     for name in ("task_agents.py", "bus.py"):
         assert "assignee" not in _strip_comments((SRC / name).read_text()), name
+    # approvals.py: the task_reassign details key "assignee" is wire format; no error text may use it.
+    for sub in ast.walk(ast.parse((SRC / "approvals.py").read_text())):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            assert "assignee" not in sub.value.replace('"assignee"', "") or sub.value == "assignee", sub.value
     tree = ast.parse((SRC / "tasks.py").read_text())
     migrated = {"_row", "get_task", "list_tasks", "create_task", "assign", "transition", "add_note",
                 "_require_member", "start_run", "end_run", "record_progress"}

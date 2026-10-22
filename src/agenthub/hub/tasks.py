@@ -306,15 +306,19 @@ def list_runs(conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute("SELECT * FROM task_runs WHERE task_id = ? ORDER BY id", (task_id,))]
 
 
-def usage(conn: sqlite3.Connection, task_id: int) -> dict[str, Any]:
-    """Budget consumed so far across all runs of a task."""
-    runs = list_runs(conn, task_id)
+def usage(conn: sqlite3.Connection, task_id: int, agent_id: str | None = None) -> dict[str, Any]:
+    """Budget consumed so far by a task's runs (only ``agent_id``'s when given).
+
+    Runs stopped by the usage limit use up turns and minutes but not the run count.
+    """
+    runs = [r for r in list_runs(conn, task_id) if agent_id is None or r["agent_id"] == agent_id]
     minutes = 0.0
     for r in runs:
         if r["ended_at"]:
             minutes += (_ts(r["ended_at"]) - _ts(r["started_at"])) / 60
     last_session = next((r["session_id"] for r in reversed(runs) if r["session_id"]), None)
-    return {"runs": len(runs), "turns": sum(r["num_turns"] or 0 for r in runs),
+    return {"runs": sum(1 for r in runs if r["outcome"] != "usage_limit"),
+            "turns": sum(r["num_turns"] or 0 for r in runs),
             "wall_clock_minutes": round(minutes, 2), "last_session_id": last_session}
 
 
@@ -326,9 +330,10 @@ def _ts(value: str) -> float:
 
 def start_run(conn: sqlite3.Connection, task_id: int, agent: Agent, *, device: str | None = None) -> dict[str, Any]:
     task = get_task(conn, task_id)
-    _require_member(task, agent)
-    if task["state"] != "in_progress":
-        raise Conflict(f"task {task_id} must be in_progress to start a run (it is {task['state']})")
+    m = _require_member(task, agent)
+    needed = "review" if m["stage"] == "reviews" else "in_progress"
+    if task["state"] != needed:
+        raise Conflict(f"task {task_id} must be {needed} to start a run (it is {task['state']})")
     if conn.execute("SELECT 1 FROM task_runs WHERE task_id = ? AND ended_at IS NULL", (task_id,)).fetchone():
         raise Conflict(f"task {task_id} already has an active run")
     cur = conn.execute(
@@ -365,7 +370,7 @@ def end_run(
     events.emit(conn, type="task.run_ended", actor=agent.id, project=task["project"], device=device,
                 payload={"task_id": task_id, "run_id": run_id, "outcome": outcome, "num_turns": num_turns,
                          "cost_usd": cost_usd, "agents": _member_ids(task)})
-    return usage(conn, task_id)
+    return usage(conn, task_id, agent.id)  # the ending agent's own consumption
 
 
 def set_run_session(conn: sqlite3.Connection, task_id: int, run_id: int, agent: Agent, session_id: str) -> None:
@@ -390,17 +395,28 @@ def record_progress(
                                "agents": _member_ids(task)})
 
 
-def budget_extension(task: dict[str, Any], limit: str) -> int:
+def budget_extension(member: dict[str, Any], limit: str) -> int:
     """The new value an approved budget_exceeded approval sets (computed by the hub, not the agent)."""
     if limit not in BUDGET_LIMITS:
         raise Invalid(f"unknown budget limit {limit!r}")
-    return min(task["budget"][limit] * 2 or 1, EXTENSION_CAPS[limit])
+    return min(member["budget"][limit] * 2 or 1, EXTENSION_CAPS[limit])
 
 
-def extend_budget(conn: sqlite3.Connection, task_id: int, limit: str, value: int, *, actor: str) -> dict[str, Any]:
+def extend_budget(
+    conn: sqlite3.Connection, task_id: int, agent_id: str, limit: str, value: int, *, actor: str
+) -> dict[str, Any]:
+    """Set one agent's budget limit; other members' budgets are untouched."""
+    from agenthub.hub import task_agents
+
     task = get_task(conn, task_id)
-    budget = {**task["budget"], limit: value}
-    conn.execute("UPDATE tasks SET budget = ?, updated_at = ? WHERE id = ?", (json.dumps(budget), now_iso(), task_id))
+    m = task_agents.member(task, agent_id)
+    if m is None:
+        raise NotFound(f"agent {agent_id} is not on task {task_id}")
+    budget = {**m["budget"], limit: value}
+    conn.execute("UPDATE task_agents SET budget = ? WHERE task_id = ? AND agent_id = ?",
+                 (json.dumps(budget), task_id, agent_id))
+    conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
     events.emit(conn, type="task.budget_extended", actor=actor, project=task["project"],
-                payload={"task_id": task_id, "limit": limit, "value": value, "agents": _member_ids(task)})
+                payload={"task_id": task_id, "agent_id": agent_id, "limit": limit, "value": value,
+                         "agents": _member_ids(task)})
     return get_task(conn, task_id)

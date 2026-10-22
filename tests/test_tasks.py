@@ -219,7 +219,7 @@ def test_compare_and_set_detects_concurrent_change(hub):
         tasks.get_task = original
 
 
-def test_only_assignee_can_record_runs_and_progress(hub):
+def test_only_members_can_record_runs_and_progress(hub):
     a, b = hub.enroll("a"), hub.enroll("b")
     t = op_task(hub, assignee="a")
     hub.client.post(f"/api/v1/tasks/{t['id']}/claim", headers=a.headers)
@@ -251,7 +251,8 @@ def test_budget_extension_is_decided_by_hub_not_agent(hub):
         "details": {"task_id": t["id"], "limit": "max_turns", "extend_to": 100000}})
     assert r.json()["details"]["extend_to"] == tasks.DEFAULT_BUDGET["max_turns"] * 2
     decide(hub, r.json()["id"])
-    assert tasks.get_task(hub.conn(), t["id"])["budget"]["max_turns"] == tasks.DEFAULT_BUDGET["max_turns"] * 2
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert task_agents.member(got, a.id)["budget"]["max_turns"] == tasks.DEFAULT_BUDGET["max_turns"] * 2
     bad = hub.client.post("/api/v1/approvals", headers=a.headers, json={
         "kind": "budget_exceeded", "details": {"task_id": t["id"], "limit": "infinite"}})
     assert bad.status_code == 422
@@ -342,3 +343,108 @@ def test_task_moves_to_review_when_all_implementers_finish(hub):
     row = hub.conn().execute(
         "SELECT actor, payload FROM events WHERE type = 'task.transitioned' ORDER BY id DESC LIMIT 1").fetchone()
     assert row["actor"] == "system:hub"
+
+
+# --- per-agent runs, usage and budgets ---------------------------------------------
+
+def _run(hub, task_id, agent, outcome="success", turns=1):
+    conn = hub.conn()
+    with db.transaction(conn):
+        a = store.find_agent(conn, agent)
+        run = tasks.start_run(conn, task_id, a)
+        return tasks.end_run(conn, task_id, run["id"], a, outcome=outcome, session_id=None, num_turns=turns,
+                             cost_usd=None)
+
+
+def _impl_and_reviewer(hub):
+    a, r = hub.enroll("a"), hub.enroll("r")
+    t = op_task(hub, assignee="a")
+    add_member(hub, t["id"], r.id, "reviews", "Rev")
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET state = 'in_progress' WHERE id = ?", (t["id"],))
+    return a, r, t
+
+
+def test_usage_is_per_agent(hub):
+    a, r, t = _impl_and_reviewer(hub)
+    _run(hub, t["id"], a.id, turns=4)
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET state = 'review' WHERE id = ?", (t["id"],))
+    _run(hub, t["id"], r.id, turns=2)
+    assert tasks.usage(conn, t["id"], a.id)["turns"] == 4
+    assert tasks.usage(conn, t["id"], r.id)["turns"] == 2
+    assert tasks.usage(conn, t["id"])["turns"] == 6
+
+
+def test_usage_limit_runs_do_not_count_toward_runs(hub):
+    a, _r, t = _impl_and_reviewer(hub)
+    for _ in range(5):
+        _run(hub, t["id"], a.id, outcome="usage_limit", turns=3)
+    _run(hub, t["id"], a.id, outcome="success", turns=1)
+    u = tasks.usage(hub.conn(), t["id"])
+    assert u["runs"] == 1
+    assert u["turns"] == 16
+    assert tasks.usage(hub.conn(), t["id"], a.id)["runs"] == 1
+
+
+def test_budget_exceeded_extends_only_that_agent(hub):
+    a, r, t = _impl_and_reviewer(hub)
+    resp = hub.client.post("/api/v1/approvals", headers=a.headers, json={
+        "kind": "budget_exceeded", "reason": "more", "details": {"task_id": t["id"], "limit": "max_turns"}})
+    assert resp.status_code == 201
+    d = resp.json()["details"]
+    assert d["agent_id"] == a.id and d["extend_to"] == tasks.DEFAULT_BUDGET["max_turns"] * 2
+    assert set(d) == {"task_id", "agent_id", "limit", "current", "used", "extend_to"}
+    decide(hub, resp.json()["id"])
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert task_agents.member(got, a.id)["budget"]["max_turns"] == tasks.DEFAULT_BUDGET["max_turns"] * 2
+    assert task_agents.member(got, r.id)["budget"]["max_turns"] == tasks.DEFAULT_BUDGET["max_turns"]
+
+
+def test_reviewer_run_requires_review_state(hub):
+    a, r, t = _impl_and_reviewer(hub)
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=r.headers).status_code == 409
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET state = 'review' WHERE id = ?", (t["id"],))
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=r.headers).status_code == 201
+    # and the implementer cannot run during review
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=a.headers).status_code == 409
+
+
+def test_nonmember_cannot_file_budget_exceeded_or_run(hub):
+    _a, _r, t = _impl_and_reviewer(hub)
+    x = hub.enroll("x")
+    body = {"kind": "budget_exceeded", "details": {"task_id": t["id"], "limit": "max_turns"}}
+    assert hub.client.post("/api/v1/approvals", json=body, headers=x.headers).status_code == 403
+    assert hub.client.post(f"/api/v1/tasks/{t['id']}/runs", headers=x.headers).status_code == 403
+
+
+def test_reviewer_budget_exceeded_uses_its_own_budget(hub):
+    a, r, t = _impl_and_reviewer(hub)
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE task_agents SET budget = ? WHERE task_id = ? AND agent_id = ?",
+                     ('{"max_turns": 10, "wall_clock_minutes": 60, "max_subtasks": 5}', t["id"], r.id))
+    body = {"kind": "budget_exceeded", "details": {"task_id": t["id"], "limit": "max_turns"}}
+    resp = hub.client.post("/api/v1/approvals", json=body, headers=r.headers)
+    assert resp.status_code == 201
+    assert resp.json()["details"]["agent_id"] == r.id
+    assert resp.json()["details"]["current"] == 10 and resp.json()["details"]["extend_to"] == 20
+    decide(hub, resp.json()["id"])
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert task_agents.member(got, r.id)["budget"]["max_turns"] == 20
+    assert task_agents.member(got, a.id)["budget"]["max_turns"] == tasks.DEFAULT_BUDGET["max_turns"]
+
+
+def test_reassign_approval_applies_requester_role(hub):
+    a, b = hub.enroll("a"), hub.enroll("b")
+    t = op_task(hub)
+    add_member(hub, t["id"], a.id, "works", "Lead")
+    r = hub.client.post("/api/v1/approvals", headers=a.headers, json={
+        "kind": "task_reassign", "details": {"task_id": t["id"], "assignee": "b"}})
+    decide(hub, r.json()["id"])
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert task_agents.member(got, b.id)["role"] == "Lead"
