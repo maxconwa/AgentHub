@@ -186,7 +186,7 @@
   {{ agent_text(q.answer, q.answered_by, names) }}
   {% include "_answer_note.html" %}
   {% elif q.status == 'pending' %}
-  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer goes to ' ~ (q.agent_name or 'the agent') ~ ' as a prompt, which wakes it if it is connected…', field='answer') }}
+  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer to ' ~ (q.agent_name or 'the agent') ~ ' wakes it if it is online and idle; otherwise it arrives as a private message', field='answer') }}
   {% else %}<p class="small-line">The agent withdrew this question.</p>{% endif %}
 </section>
 {% endif %}

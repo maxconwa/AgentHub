@@ -1805,6 +1805,13 @@ def test_answer_to_an_offline_agent_is_a_private_message_not_a_prompt(window):
     assert_answered_privately(hub, c, q2["id"], "9090", since)
 
 
+def test_answer_box_says_when_the_answer_wakes_the_agent(window):
+    hub, a, c, r, t, ap, q = window
+    for html in (get(hub, f"/ui/questions/{q['id']}").text, panel(hub, f"question:{q['id']}").text):
+        assert ("Your answer to worker wakes it if it is online and idle; otherwise it arrives as a private "
+                "message") in html and "wakes it if it is connected" not in html
+
+
 def test_answer_to_an_agent_whose_runner_is_too_old_is_a_private_message(window):
     hub, a, c, r, t, ap, q = window
     online(hub, a, prompts=False)  # connected, but its v0.1.0 runner never runs prompts
