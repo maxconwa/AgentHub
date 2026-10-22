@@ -1,6 +1,6 @@
 [project]
 name = "agenthub"
-version = "0.3.6"
+version = "0.3.6.1"
 description = "A secure coordination hub for Claude Code agents"
 readme = "README.md"
 authors = [
