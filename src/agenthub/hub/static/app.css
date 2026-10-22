@@ -163,3 +163,9 @@ header.top nav::-webkit-scrollbar { display: none; }
 .approval-card { display: flex; gap: 12px; align-items: flex-start; }
 .approval-card .body { min-width: 0; flex: 1; }
 .kind { font-weight: 700; }
+
+/* Projects and boards */
+.by-label { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.task-title { overflow-wrap: anywhere; }
+.board-thread .agent-text { margin: 0; }
+.note-form textarea { width: 100%; }

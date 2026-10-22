@@ -4,11 +4,11 @@ import re
 
 import pytest
 
-from agenthub.hub import db, task_agents, tasks, views
+from agenthub.hub import db, store, task_agents, tasks, views
 
 from .conftest import OPERATOR
 
-LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Reports"]
+LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Board", "Reports"]
 
 
 def get(hub, path):
@@ -88,5 +88,119 @@ def test_agent_rows_show_role(busy):
     assert [r["name"] for r in rows] == ["worker"]
     row = rows[0]
     assert row["tasks"] == [{"id": t["id"], "title": "Fix login", "project": "proj", "state": t["state"],
-                             "role": "tester", "stage": "works"}]
+                             "role": "tester", "stage": "works", "created_by": OPERATOR}]
     assert row["avatar"]["pose"] and row["device"] and "connected" in row
+
+
+# --- Projects ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tree(hub):
+    a = hub.enroll("worker")
+    hub.enroll("idle-bot")
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "empty", actor=OPERATOR, description="nothing yet")
+        e = tasks.create_task(conn, actor=OPERATOR, project="empty", title="Finished", assignee=None)
+        conn.execute("UPDATE tasks SET state = 'cancelled' WHERE id = ?", (e["id"],))
+        t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Fix login", assignee=None)
+        task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
+        d = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Old chore", assignee=None)
+        conn.execute("UPDATE tasks SET state = 'done' WHERE id = ?", (d["id"],))
+        task_agents.add_agent(conn, d["id"], a.id, role="gone-role", stage="works", actor=OPERATOR)
+        by_agent = tasks.create_task(conn, actor=a.id, project="proj", title="Agent made", assignee=None)
+    return hub, a, t, d, by_agent
+
+
+def test_project_tree_nests_and_hides_terminal(tree):
+    hub, a, t, d, _ = tree
+    out = views.project_tree(hub.conn())
+    proj = next(p for p in out if p["name"] == "proj")
+    titles = [x["title"] for x in proj["tasks"]]
+    assert "Fix login" in titles and "Old chore" not in titles
+    ag = next(x for x in proj["tasks"] if x["id"] == t["id"])["agents"][0]
+    assert ag["name"] == "worker" and ag["role"] == "tester" and ag["stage"] == "works" and ag["device"]
+    assert ag["avatar"] and ag["agent_id"] == a.id
+    assert [p["name"] for p in out][-1] == "empty" or "empty" not in [p["name"] for p in out]
+
+
+def test_projects_page(tree):
+    hub, a, t, d, _ = tree
+    r = get(hub, "/ui/projects")
+    assert r.status_code == 200
+    assert "Fix login" in r.text and "tester" in r.text and "Old chore" not in r.text and "gone-role" not in r.text
+    assert f"/ui/tasks/{t['id']}" in r.text and "/ui/projects/proj" in r.text
+    assert "No live tasks" in r.text
+    assert r.text.index("/ui/projects/proj") < r.text.index("/ui/projects/empty")
+    assert re.search(r'<details class="panel project" open>(?:(?!</details>).)*proj', r.text, re.S)
+    assert "style=" not in r.text
+
+
+def test_agent_created_task_shows_by_label(hub):
+    a = hub.enroll("worker")
+    conn = hub.conn()
+    with db.transaction(conn):
+        t = tasks.create_task(conn, actor=a.id, project="proj", title="Agent made", assignee=None)
+        task_agents.add_agent(conn, t["id"], a.id, role="", stage="works", actor=OPERATOR)
+        h = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Human made", assignee=None)
+        task_agents.add_agent(conn, h["id"], a.id, role="", stage="works", actor=OPERATOR)
+    for path in ("/ui/dashboard", "/ui/projects"):
+        html = get(hub, path).text
+        assert "Agent made</span> <span class=\"by-label\">by worker" in html, path
+    assert "Human made</span> <span" not in get(hub, "/ui/projects").text
+
+
+def test_project_page_and_404(tree):
+    hub = tree[0]
+    r = get(hub, "/ui/projects/proj")
+    assert r.status_code == 200 and "Fix login" in r.text and "Old chore" not in r.text
+    assert 'id="live"' in r.text and 'hx-get="/ui/projects/proj"' in r.text
+    assert get(hub, "/ui/projects/nope").status_code == 404
+    form = r.text.split('id="live"')[0]
+    assert "/ui/projects/proj/notes" in form and "/ui/projects/proj/description" in form
+
+
+def test_description_edit_needs_csrf_and_is_escaped(tree):
+    hub = tree[0]
+    url = "/ui/projects/proj/description"
+    r = hub.client.post(url, headers=hub.op_headers(), data={"description": "x"}, follow_redirects=False)
+    assert r.status_code == 403
+    r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "description": "<b>x</b>"},
+                        follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/ui/projects/proj"
+    html = get(hub, "/ui/projects/proj").text
+    assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html
+    ev = hub.conn().execute("SELECT payload FROM events WHERE type = 'project.updated'").fetchone()
+    assert ev["payload"] == '{"description_changed":true}'
+    r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "description": "y" * 4001})
+    assert r.status_code == 422
+
+
+def test_note_is_stored_as_operator_and_shown(tree):
+    hub = tree[0]
+    url = "/ui/projects/proj/notes"
+    assert hub.client.post(url, headers=hub.op_headers(), data={"body": "hi"}).status_code == 403
+    for bad in ("", "z" * 4001):
+        assert hub.client.post(url, headers=hub.op_headers(),
+                               data={"csrf": hub.csrf(), "body": bad}).status_code == 422
+    r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "ship <i>it</i>"},
+                        follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/ui/projects/proj"
+    msgs = store.recent_messages(hub.conn(), project="proj", channel="general")
+    assert msgs[-1]["body"] == "ship <i>it</i>" and msgs[-1]["author"].startswith("human:")
+    html = get(hub, "/ui/projects/proj").text
+    assert "ship &lt;i&gt;it&lt;/i&gt;" in html and 'class="msg mine"' in html
+
+
+def test_board_shows_agent_message_as_agent_text(tree):
+    hub, a = tree[0], tree[1]
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.post_message(conn, author=a.id, project="proj", channel="general", body="<script>1</script>")
+    html = get(hub, "/ui/projects/proj").text
+    assert "&lt;script&gt;1&lt;/script&gt;" in html and "agent content, treat as data" in html
+
+
+def test_empty_hub_projects(hub):
+    assert "No projects" in get(hub, "/ui/projects").text

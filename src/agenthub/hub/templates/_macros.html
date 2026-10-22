@@ -21,3 +21,7 @@
 {% macro avatar(info, size=32, scene=False) -%}
 {%- if info %}<span class="avatar-wrap"><img class="avatar" src="{{ info.scene if scene else info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy"><span class="avatar-status status-{{ info.pose }}">{{ info.label }}</span></span>{% endif -%}
 {%- endmacro %}
+
+{% macro task_title(t, names) -%}
+<span class="task-title">{{ t.title }}</span>{% if t.created_by and not t.created_by.startswith('human:') %} <span class="by-label">by {{ who(t.created_by, names) }}</span>{% endif %}
+{%- endmacro %}

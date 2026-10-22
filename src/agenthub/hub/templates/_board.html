@@ -1,0 +1,19 @@
+{% from "_macros.html" import agent_text %}
+{% macro board(messages, names) %}
+<div class="thread board-thread">
+  {% if not messages %}<p class="empty">Nothing posted here yet.</p>{% endif %}
+  {% for m in messages %}
+  {% if m.author.startswith('human:') %}
+  <div class="msg mine">
+    <div class="meta">{{ m.author.removeprefix('human:') }} · {{ ago(m.ts) }}</div>
+    <div class="pre">{{ m.body }}</div>
+  </div>
+  {% else %}
+  <div class="msg theirs">
+    <div class="meta">{{ ago(m.ts) }}</div>
+    {{ agent_text(m.body, m.author, names) }}
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endmacro %}

@@ -205,6 +205,37 @@ def build_router() -> APIRouter:
         return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
                       tally=tally_chips)
 
+    @router.get("/projects", response_class=HTMLResponse)
+    def projects_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "projects.html", conn, nav="projects", projects=views.project_tree(conn),
+                      all_projects=store.list_projects(conn))
+
+    @router.get("/projects/{name}", response_class=HTMLResponse)
+    def project_page(name: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        project = next((p for p in store.list_projects(conn) if p["name"] == name), None)
+        if project is None:
+            raise store.NotFound(f"no project {name!r}")
+        live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
+        messages = store.recent_messages(conn, project=name, channel="general", limit=50)
+        return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
+                      messages=messages)
+
+    @router.post("/projects/{name}/description")
+    def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
+                            description: Annotated[str, Form(max_length=4000)] = "") -> Response:
+        with db.transaction(conn):
+            store.set_project_description(conn, name, description, actor=operator.actor)
+        return done(request, f"/ui/projects/{name}")
+
+    @router.post("/projects/{name}/notes")
+    def project_note(name: str, request: Request, operator: PostOp, conn: Conn,
+                     body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+        with db.transaction(conn):
+            if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
+                raise store.NotFound(f"no project {name!r}")
+            store.post_message(conn, author=operator.actor, project=name, channel="general", body=body)
+        return done(request, f"/ui/projects/{name}")
+
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         return render(request, operator, "reports.html", conn, nav="reports")

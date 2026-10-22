@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import approval_summary, avatar %}
+{% from "_macros.html" import approval_summary, avatar, task_title %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -24,7 +24,7 @@
   <li class="card agent-card">{{ avatar(ag.avatar, 64, scene=True) }}
     <div class="info"><a class="name" href="/ui/agents#agent-{{ ag.id }}">{{ ag.name }}</a>
       {% if ag.tasks %}{% set t = ag.tasks[0] %}
-      <div class="small-line"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ t.title }}</a> · {{ t.project }}</div>
+      <div class="small-line"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> · {{ t.project }}</div>
       <div class="small-line">{% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}{% if ag.tasks|length > 1 %} · +{{ ag.tasks|length - 1 }} more{% endif %}</div>
       {% else %}<div class="small-line">No current task</div>{% endif %}
       <div class="small-line">on {{ ag.device }}</div></div></li>

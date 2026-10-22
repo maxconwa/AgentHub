@@ -108,6 +108,18 @@ def ensure_project(conn: sqlite3.Connection, name: str, *, actor: str, descripti
     return False
 
 
+MAX_DESCRIPTION_CHARS = 4000
+
+
+def set_project_description(conn: sqlite3.Connection, project: str, description: str, *, actor: str) -> None:
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        raise Invalid(f"description must be at most {MAX_DESCRIPTION_CHARS} characters")
+    cur = conn.execute("UPDATE projects SET description = ? WHERE name = ?", (description, project))
+    if not cur.rowcount:
+        raise NotFound(f"no project {project!r}")
+    events.emit(conn, type="project.updated", actor=actor, project=project, payload={"description_changed": True})
+
+
 def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name")]
 

@@ -13,7 +13,7 @@
   <header class="top">
     <a class="brand" href="/ui/dashboard">agenthub</a>
     <nav aria-label="Pages">
-      {% for key, label in [("dashboard", "Dashboard"), ("projects", "Projects"), ("tasks", "Tasks"), ("agents", "Agents"), ("devices", "Devices"), ("approvals", "Approvals"), ("chats", "Chats"), ("reports", "Reports")] %}
+      {% for key, label in [("dashboard", "Dashboard"), ("projects", "Projects"), ("tasks", "Tasks"), ("agents", "Agents"), ("devices", "Devices"), ("approvals", "Approvals"), ("chats", "Chats"), ("board", "Board"), ("reports", "Reports")] %}
       <a href="/ui/{{ key }}" class="{{ 'active' if nav == key else '' }}">{{ label }}{% if key == "approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% endif %}</a>
       {% endfor %}
     </nav>

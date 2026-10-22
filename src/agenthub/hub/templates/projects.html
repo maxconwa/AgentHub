@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chip, avatar, task_title %}
+{% block title %}Projects{% endblock %}
+{% block content %}
+<h1>Projects</h1>
+<p class="lead">Project → task → agents, with each agent's role, device and status.</p>
+{% endblock %}
+{% block live %}
+{% if not projects %}<p class="empty">No projects yet. Projects appear when an agent is enrolled or a task is created.</p>{% endif %}
+{% for p in projects %}
+<details class="panel project"{% if p.tasks %} open{% endif %}>
+  <summary><span>{{ p.name }}</span><span class="muted small">{{ p.tasks|length }} live task{{ '' if p.tasks|length == 1 else 's' }}</span></summary>
+  {% if p.description %}<p class="muted small">{{ p.description }}</p>{% endif %}
+  <p class="small"><a href="/ui/projects/{{ p.name }}">Open project page</a></p>
+  {% if not p.tasks %}<p class="muted small">No live tasks</p>{% endif %}
+  {% for t in p.tasks %}
+  <div class="task-row">
+    <div class="row"><span><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+    {% for m in t.agents %}
+    <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %}
+      <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div></div>
+    {% else %}<div class="member small-line">Nobody yet</div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</details>
+{% endfor %}
+{% endblock %}
