@@ -46,14 +46,25 @@ def agenthub_command() -> str:
     raise JoinError("cannot locate the agenthub executable on PATH")
 
 
-def mcp_server_spec(command: str, config_dir: Path) -> dict:
+def fallback_config_dir() -> Path:
+    """The agent that Claude Code sessions not started by a runner act as: the agent in the default config
+    dir if there is one, else the one being set up. Runner sessions carry their own $AGENTHUB_CONFIG_DIR."""
+    default = paths.default_config_dir()
+    return default if (default / "agent.toml").exists() else paths.config_dir()
+
+
+def mcp_server_spec(command: str, fallback_dir: Path) -> dict:
     # The token is NOT placed in Claude Code's config; the MCP server reads it
-    # from the 0600 token file under AGENTHUB_CONFIG_DIR.
+    # from the 0600 token file under AGENTHUB_CONFIG_DIR. Claude Code expands
+    # ${VAR:-default} in a server's env (checked against Claude Code 2.1.308), so
+    # one registration serves every agent on the account (see hooks.install).
+    from agenthub.hooks.install import env_default
+
     return {
         "type": "stdio",
         "command": command,
         "args": ["mcp"],
-        "env": {"AGENTHUB_CONFIG_DIR": str(config_dir.resolve())},
+        "env": {"AGENTHUB_CONFIG_DIR": env_default(fallback_dir)},
         "timeout": MCP_TOOL_TIMEOUT_MS,
     }
 
@@ -83,7 +94,9 @@ async def enroll(
     hub_url = check_hub_url(hub_url, insecure_dev=insecure_dev)
     config_path = paths.agent_config_path()
     if config_path.exists() and not force:
-        raise JoinError(f"{config_path} already exists; this machine has already joined (use --force to replace)")
+        raise JoinError(f"{config_path} already exists: an agent on this account has already joined. To add "
+                        f"another agent, give it its own config dir: agenthub --config-dir "
+                        f"~/.config/agenthub-{name} join ... (or use --force to replace this one)")
     async with HubClient(hub_url, transport=transport) as client:
         resp = await client.enroll(code, name)
     token_path = paths.config_dir() / "token"

@@ -238,7 +238,7 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
     }
     path.write_text(json.dumps(existing))
     for _ in range(2):
-        install.install("user", exe="/opt/agenthub/bin/agenthub", config_dir=tmp_path / "cfg")
+        install.install("user", exe="/opt/agenthub/bin/agenthub", fallback_dir=tmp_path / "cfg")
     data = json.loads(path.read_text())
     assert data["model"] == "opus" and data["permissions"]["allow"] == ["Bash(ls *)"]
     assert "Bash(curl *)" in data["permissions"]["deny"] and "Bash(rm -rf /)" in data["permissions"]["deny"]
@@ -248,7 +248,7 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
     ours = [e for e in pre if e["matcher"] == "Bash"]
     assert len(ours) == 1 and ours[0]["hooks"][0]["onFailure"] == "block"
     assert ours[0]["hooks"][0]["command"].endswith("/opt/agenthub/bin/agenthub hook pretooluse")
-    assert f"AGENTHUB_CONFIG_DIR={(tmp_path / 'cfg').resolve()}" in ours[0]["hooks"][0]["command"]
+    assert f'AGENTHUB_CONFIG_DIR="${{AGENTHUB_CONFIG_DIR:-{(tmp_path / "cfg").resolve()}}}"' in ours[0]["hooks"][0]["command"]
     assert len(data["hooks"]["Stop"]) == 1
     assert path.with_name("settings.json.agenthub-backup").exists()
 
@@ -261,3 +261,20 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
 def test_hook_command_quotes_paths(tmp_path):
     cmd = install.hook_command("/opt/my tools/agenthub", "stop", tmp_path / "dir with space")
     assert "'/opt/my tools/agenthub' hook stop" in cmd and "'" in cmd.split()[0] + cmd
+
+
+def test_hook_command_uses_the_sessions_agent_else_the_fallback(tmp_path):
+    import os
+    import subprocess
+
+    exe = tmp_path / "agenthub"
+    exe.write_text('#!/bin/sh\nprintf %s "$AGENTHUB_CONFIG_DIR"\n')
+    exe.chmod(0o755)
+    fallback = tmp_path / 'odd $dir "with` quotes'
+    fallback.mkdir()
+    cmd = install.hook_command(str(exe), "stop", fallback)
+    env = {k: v for k, v in os.environ.items() if k != "AGENTHUB_CONFIG_DIR"}
+    assert subprocess.run(["sh", "-c", cmd], env=env, capture_output=True, text=True).stdout == str(fallback.resolve())
+    runner_env = {**env, "AGENTHUB_CONFIG_DIR": "/home/agent/.config/agenthub-test"}
+    out = subprocess.run(["sh", "-c", cmd], env=runner_env, capture_output=True, text=True).stdout
+    assert out == "/home/agent/.config/agenthub-test"

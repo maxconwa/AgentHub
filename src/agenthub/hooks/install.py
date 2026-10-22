@@ -11,12 +11,18 @@ hook block the tool call instead of letting it through.
 
 Install is idempotent: existing agenthub entries are replaced, everything
 else in the file is preserved, and a one-time backup is written first.
+
+One set of hooks serves every agent on the account. Each hook runs as the
+agent named by the session's $AGENTHUB_CONFIG_DIR, which the runner sets for
+the sessions it starts, and otherwise as the fallback agent (the account's
+first, see join.fallback_config_dir), e.g. in an interactive session.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -43,8 +49,16 @@ def settings_path(scope: str, project_dir: Path | None = None) -> Path:
     raise ValueError(f"unknown scope {scope!r}")
 
 
-def hook_command(exe: str, which: str, config_dir: Path) -> str:
-    return f"AGENTHUB_CONFIG_DIR={shlex.quote(str(config_dir.resolve()))} {shlex.quote(exe)} hook {which}"
+def env_default(fallback_dir: Path) -> str:
+    """``AGENTHUB_CONFIG_DIR`` from the environment, else ``fallback_dir``: a ``${VAR:-default}`` expansion
+    that both sh and Claude Code's MCP config understand."""
+    return f"${{AGENTHUB_CONFIG_DIR:-{fallback_dir.resolve()}}}"
+
+
+def hook_command(exe: str, which: str, fallback_dir: Path) -> str:
+    # Inside sh double quotes, only \ " $ and ` are special; escape them in the path.
+    default = re.sub(r'([\\"$`])', r"\\\1", str(fallback_dir.resolve()))
+    return f'AGENTHUB_CONFIG_DIR="${{AGENTHUB_CONFIG_DIR:-{default}}}" {shlex.quote(exe)} hook {which}'
 
 
 def _is_ours(entry: dict[str, Any]) -> bool:
@@ -54,7 +68,7 @@ def _is_ours(entry: dict[str, Any]) -> bool:
     )
 
 
-def merge_settings(settings: dict[str, Any], *, exe: str, config_dir: Path, deny_rules: list[str]) -> dict[str, Any]:
+def merge_settings(settings: dict[str, Any], *, exe: str, fallback_dir: Path, deny_rules: list[str]) -> dict[str, Any]:
     settings = json.loads(json.dumps(settings))  # deep copy
     hooks = settings.setdefault("hooks", {})
     pre = [e for e in hooks.get("PreToolUse", []) if not _is_ours(e)]
@@ -62,18 +76,18 @@ def merge_settings(settings: dict[str, Any], *, exe: str, config_dir: Path, deny
         "matcher": "Bash",
         "hooks": [{
             "type": "command",
-            "command": hook_command(exe, "pretooluse", config_dir),
+            "command": hook_command(exe, "pretooluse", fallback_dir),
             "timeout": HOOK_TIMEOUT_SECONDS,
             "onFailure": "block",
         }],
     })
     hooks["PreToolUse"] = pre
     stop = [e for e in hooks.get("Stop", []) if not _is_ours(e)]
-    stop.append({"hooks": [{"type": "command", "command": hook_command(exe, "stop", config_dir),
+    stop.append({"hooks": [{"type": "command", "command": hook_command(exe, "stop", fallback_dir),
                             "timeout": HOOK_TIMEOUT_SECONDS}]})
     hooks["Stop"] = stop
     perm = [e for e in hooks.get("PermissionRequest", []) if not _is_ours(e)]
-    perm.append({"hooks": [{"type": "command", "command": hook_command(exe, "permission", config_dir),
+    perm.append({"hooks": [{"type": "command", "command": hook_command(exe, "permission", fallback_dir),
                             "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]})
     hooks["PermissionRequest"] = perm
     deny = settings.setdefault("permissions", {}).setdefault("deny", [])
@@ -113,10 +127,10 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def install(scope: str, *, exe: str, config_dir: Path, project_dir: Path | None = None) -> Path:
+def install(scope: str, *, exe: str, fallback_dir: Path, project_dir: Path | None = None) -> Path:
     path = settings_path(scope, project_dir)
     cfg = guard.load_guard_config()
-    merged = merge_settings(_load(path), exe=exe, config_dir=config_dir,
+    merged = merge_settings(_load(path), exe=exe, fallback_dir=fallback_dir,
                             deny_rules=guard.default_deny_rules(cfg.protected_branches))
     _write(path, merged)
     return path

@@ -10,6 +10,11 @@ user's gui/<uid> domain (launchd.plist(5), launchctl(1)). That domain exists
 only while the user is logged in to the desktop, which is also what gives
 `claude` access to its login keychain; fast user switching keeps the agent
 user's session (and the runner) alive in the background.
+
+Several agents on one account each have their own config dir and their own
+service. The agent in the default config dir keeps the plain names
+(agenthub-runner.service, com.agenthub.runner); any other is suffixed with
+its agent name (agenthub-runner-<name>.service, com.agenthub.runner.<name>).
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from agenthub import paths
 
 UNIT_NAME = "agenthub-runner.service"
 LAUNCHD_LABEL = "com.agenthub.runner"
@@ -32,18 +39,38 @@ def use_launchd() -> bool:
     return sys.platform == "darwin"
 
 
+def instance(config_dir: Path, name: str) -> str | None:
+    """None for the agent in the default config dir, else the agent name its service is suffixed with."""
+    return None if config_dir.resolve() == paths.default_config_dir().resolve() else name
+
+
+def unit_name(inst: str | None = None) -> str:
+    return f"agenthub-runner-{inst}.service" if inst else UNIT_NAME
+
+
+def launchd_label(inst: str | None = None) -> str:
+    return f"{LAUNCHD_LABEL}.{inst}" if inst else LAUNCHD_LABEL
+
+
+def launchd_log(inst: str | None = None) -> Path:
+    return Path.home() / "Library" / "Logs" / (f"agenthub-runner-{inst}.log" if inst else "agenthub-runner.log")
+
+
 def revoked_exit_code() -> int:
     """launchd cannot exempt one exit status from KeepAlive, only a clean exit, so under launchd exit 0."""
-    return 0 if os.environ.get("XPC_SERVICE_NAME") == LAUNCHD_LABEL else EXIT_REVOKED
+    label = os.environ.get("XPC_SERVICE_NAME", "")
+    return 0 if label == LAUNCHD_LABEL or label.startswith(LAUNCHD_LABEL + ".") else EXIT_REVOKED
 
 
-def install(exe: str, config_dir: Path) -> tuple[Path, str | None]:
-    """Write and start the runner service for this platform. Returns its file and a problem, if any."""
+def install(exe: str, config_dir: Path, name: str) -> tuple[Path, str | None]:
+    """Write and start this agent's runner service. Returns its file and a problem, if any."""
+    inst = instance(config_dir, name)
     if use_launchd():
-        path = write_plist(exe, config_dir)
-        return path, launchd_start(path)
-    path = write_unit(exe, config_dir)
-    return path, enable_and_start()
+        path = write_plist(exe, config_dir, inst=inst)
+        return path, launchd_start(path, launchd_label(inst))
+    path = write_unit(exe, config_dir, inst=inst)
+    return path, enable_and_start(unit_name(inst))
+
 
 UNIT = """\
 [Unit]
@@ -68,20 +95,20 @@ def unit_dir() -> Path:
     return Path(base) / "systemd" / "user"
 
 
-def write_unit(exe: str, config_dir: Path, directory: Path | None = None) -> Path:
+def write_unit(exe: str, config_dir: Path, directory: Path | None = None, inst: str | None = None) -> Path:
     directory = directory or unit_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / UNIT_NAME
+    path = directory / unit_name(inst)
     path.write_text(UNIT.format(exe=exe, config_dir=config_dir.resolve(), revoked=EXIT_REVOKED))
     return path
 
 
-def enable_and_start() -> str | None:
+def enable_and_start(unit: str = UNIT_NAME) -> str | None:
     """Returns None on success, or a message explaining what to do by hand."""
     systemctl = shutil.which("systemctl")
     if not systemctl:
         return "systemctl not found; start the runner yourself with `agenthub runner`"
-    for args in (["--user", "daemon-reload"], ["--user", "enable", "--now", UNIT_NAME]):
+    for args in (["--user", "daemon-reload"], ["--user", "enable", "--now", unit]):
         proc = subprocess.run([systemctl, *args], capture_output=True, text=True)
         if proc.returncode != 0:
             return f"`systemctl {' '.join(args)}` failed: {proc.stderr.strip() or proc.stdout.strip()}"
@@ -104,10 +131,10 @@ def launchd_path(exe: str) -> str:
     return ":".join(dict.fromkeys([*dirs, *LAUNCHD_BASE_PATH]))
 
 
-def plist_data(exe: str, config_dir: Path) -> dict:
-    log = Path.home() / "Library" / "Logs" / "agenthub-runner.log"
+def plist_data(exe: str, config_dir: Path, inst: str | None = None) -> dict:
+    log = launchd_log(inst)
     return {
-        "Label": LAUNCHD_LABEL,
+        "Label": launchd_label(inst),
         "ProgramArguments": [exe, "runner"],
         "EnvironmentVariables": {"AGENTHUB_CONFIG_DIR": str(config_dir.resolve()), "PATH": launchd_path(exe)},
         "RunAtLoad": True,
@@ -120,19 +147,19 @@ def plist_data(exe: str, config_dir: Path) -> dict:
     }
 
 
-def write_plist(exe: str, config_dir: Path, directory: Path | None = None) -> Path:
+def write_plist(exe: str, config_dir: Path, directory: Path | None = None, inst: str | None = None) -> Path:
     directory = directory or launch_agents_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{LAUNCHD_LABEL}.plist"
-    path.write_bytes(plistlib.dumps(plist_data(exe, config_dir)))
+    path = directory / f"{launchd_label(inst)}.plist"
+    path.write_bytes(plistlib.dumps(plist_data(exe, config_dir, inst)))
     return path
 
 
-def launchd_start(path: Path) -> str | None:
+def launchd_start(path: Path, label: str = LAUNCHD_LABEL) -> str | None:
     """(Re)load the agent into the gui domain. Returns None on success, or what to do by hand."""
     domain = launchd_domain()
     # bootout of a job that is not loaded fails harmlessly; it makes a rerun pick up a rewritten plist.
-    subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"], capture_output=True)
+    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
     proc = subprocess.run(["launchctl", "bootstrap", domain, str(path)], capture_output=True, text=True)
     if proc.returncode != 0:
         return (f"`launchctl bootstrap {domain}` failed ({proc.stderr.strip() or proc.stdout.strip()}); "

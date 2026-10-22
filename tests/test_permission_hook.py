@@ -120,7 +120,7 @@ def test_large_inputs_are_hashed():
 
 def test_install_adds_permission_hook(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "c"))
-    path = install.install("user", exe="/bin/agenthub", config_dir=tmp_path)
+    path = install.install("user", exe="/bin/agenthub", fallback_dir=tmp_path)
     data = json.loads(path.read_text())
     (entry,) = data["hooks"]["PermissionRequest"]
     assert entry["hooks"][0]["command"].endswith("hook permission")
@@ -184,3 +184,30 @@ def test_revoked_runner_exits_cleanly_only_under_launchd(monkeypatch):
     assert service.revoked_exit_code() == service.EXIT_REVOKED
     monkeypatch.setenv("XPC_SERVICE_NAME", service.LAUNCHD_LABEL)
     assert service.revoked_exit_code() == 0
+
+
+def test_each_agent_on_an_account_has_its_own_runner_service(tmp_path):
+    import plistlib
+
+    from agenthub import paths
+    from agenthub.runner import service
+
+    assert service.instance(paths.default_config_dir(), "programmer") is None
+    inst = service.instance(tmp_path / "agenthub-tester", "tester")
+    assert inst == "tester"
+    assert service.unit_name(inst) == "agenthub-runner-tester.service"
+    assert service.write_unit("/opt/agenthub", tmp_path / "cfg", directory=tmp_path, inst=inst).name == \
+        "agenthub-runner-tester.service"
+    plist = service.write_plist("/opt/agenthub", tmp_path / "cfg", directory=tmp_path, inst=inst)
+    data = plistlib.loads(plist.read_bytes())
+    assert plist.name == "com.agenthub.runner.tester.plist" and data["Label"] == "com.agenthub.runner.tester"
+    assert data["StandardOutPath"].endswith("agenthub-runner-tester.log")
+
+
+def test_revoked_suffixed_launchd_runner_exits_cleanly(monkeypatch):
+    from agenthub.runner import service
+
+    monkeypatch.setenv("XPC_SERVICE_NAME", "com.agenthub.runner.tester")
+    assert service.revoked_exit_code() == 0
+    monkeypatch.setenv("XPC_SERVICE_NAME", "com.agenthub.runnerx")
+    assert service.revoked_exit_code() == service.EXIT_REVOKED

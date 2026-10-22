@@ -2,6 +2,7 @@
 
 Defaults follow the XDG base directory spec:
   config: $AGENTHUB_CONFIG_DIR or $XDG_CONFIG_HOME/agenthub or ~/.config/agenthub
+          (each further agent on the same account has its own, e.g. ~/.config/agenthub-<name>)
   data:   $AGENTHUB_DATA_DIR   or $XDG_DATA_HOME/agenthub   or ~/.local/share/agenthub
 """
 
@@ -20,6 +21,11 @@ def config_dir() -> Path:
     override = os.environ.get("AGENTHUB_CONFIG_DIR")
     if override:
         return Path(override).expanduser()
+    return default_config_dir()
+
+
+def default_config_dir() -> Path:
+    """The config dir without $AGENTHUB_CONFIG_DIR: the first agent on an account lives here."""
     return _xdg("XDG_CONFIG_HOME", ".config") / "agenthub"
 
 

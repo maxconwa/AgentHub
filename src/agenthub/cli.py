@@ -30,6 +30,17 @@ hub_app.add_typer(tasks_app, name="tasks")
 app.add_typer(hook_app, name="hook")
 
 
+@app.callback()
+def _main(
+    config_dir: Annotated[Path | None, typer.Option(
+        "--config-dir", envvar="AGENTHUB_CONFIG_DIR", show_envvar=True,
+        help="Config dir of the agent (or hub) to act on; each agent on an account has its own.")] = None,
+) -> None:
+    if config_dir is not None:
+        # Exported, so the hooks, MCP server and runner sessions this command starts see it too.
+        os.environ["AGENTHUB_CONFIG_DIR"] = str(config_dir.expanduser().resolve())
+
+
 def _fail(message: str) -> None:
     typer.secho(f"error: {message}", fg="red", err=True)
     raise typer.Exit(1)
@@ -494,7 +505,7 @@ def join(
 
     if not no_mcp:
         try:
-            spec = join_mod.mcp_server_spec(join_mod.agenthub_command(), paths.config_dir())
+            spec = join_mod.mcp_server_spec(join_mod.agenthub_command(), join_mod.fallback_config_dir())
             join_mod.register_mcp(spec, scope=mcp_scope, cwd=Path.cwd())
         except join_mod.JoinError as exc:
             _fail(f"{exc} (the token is saved; rerun registration with `claude mcp add-json`)")
@@ -504,7 +515,8 @@ def join(
         from agenthub.hooks import install as hook_install
 
         try:
-            path = hook_install.install(mcp_scope, exe=join_mod.agenthub_command(), config_dir=paths.config_dir())
+            path = hook_install.install(mcp_scope, exe=join_mod.agenthub_command(),
+                                        fallback_dir=join_mod.fallback_config_dir())
         except (join_mod.JoinError, ValueError, OSError) as exc:
             _fail(f"could not install hooks: {exc} (rerun `agenthub hook install`)")
         typer.echo(f"installed PreToolUse/Stop/PermissionRequest hooks and deny rules in {path}")
@@ -512,7 +524,7 @@ def join(
     if not no_runner:
         from agenthub.runner import service
 
-        unit, problem = service.install(join_mod.agenthub_command(), paths.config_dir())
+        unit, problem = service.install(join_mod.agenthub_command(), paths.config_dir(), cfg.name)
         if problem:
             typer.secho(f"runner service written to {unit} but not started: {problem}", fg="yellow")
         else:
@@ -651,16 +663,21 @@ def hook_permission() -> None:
 @hook_app.command("install")
 def hook_install_cmd(
     scope: Annotated[str, typer.Option(help="user, project, or local")] = "user",
+    no_mcp: Annotated[bool, typer.Option("--no-mcp", help="Leave the MCP server registration alone.")] = False,
 ) -> None:
-    """Install the hooks and never-list deny rules into Claude Code settings."""
+    """Install the hooks, never-list deny rules and MCP server registration into Claude Code."""
     from agenthub import join as join_mod
     from agenthub.hooks import install as hook_install
 
+    exe, fallback = join_mod.agenthub_command(), join_mod.fallback_config_dir()
     try:
-        path = hook_install.install(scope, exe=join_mod.agenthub_command(), config_dir=paths.config_dir())
+        path = hook_install.install(scope, exe=exe, fallback_dir=fallback)
+        if not no_mcp:
+            join_mod.register_mcp(join_mod.mcp_server_spec(exe, fallback), scope=scope, cwd=Path.cwd())
     except (join_mod.JoinError, ValueError, OSError) as exc:
         _fail(str(exc))
-    typer.echo(f"installed hooks and deny rules in {path}")
+    typer.echo(f"installed hooks and deny rules in {path}"
+               + ("" if no_mcp else f"; registered MCP server '{join_mod.MCP_SERVER_NAME}' (scope: {scope})"))
 
 
 @hook_app.command("uninstall")

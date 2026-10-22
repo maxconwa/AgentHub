@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 
@@ -50,7 +51,7 @@ def test_read_token_refuses_loose_permissions(tmp_path):
 def test_mcp_spec_has_no_secret(tmp_path):
     spec = join.mcp_server_spec("/usr/bin/agenthub", tmp_path)
     assert spec["args"] == ["mcp"] and spec["type"] == "stdio"
-    assert spec["env"] == {"AGENTHUB_CONFIG_DIR": str(tmp_path.resolve())}
+    assert spec["env"] == {"AGENTHUB_CONFIG_DIR": f"${{AGENTHUB_CONFIG_DIR:-{tmp_path.resolve()}}}"}
     assert "ahk_" not in json.dumps(spec)
 
 
@@ -67,3 +68,19 @@ def test_register_mcp_removes_then_adds(monkeypatch):
     assert calls[0] == ["/bin/claude", "mcp", "remove", "agenthub", "--scope", "local"]
     assert calls[1][:4] == ["/bin/claude", "mcp", "add-json", "agenthub"]
     assert calls[1][-2:] == ["--scope", "local"]
+
+
+def test_fallback_agent_is_the_default_config_dirs(tmp_path):
+    # conftest points AGENTHUB_CONFIG_DIR and XDG_CONFIG_HOME at separate temporary dirs
+    assert join.fallback_config_dir() == paths.config_dir()
+    default = paths.default_config_dir()
+    default.mkdir(parents=True)
+    (default / "agent.toml").write_text("")
+    assert join.fallback_config_dir() == default
+
+
+def test_second_agent_is_pointed_at_its_own_config_dir():
+    paths.config_dir().mkdir(parents=True)
+    paths.agent_config_path().write_text("")
+    with pytest.raises(join.JoinError, match="--config-dir ~/.config/agenthub-tester"):
+        asyncio.run(join.enroll("https://hub.example", "CODE", "tester"))

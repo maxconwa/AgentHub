@@ -164,6 +164,31 @@ The steps are the same, with three differences:
   agent machine. The Mac then can no longer act as the operator, so don't
   use it for the dashboard.
 
+#### Several agents on one account
+
+Each further agent on the same account gets its own config dir, which you
+pass with `--config-dir` (or `AGENTHUB_CONFIG_DIR`) to every agent-side
+command:
+
+```bash
+agenthub --config-dir ~/.config/agenthub-reviewer join https://HUB-NODE.YOUR-TAILNET.ts.net --code XXXX-XXXX-XXXX --name reviewer
+agenthub --config-dir ~/.config/agenthub-reviewer doctor
+```
+
+- **Its own runner.** It runs as `agenthub-runner-reviewer.service`
+  (`com.agenthub.runner.reviewer` on macOS) with its own `runner.toml` in its
+  config dir. Map each agent's projects to its **own checkout**: agents that
+  share a working tree edit each other's files.
+- **Shared hooks and MCP server.** Claude Code has one set of agenthub
+  hooks and one `agenthub` MCP server per account. Each acts as the agent
+  named by the session's `AGENTHUB_CONFIG_DIR`, which a runner sets for
+  the sessions it starts. Sessions you start yourself act as the agent in
+  `~/.config/agenthub`.
+- **Upgrading from 0.2.1 or earlier.** Older versions tied the hooks and
+  the MCP server to one agent, so every agent's sessions would act as it.
+  Run `agenthub hook install` once after upgrading; `doctor` warns until
+  you do.
+
 ### 4. Backups
 
 See [docs/backup.md](docs/backup.md) for continuous backup of the hub database
