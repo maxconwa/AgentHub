@@ -11,6 +11,7 @@ blocks labeled with its author; it is never rendered as HTML or Markdown.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from functools import lru_cache
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, avatar_art, avatars, db, events, store, task_agents, tasks, views
+from agenthub.hub import approvals, avatar_art, avatars, db, events, private, store, task_agents, tasks, views
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -110,6 +111,9 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
     if t == "message.posted":
         to = f" → {who(p.get('to'), names)}" if p.get("to") else ""
         return f"#{p.get('channel')}{to}: {snippet(p.get('body'))}"
+    if t == "private.sent":  # the event never carries the text
+        direction = "to" if p.get("from") == "operator" else "from"
+        return f"private message {direction} {who(p.get('agent_id'), names)}"
     if t == "board.updated":
         return f"board {p.get('key')} v{p.get('version')}"
     if t.startswith("task."):
@@ -157,10 +161,15 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
     pending = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0]
     html = templates.get_template(name).render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
-        pending_count=pending, names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
+        pending_count=pending, chat_unread=sum(private.unread_counts(conn).values()),
+        names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
         **ctx,
     )
     return HTMLResponse(html, headers=SECURITY_HEADERS)
+
+
+# A form's ``next`` may only lead back to one of our own pages (no other host, no header tricks).
+SAFE_NEXT = re.compile(r"/ui/[A-Za-z0-9_\-./]*")
 
 
 def done(request: Request, url: str) -> Response:
@@ -244,6 +253,36 @@ def build_router() -> APIRouter:
     def badge(operator: Op, conn: Conn) -> HTMLResponse:
         n = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0]
         return HTMLResponse(f'<span class="badge">{n}</span>' if n else "", headers=SECURITY_HEADERS)
+
+    @router.get("/badge/chats", response_class=HTMLResponse)
+    def chats_badge(operator: Op, conn: Conn) -> HTMLResponse:
+        n = sum(private.unread_counts(conn).values())
+        return HTMLResponse(f'<span class="badge">{n}</span>' if n else "", headers=SECURITY_HEADERS)
+
+    # private chats --------------------------------------------------------------------
+
+    @router.get("/chats", response_class=HTMLResponse)
+    def chats_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        return render(request, operator, "chats.html", conn, nav="chats", **views.chat_list(conn))
+
+    @router.get("/chats/{agent_id}", response_class=HTMLResponse)
+    def chat_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        rows = views.agent_rows(conn, agent_id=agent_id)
+        if not rows:
+            raise HTTPException(404, "no such agent")
+        with db.transaction(conn):
+            messages = private.thread(conn, agent_id)
+            if messages:  # the operator is looking at these now
+                private.mark_read_by_operator(conn, agent_id, since_id=messages[0]["id"])
+        return render(request, operator, "chat.html", conn, nav="chats", ag=rows[0], messages=messages)
+
+    @router.post("/chats/{agent_id}")
+    def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
+                  body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
+                  next: Annotated[str, Form(max_length=500)] = "") -> Response:
+        with db.transaction(conn):
+            private.send(conn, agent_id, author=operator.actor, body=body)
+        return done(request, next if SAFE_NEXT.fullmatch(next) and ".." not in next else f"/ui/chats/{agent_id}")
 
     # approvals ----------------------------------------------------------------------
 
@@ -434,8 +473,13 @@ def build_router() -> APIRouter:
         agent = store.get_agent(conn, agent_id)
         if not rows or agent is None:
             raise HTTPException(404, "no such agent")
+        with db.transaction(conn):
+            chat = private.thread(conn, agent_id, limit=20)
+            if chat:  # the pinned chat shows these; older unread ones wait for the full chat
+                private.mark_read_by_operator(conn, agent_id, since_id=chat[0]["id"])
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
-                      device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id))
+                      device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
+                      chat=chat)
 
     @router.post("/agents/{agent_id}/approve")
     def agent_approve(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:

@@ -1,7 +1,7 @@
 {% from "_macros.html" import agent_text %}
-{% macro board(messages, names) %}
+{% macro board(messages, names, empty="Nothing posted here yet.") %}
 <div class="thread board-thread">
-  {% if not messages %}<p class="empty">Nothing posted here yet.</p>{% endif %}
+  {% if not messages %}<p class="empty">{{ empty }}</p>{% endif %}
   {% for m in messages %}
   {% if m.author.startswith('human:') %}
   <div class="msg mine">

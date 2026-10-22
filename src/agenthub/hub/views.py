@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-from agenthub.hub import avatars
+from agenthub.hub import avatars, private
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
@@ -79,3 +79,26 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     out = [{"name": p["name"], "description": p["description"], "tasks": by_project[p["name"]]}
            for p in conn.execute("SELECT name, description FROM projects ORDER BY name") if p["name"] in by_project]
     return [p for p in out if p["tasks"]] + [p for p in out if not p["tasks"]]
+
+
+def chat_list(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """The Chats page: non-revoked agents that have a private chat, newest message first, then the rest.
+
+    Each ``threads`` entry has the agent's ``id``, ``name``, ``avatar``, ``unread`` (its messages the
+    operator hasn't read) and ``last_ts`` / ``last_author`` of the newest message; never message text.
+    """
+    board, unread = avatars.board(conn), private.unread_counts(conn)
+    last = {r["agent_id"]: r for r in conn.execute(
+        "SELECT p.agent_id, p.id, p.ts, p.author FROM private_messages p "
+        "JOIN (SELECT agent_id, MAX(id) AS id FROM private_messages GROUP BY agent_id) m ON m.id = p.id")}
+    threads, others = [], []
+    for r in conn.execute("SELECT id, name, status FROM agents WHERE status != 'revoked' ORDER BY name"):
+        row = {"id": r["id"], "name": r["name"], "status": r["status"], "avatar": board.get(r["id"]),
+               "unread": unread.get(r["id"], 0)}
+        if r["id"] in last:
+            threads.append(row | {"last_ts": last[r["id"]]["ts"], "last_author": last[r["id"]]["author"],
+                                  "last_id": last[r["id"]]["id"]})
+        else:
+            others.append(row)
+    threads.sort(key=lambda t: t["last_id"], reverse=True)
+    return {"threads": threads, "others": others}

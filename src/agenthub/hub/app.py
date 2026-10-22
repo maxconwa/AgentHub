@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from agenthub import __version__
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, asks, db, events, intents, store, task_agents, tasks
+from agenthub.hub import approvals, asks, db, events, intents, private, store, task_agents, tasks
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
@@ -107,6 +107,10 @@ class PostMessageRequest(BaseModel):
     channel: str = Field(default="general", max_length=64)
     body: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     to: str | None = Field(default=None, max_length=64)
+
+
+class PrivateMessageRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=private.MAX_BODY_CHARS)
 
 
 class BoardPutRequest(BaseModel):
@@ -304,10 +308,27 @@ def create_app(state: HubState) -> FastAPI:
         peek: bool = False,
         addressed_only: bool = False,
     ) -> dict[str, Any]:
+        """Unread private messages from the operator first (whatever ``project`` is), then channel messages."""
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
+        mark = not (peek or addressed_only)
         with db.transaction(conn):
-            return store.read_inbox(conn, caller.agent, projects=projects, limit=limit, mark_read=not peek,
-                                    addressed_only=addressed_only)
+            mine = private.unread_for_agent(conn, caller.agent, mark_read=mark, limit=limit)
+            got = store.read_inbox(conn, caller.agent, projects=projects, limit=limit - len(mine),
+                                   mark_read=not peek, addressed_only=addressed_only)
+            more = got["more"]
+            if len(mine) == limit:  # anything still unread beyond what was just returned?
+                left = private.unread_for_agent(conn, caller.agent, mark_read=False, limit=limit + 1)
+                more = more or len(left) > (0 if mark else limit)
+        entries = [{"id": m["id"], "kind": "private", "project": None, "channel": "private", "author": m["author"],
+                    "author_name": None, "to_agent": caller.agent.id, "body": m["body"], "ts": m["ts"],
+                    "addressed_to_me": True} for m in mine]
+        return {"messages": entries + got["messages"], "more": more}
+
+    @app.post(f"{api}/private", status_code=201)
+    def message_operator(body: PrivateMessageRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """Write to the operator in the caller's own private chat."""
+        with db.transaction(conn):
+            return private.send(conn, caller.agent.id, author=caller.agent.id, body=body.body)
 
     # --- board ---------------------------------------------------------------
 

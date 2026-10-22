@@ -124,7 +124,8 @@ def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/feed", "/ui/feed?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
-                 f"/ui/approvals/{ids['approval_id']}/thread"]:
+                 f"/ui/approvals/{ids['approval_id']}/thread", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
+                 "/ui/badge/chats"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
         assert "default-src 'self'" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "DENY"

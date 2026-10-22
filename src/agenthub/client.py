@@ -83,6 +83,9 @@ class HubClient:
             params["project"] = project
         return await self._request("GET", "/inbox", params=params)
 
+    async def message_operator(self, body: str) -> dict[str, Any]:
+        return await self._request("POST", "/private", json={"body": body})
+
     # --- board -----------------------------------------------------------------
 
     async def board_list(self, project: str, prefix: str = "") -> list[dict[str, Any]]:

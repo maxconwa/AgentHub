@@ -34,10 +34,22 @@ KIND_LABELS = {
 }
 
 
-def build_notification(event: dict[str, Any], names: dict[str, str], cfg: HubConfig) -> dict[str, Any] | None:
-    """Turn an event into an ntfy message, or None if the operator needn't be pinged."""
+def build_notification(
+    event: dict[str, Any], names: dict[str, str], cfg: HubConfig, *, private_body: str | None = None
+) -> dict[str, Any] | None:
+    """Turn an event into an ntfy message, or None if the operator needn't be pinged.
+
+    ``private_body`` is the text of a ``private.sent`` message (its event carries none); it is
+    used only with ``ntfy_include_details``.
+    """
     p, etype, base = event["payload"], event["type"], cfg.public_url.rstrip("/")
     who = names.get(event["actor"], event["actor"])
+    if etype == "private.sent" and p.get("from") == "agent":
+        note = {"title": f"Message from {who}", "message": f"{who} sent you a private message.", "priority": 3,
+                "tags": ["speech_balloon"], "click": f"{base}/ui/chats/{p['agent_id']}" if base else None}
+        if cfg.ntfy_include_details and private_body:
+            note["message"] += f"\n{private_body}"[:500]
+        return note
     if etype == "approval.requested":
         kind = p.get("kind", "")
         msg: dict[str, Any] = {
@@ -80,11 +92,24 @@ class Notifier:
             return None
         return Path(self.cfg.ntfy_token_file).expanduser().read_text().strip() or None
 
+    def message_for(self, event: dict[str, Any], names: dict[str, str]) -> dict[str, Any] | None:
+        body = None
+        p = event["payload"]
+        if event["type"] == "private.sent" and p.get("from") == "agent" and self.cfg.ntfy_include_details:
+            from agenthub.hub import db, private
+
+            conn = db.connect(self.cfg.db_path)
+            try:
+                body = private.body(conn, event["payload"]["message_id"])
+            finally:
+                conn.close()
+        return build_notification(event, names, self.cfg, private_body=body)
+
     def submit(self, event: dict[str, Any], names: dict[str, str]) -> None:
         """Fire and forget, so a slow ntfy server never delays the event bus."""
         if not self.enabled:
             return
-        msg = build_notification(event, names, self.cfg)
+        msg = self.message_for(event, names)
         if msg is None:
             return
         task = asyncio.create_task(self.send(msg))

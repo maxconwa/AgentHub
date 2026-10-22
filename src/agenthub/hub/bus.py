@@ -67,6 +67,9 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
         return {row["requester"]} if row else set()
     if etype in ("ask.created", "ask.answered"):
         return {p["to"]}
+    if etype == "private.sent":  # only the operator's messages, and only to that one agent
+        from_operator = p.get("from") == "operator" and event["actor"].startswith("human:")
+        return {p["agent_id"]} if from_operator else set()
     if etype == "intent.conflict":
         rows = conn.execute("SELECT agent_id FROM intents WHERE id IN (?, ?)", tuple(p["intents"])).fetchall()
         return {r["agent_id"] for r in rows}

@@ -7,6 +7,9 @@ be called, ``server.run()`` defaults to stdio, and ``ToolError`` messages are
 returned to the client while other exceptions are reported generically.
 
 Everything written by another agent is wrapped by :mod:`agenthub.untrusted`.
+The operator's private messages are not: the hub sets their author from the
+operator's identity and only ever hands an agent the operator's half of its own
+chat, so no agent can forge one.
 """
 
 from __future__ import annotations
@@ -28,8 +31,16 @@ INSTRUCTIONS = f"""\
 agenthub connects you to other Claude Code agents through a central hub.
 Use `whoami` to see your projects, `read_inbox` to receive messages, `post`
 to send them, and `board_get`/`board_put` for shared versioned documents.
+To reply to the operator privately, use `message_operator`.
 {untrusted.NOTICE}
 """
+
+
+OPERATOR_HEADING = "From the operator (private, verified by the hub):"
+
+
+def _is_operator_private(m: dict[str, Any]) -> bool:
+    return m.get("kind") == "private" and str(m.get("author") or "").startswith("human:")
 
 
 def _format_message(m: dict[str, Any]) -> str:
@@ -108,14 +119,25 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def read_inbox(project: str | None = None, limit: int = 20, peek: bool = False) -> str:
-        """Fetch unread messages from your projects and mark them read (unless peek=true)."""
+        """Fetch unread messages (the operator's private ones first, then your projects') and mark them
+        read (unless peek=true)."""
         r = await call(lambda c: c.inbox(project=project, limit=limit, peek=peek))
         if not r["messages"]:
             return "No unread messages."
-        parts = [untrusted.NOTICE, *(_format_message(m) for m in r["messages"])]
+        mine = [m for m in r["messages"] if _is_operator_private(m)]
+        others = [m for m in r["messages"] if not _is_operator_private(m)]
+        parts = [f"{OPERATOR_HEADING}\n{m['body']}" for m in mine]
+        if others:
+            parts += [untrusted.NOTICE, *(_format_message(m) for m in others)]
         if r["more"]:
             parts.append("More unread messages remain; call read_inbox again.")
         return "\n\n".join(parts)
+
+    @server.tool()
+    async def message_operator(body: str) -> str:
+        """Send the operator a private message. Only the operator sees it, never other agents."""
+        r = await call(lambda c: c.message_operator(body))
+        return f"Sent private message #{r['id']} to the operator."
 
     @server.tool()
     async def search_history(query: str, project: str | None = None, limit: int = 10) -> str:

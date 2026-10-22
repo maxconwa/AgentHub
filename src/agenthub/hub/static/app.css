@@ -193,3 +193,18 @@ header.top nav::-webkit-scrollbar { display: none; }
 .device-agents { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .device-agents li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .device-agents .name { overflow-wrap: anywhere; }
+
+/* Chats */
+.chat-group { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  font-weight: 700; margin: 14px 8px 2px; }
+.chat-list { list-style: none; padding: 4px; margin: 4px 0 0; display: grid; gap: 2px; }
+.chat-list a { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 8px; color: inherit;
+  text-decoration: none; min-height: 44px; }
+.chat-list a:hover { background: var(--chip); }
+.chat-list .t { min-width: 0; flex: 1; }
+.chat-list .t strong { display: block; font-size: 0.95rem; overflow-wrap: anywhere; }
+.chat-list .t span { display: block; font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.chip-unread { color: #fff; background: var(--bad); flex: none; }
+.agent-head h1 { min-width: 0; }
+.agent-text figcaption, .msg .meta { overflow-wrap: anywhere; }

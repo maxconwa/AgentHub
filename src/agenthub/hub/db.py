@@ -281,6 +281,18 @@ MIGRATIONS: list[str] = [
     ALTER TABLE agents ADD COLUMN checkouts TEXT NOT NULL DEFAULT '{}';
     ALTER TABLE agents ADD COLUMN current_dir TEXT;
     """,
+    # 10: private chats between the operator and one agent, kept out of channels and the event log
+    """
+    CREATE TABLE private_messages (
+        id       INTEGER PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
+        author   TEXT NOT NULL,
+        body     TEXT NOT NULL,
+        ts       TEXT NOT NULL,
+        read_at  TEXT
+    );
+    CREATE INDEX private_messages_agent_id ON private_messages(agent_id, id);
+    """,
 ]
 
 

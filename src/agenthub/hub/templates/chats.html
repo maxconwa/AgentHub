@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_macros.html" import avatar %}
+{% block title %}Chats{% endblock %}
+{% block content %}
+<h1>Chats</h1>
+<p class="lead">Your private chats, one per agent. No other agent can see them.</p>
+{% endblock %}
+{% block live %}
+{% if not threads and not others %}<p class="empty">No agents yet. Enroll one on the Agents page.</p>{% endif %}
+{% if threads %}
+<div class="chat-group">With you</div>
+<ul class="chat-list panel">
+  {% for t in threads %}
+  <li><a href="/ui/chats/{{ t.id }}">{{ avatar(t.avatar, 32) }}<span class="t"><strong>{{ t.name }}</strong>
+    <span>Last from {{ 'you' if t.last_author.startswith('human:') else t.name }} · {{ ago(t.last_ts) }}</span></span>
+    {%- if t.unread %}<span class="chip chip-unread">{{ t.unread }} unread</span>{% endif %}</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if others %}
+<div class="chat-group">Start a chat</div>
+<ul class="chat-list panel">
+  {% for a in others %}
+  <li><a href="/ui/chats/{{ a.id }}">{{ avatar(a.avatar, 32) }}<span class="t"><strong>{{ a.name }}</strong>
+    <span>No messages yet{% if a.status == 'pending' %} · awaiting approval{% endif %}</span></span></a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

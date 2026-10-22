@@ -14,7 +14,7 @@
     <a class="brand" href="/ui/dashboard">agenthub</a>
     <nav aria-label="Pages">
       {% for key, label in [("dashboard", "Dashboard"), ("projects", "Projects"), ("tasks", "Tasks"), ("agents", "Agents"), ("devices", "Devices"), ("approvals", "Approvals"), ("chats", "Chats"), ("board", "Board"), ("reports", "Reports")] %}
-      <a href="/ui/{{ key }}" class="{{ 'active' if nav == key else '' }}">{{ label }}{% if key == "approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% endif %}</a>
+      <a href="/ui/{{ key }}" class="{{ 'active' if nav == key else '' }}">{{ label }}{% if key == "approvals" %}<span hx-get="/ui/badge" hx-trigger="every 10s" hx-swap="innerHTML">{% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</span>{% elif key == "chats" %}<span hx-get="/ui/badge/chats" hx-trigger="every 10s" hx-swap="innerHTML">{% if chat_unread %}<span class="badge">{{ chat_unread }}</span>{% endif %}</span>{% endif %}</a>
       {% endfor %}
     </nav>
     <form class="search" role="search" method="get" action="/ui/search"><input type="search" name="q" placeholder="Search everything" aria-label="Search" maxlength="500"></form>
@@ -26,6 +26,7 @@
       {% block live %}{% endblock %}
     </section>
     {% endif %}
+    {% block after_live %}{% endblock %}
   </main>
   <footer>Signed in as {{ operator.login }}</footer>
 </body>
