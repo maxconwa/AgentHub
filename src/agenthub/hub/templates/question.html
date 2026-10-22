@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, agent_text, avatar %}
+{% from "_macros.html" import chip, agent_text, avatar, open_attrs %}
 {% block title %}Question #{{ q.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/approvals">← Approvals</a></p>
 <h1>#{{ q.id }} question {{ chip(q.status) }}</h1>
-<p class="muted">Asked by {{ avatar(avatars.get(q.agent_id), 32) }} <strong>{{ q.agent_name or q.agent_id }}</strong> in {{ q.project }} · {{ ago(q.created_at) }}</p>
+<p class="muted">Asked by {{ avatar(avatars.get(q.agent_id), 32) }} <strong>{% if q.agent_name %}<a {{ open_attrs('agent:' ~ q.agent_id, '/ui/agents/' ~ q.agent_id) }}>{{ q.agent_name }}</a>{% else %}{{ q.agent_id }}{% endif %}</strong> in <a {{ open_attrs('project:' ~ q.project, '/ui/projects/' ~ q.project) }}>{{ q.project }}</a> · {{ ago(q.created_at) }}</p>
 
 <section class="panel">
-  {% if task %}<p><a href="/ui/tasks/{{ task.id }}">About task #{{ task.id }}</a></p>{% endif %}
+  {% if task %}<p><a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>About task #{{ task.id }}</a></p>{% endif %}
   {{ agent_text(q.question, q.agent_id, names) }}
 </section>
 

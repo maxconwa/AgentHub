@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import approval_summary, chip, agent_text, avatar %}
+{% from "_macros.html" import approval_summary, chip, agent_text, avatar, open_attrs %}
 {% block title %}Approval #{{ a.id }}{% endblock %}
 {% block content %}
 {% set d = a.details %}
 <p><a href="/ui/approvals">← Approvals</a></p>
 <h1>#{{ a.id }} {{ a.kind.replace('_', ' ') }} {{ chip(a.status) }}</h1>
-<p class="muted">Requested by {{ avatar(avatars.get(a.requester), 32) }} <strong>{{ a.requester_name or a.requester }}</strong>{% if a.project %} in {{ a.project }}{% endif %} · {{ ago(a.created_at) }}</p>
+<p class="muted">Requested by {{ avatar(avatars.get(a.requester), 32) }} <strong>{% if a.requester_name %}<a {{ open_attrs('agent:' ~ a.requester, '/ui/agents/' ~ a.requester) }}>{{ a.requester_name }}</a>{% else %}{{ a.requester }}{% endif %}</strong>{% if a.project %} in <a {{ open_attrs('project:' ~ a.project, '/ui/projects/' ~ a.project) }}>{{ a.project }}</a>{% endif %} · {{ ago(a.created_at) }}</p>
 
 <section class="panel">
   <div class="summary big">{{ approval_summary(a) }}</div>
@@ -13,15 +13,15 @@
     <dl><dt>Directory</dt><dd><code>{{ d.cwd }}</code></dd>
     <dt>Effect</dt><dd>If approved, this exact command may run once, from this directory, within an hour.</dd></dl>
   {% elif a.kind == 'tool_permission' %}
-    <dl><dt>Task</dt><dd>{% if task %}<a href="/ui/tasks/{{ task.id }}">#{{ task.id }} {{ task.title }}</a>{% else %}#{{ d.task_id }}{% endif %}</dd>
+    <dl><dt>Task</dt><dd>{% if task %}<a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>#{{ task.id }} {{ task.title }}</a>{% else %}#{{ d.task_id }}{% endif %}</dd>
     <dt>Tool input</dt><dd><div class="pre">{{ d.input | tojson(indent=2) }}</div></dd>
     <dt>Effect</dt><dd>The paused headless session may make this exact call once.</dd></dl>
   {% elif a.kind == 'budget_exceeded' %}
-    <dl><dt>Task</dt><dd>{% if task %}<a href="/ui/tasks/{{ task.id }}">#{{ task.id }} {{ task.title }}</a>{% endif %}</dd>
+    <dl><dt>Task</dt><dd>{% if task %}<a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>#{{ task.id }} {{ task.title }}</a>{% endif %}</dd>
     <dt>Limit</dt><dd>{{ d.limit.replace('_', ' ') }}: {{ d.current }} → <strong>{{ d.extend_to }}</strong> if approved</dd>
     <dt>Used so far</dt><dd>{{ d.used.runs }} runs · {{ d.used.turns }} turns · {{ d.used.wall_clock_minutes }} min</dd></dl>
   {% elif a.kind == 'task_create' %}
-    {% if task %}<p><a href="/ui/tasks/{{ task.id }}">Open task #{{ task.id }}</a></p>{{ agent_text(task.title ~ "\n\n" ~ task.body, task.created_by, names) }}{% endif %}
+    {% if task %}<p><a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>Open task #{{ task.id }}</a></p>{{ agent_text(task.title ~ "\n\n" ~ task.body, task.created_by, names) }}{% endif %}
   {% elif a.kind == 'agent_enrollment' %}
     <dl><dt>Device</dt><dd>{{ d.device.name }} ({{ d.device.ip }})</dd><dt>Projects</dt><dd>{{ d.projects | join(', ') or 'none' }}</dd></dl>
   {% endif %}

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% from "_macros.html" import avatar, chip %}
+{% from "_macros.html" import avatar, chip, open_attrs %}
 {% from "_board.html" import board %}
 {% block title %}Chat with {{ ag.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/chats">← Chats</a></p>
 <div class="agent-head">{{ avatar(ag.avatar, 48) }}
   <div class="info"><h1>You ↔ {{ ag.name }}{% if ag.status != 'active' %} {{ chip(ag.status) }}{% endif %}</h1>
-    <p class="small-line"><a href="/ui/agents/{{ ag.id }}">Agent page</a> · on {{ ag.device }} · only you and {{ ag.name }} can see this chat</p></div>
+    <p class="small-line"><a {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>Agent page</a> · on {{ ag.device }} · only you and {{ ag.name }} can see this chat</p></div>
 </div>
 {% endblock %}
 {% block live %}

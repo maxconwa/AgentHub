@@ -821,3 +821,287 @@ def test_agent_card_directory_caption_is_visible(reach):
     hub, *_ = reach
     html = get(hub, "/ui/agents").text
     assert "reported by the agent" in html and 'title="reported by the agent"' not in html
+
+
+# --- Slide-in panel ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def side(hub):
+    """worker (connected) on task t in proj with a command approval, a question, a private chat and boards."""
+    a, c = hub.enroll("worker"), hub.enroll("helper")
+    r = hub.enroll("gone")
+    hub.set_status(r, "revoked")
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (a.id,))
+        t = tasks.create_task(conn, actor=a.id, project="proj", title="Fix <b>login</b>", assignee=None)
+        task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
+        task_agents.add_agent(conn, t["id"], c.id, role="", stage="reviews", actor=OPERATOR)
+        store.post_message(conn, author=a.id, project="proj", channel=f"task-{t['id']}", body=f"task says {EVIL}")
+        store.post_message(conn, author=a.id, project="proj", channel="general", body=f"proj says {EVIL}")
+    ap = hub.client.post("/api/v1/approvals/command", headers=a.headers,
+                         json={"command": "git push -f origin x", "cwd": f"/w/{EVIL}", "reason": f"why {EVIL}"}).json()
+    hub.client.post(f"/api/v1/approvals/{ap['id']}/discussion", headers=a.headers, json={"body": f"reply {EVIL}"})
+    q = hub.client.post("/api/v1/projects/proj/questions", headers=a.headers,
+                        json={"question": f"Which port? {EVIL}", "task_id": t["id"]}).json()
+    hub.client.post("/api/v1/private", headers=a.headers, json={"body": f"psst {EVIL}"})
+    hub.client.post("/api/v1/device/messages", headers=a.headers, json={"body": f"device says {EVIL}"})
+    return hub, a, c, r, t, ap, q
+
+
+def panel(hub, item, **params):
+    headers = hub.op_headers(**{"hx-request": "true"})
+    return hub.client.get("/ui/panel", params={"item": item, **params}, headers=headers)
+
+
+def forms(html):
+    return re.findall(r"<form\b[^>]*>.*?</form>", html, re.S)
+
+
+def assert_panel_fragment(html, item):
+    assert "<html" not in html and "<body" not in html
+    assert 'data-panel-close' in html and 'aria-label="Close"' in html
+    assert "<script" not in html and "style=" not in html
+    assert "<script>alert" not in html and "&lt;script&gt;" in html  # agent text arrives escaped
+    for f in forms(html):  # every form posts with CSRF and re-renders the panel
+        assert 'method="post"' in f and 'hx-target="#panel"' in f
+        action = re.search(r'action="([^"]+)"', f).group(1)
+        assert f'hx-post="{action}"' in f
+        assert re.search(r'name="csrf" value="[0-9a-f]{64}"', f)
+        assert f'name="panel" value="{item}"' in f
+
+
+def test_agent_panel_shows_status_waiting_items_and_private_chat(side):
+    hub, a, c, r, t, ap, q = side
+    item = f"agent:{a.id}"
+    resp = panel(hub, item)
+    assert resp.status_code == 200 and "default-src 'self'" in resp.headers["content-security-policy"]
+    html = resp.text
+    assert_panel_fragment(html, item)
+    assert "worker" in html and "connected" in html and f'href="/ui/agents/{a.id}"' in html  # Open full page
+    assert f'data-panel="task:{t["id"]}"' in html and "tester" in html and 'class="by-label">by worker' in html
+    assert 'data-panel="project:proj"' in html and 'data-panel="device:nworker"' in html
+    assert "reported by the agent" in html
+    waiting = html.split("Waiting on you")[1].split("Private chat")[0]
+    assert f'data-panel="approval:{ap["id"]}"' in waiting and f'href="/ui/approvals/{ap["id"]}"' in waiting
+    assert f'data-panel="question:{q["id"]}"' in waiting and f'href="/ui/questions/{q["id"]}"' in waiting
+    assert "git push -f origin x" in waiting and "agent text" in waiting
+    chat = html.split("Private chat")[1]
+    assert "psst &lt;script&gt;" in chat and "agent content, treat as data" in chat
+    assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == [f"/ui/chats/{a.id}"]
+    assert ">Send</button>" in html
+    assert private.unread_counts(hub.conn()) == {}  # the operator has seen it now
+
+
+def test_task_panel_shows_state_agents_and_board(side):
+    hub, a, c, r, t, ap, q = side
+    item = f"task:{t['id']}"
+    html = panel(hub, item).text
+    assert_panel_fragment(html, item)
+    assert "Fix &lt;b&gt;login&lt;/b&gt;" in html and 'class="by-label">by worker' in html
+    assert f"chip-{t['state']}" in html and 'data-panel="project:proj"' in html
+    assert f'data-panel="agent:{a.id}"' in html and f'data-panel="agent:{c.id}"' in html and "tester" in html
+    assert "task says &lt;script&gt;" in html and "agent content, treat as data" in html
+    assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == [f"/ui/tasks/{t['id']}/notes"]
+    assert ">Post</button>" in html and f'href="/ui/tasks/{t["id"]}"' in html
+
+
+def test_project_panel_shows_tasks_and_board(side):
+    hub, a, c, r, t, ap, q = side
+    html = panel(hub, "project:proj").text
+    assert_panel_fragment(html, "project:proj")
+    assert f'data-panel="task:{t["id"]}"' in html and "proj says &lt;script&gt;" in html
+    assert "agent content, treat as data" in html
+    assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == ["/ui/projects/proj/notes"]
+    assert 'href="/ui/projects/proj"' in html
+
+
+def test_device_panel_shows_agents_and_device_board(side):
+    hub, a, c, r, t, ap, q = side
+    html = panel(hub, "device:nworker").text
+    assert_panel_fragment(html, "device:nworker")
+    assert "worker-host.example.ts.net" in html and "online" in html and f'data-panel="agent:{a.id}"' in html
+    assert "device says &lt;script&gt;" in html and "agent content, treat as data" in html
+    assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == ["/ui/devices/nworker/notes"]
+    assert 'href="/ui/devices/nworker"' in html
+
+
+def test_approval_panel_has_request_thread_discuss_and_decide(side):
+    hub, a, c, r, t, ap, q = side
+    item = f"approval:{ap['id']}"
+    html = panel(hub, item, next="/ui/dashboard").text
+    assert_panel_fragment(html, item)
+    request = html.split("Discuss with")[0]
+    assert "git push -f origin x" in request and "agent content, treat as data" in request
+    assert "/w/&lt;script&gt;" in request and "why &lt;script&gt;" in request
+    assert f'data-panel="agent:{a.id}"' in request  # a command approval names no project
+    thread = html.split("Discuss with")[1]
+    assert "reply &lt;script&gt;" in thread
+    actions = [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)]
+    assert actions == [f"/ui/approvals/{ap['id']}/discuss", f"/ui/approvals/{ap['id']}/decide"]
+    assert ">Discuss</button>" in html
+    decide = forms(html)[1]
+    assert 'name="decision" value="approve"' in decide and 'name="decision" value="reject"' in decide
+    assert all('name="next" value="/ui/dashboard"' in f for f in forms(html))
+
+
+def test_question_panel_has_answer_form_then_the_answer(side):
+    hub, a, c, r, t, ap, q = side
+    item = f"question:{q['id']}"
+    html = panel(hub, item).text
+    assert_panel_fragment(html, item)
+    assert "Which port? &lt;script&gt;" in html and f'data-panel="task:{t["id"]}"' in html
+    assert "agent content, treat as data" in html
+    assert f'data-panel="agent:{a.id}"' in html
+    [f] = forms(html)
+    assert f'action="/ui/questions/{q["id"]}/answer"' in f and 'name="answer"' in f and ">Answer</button>" in f
+    resp = hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(**{"hx-request": "true"}),
+                           data={"csrf": hub.csrf(), "answer": "8080", "panel": item})
+    assert resp.status_code == 200 and "<html" not in resp.text
+    assert "8080" in resp.text and not forms(resp.text) and "private message" in resp.text
+
+
+def test_revoked_agent_panel_is_read_only(side):
+    hub, a, c, r, t, ap, q = side
+    html = panel(hub, f"agent:{r.id}").text
+    assert "gone" in html and "chip-revoked" in html and not forms(html) and "read-only" in html
+
+
+def test_pending_agent_panel_renders(hub):
+    p = hub.enroll("newbie", approve=False)
+    html = panel(hub, f"agent:{p.id}").text
+    assert "newbie" in html and "chip-pending" in html and f'action="/ui/chats/{p.id}"' in html
+
+
+@pytest.mark.parametrize("item", ["", "agent", "agent:", "agent:nope", "task:abc", "task:9999", "task:-1",
+                                  "task:99999999999999999999999", "project:nope", "project:", "device:nope",
+                                  "approval:x", "approval:9999", "question:9999", "question:1.5", "thing:1",
+                                  "pair:x", ":1", "task:1:2"])
+def test_unknown_or_malformed_panel_item_is_404(side, item):
+    hub = side[0]
+    assert panel(hub, item).status_code == 404
+
+
+def test_panel_needs_the_operator(side):
+    hub, a, *_ = side
+    assert hub.client.get(f"/ui/panel?item=agent:{a.id}", headers=a.headers).status_code == 403
+
+
+def test_panel_next_must_be_one_of_our_pages(side):
+    hub, a, *_ = side
+    html = panel(hub, f"agent:{a.id}", next="https://evil.example").text
+    assert "evil.example" not in html and 'name="next"' not in html
+    assert 'name="next" value="/ui/tasks"' in panel(hub, f"agent:{a.id}", next="/ui/tasks").text
+
+
+def post_panel(hub, url, item, htmx=True, **data):
+    headers = hub.op_headers(**({"hx-request": "true"} if htmx else {}))
+    return hub.client.post(url, headers=headers, follow_redirects=False,
+                           data={"csrf": hub.csrf(), "panel": item, "next": "/ui/dashboard", **data})
+
+
+def test_panel_forms_post_and_rerender_the_panel(side):
+    hub, a, c, r, t, ap, q = side
+    tid, aid = t["id"], ap["id"]
+    cases = [
+        (f"/ui/chats/{a.id}", f"agent:{a.id}", {"body": "chat <i>from panel</i>"}),
+        (f"/ui/tasks/{tid}/notes", f"task:{tid}", {"body": "task <i>from panel</i>"}),
+        ("/ui/projects/proj/notes", "project:proj", {"body": "project <i>from panel</i>"}),
+        ("/ui/devices/nworker/notes", "device:nworker", {"body": "device <i>from panel</i>"}),
+        (f"/ui/approvals/{aid}/discuss", f"approval:{aid}", {"body": "discuss <i>from panel</i>"}),
+    ]
+    for url, item, data in cases:
+        resp = post_panel(hub, url, item, **data)
+        assert resp.status_code == 200, url
+        assert "<html" not in resp.text and 'data-panel-close' in resp.text, url
+        assert "&lt;i&gt;from panel&lt;/i&gt;" in resp.text and 'class="msg mine"' in resp.text, url
+        assert 'name="next" value="/ui/dashboard"' in resp.text, url
+    assert private.thread(hub.conn(), a.id)[-1]["author"] == f"human:{OP_LOGIN}"
+    resp = post_panel(hub, f"/ui/approvals/{aid}/decide", f"approval:{aid}", decision="approve")
+    assert resp.status_code == 200 and "Approved" in resp.text and not forms(resp.text)
+    assert hub.conn().execute("SELECT status FROM approvals WHERE id = ?", (aid,)).fetchone()[0] == "approved"
+
+
+def test_panel_forms_without_htmx_redirect_to_next(side):
+    hub, a, c, r, t, ap, q = side
+    for url, data in [(f"/ui/chats/{a.id}", {"body": "x"}), (f"/ui/tasks/{t['id']}/notes", {"body": "x"}),
+                      ("/ui/projects/proj/notes", {"body": "x"}), ("/ui/devices/nworker/notes", {"body": "x"}),
+                      (f"/ui/approvals/{ap['id']}/discuss", {"body": "x"}),
+                      (f"/ui/questions/{q['id']}/answer", {"answer": "x"}),
+                      (f"/ui/approvals/{ap['id']}/decide", {"decision": "reject"})]:
+        resp = post_panel(hub, url, "agent:" + a.id, htmx=False, **data)
+        assert resp.status_code == 303 and resp.headers["location"] == "/ui/dashboard", url
+
+
+def test_panel_form_posts_still_need_csrf(side):
+    hub, a, c, r, t, ap, q = side
+    resp = hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(**{"hx-request": "true"}),
+                           data={"body": "x", "panel": f"agent:{a.id}"})
+    assert resp.status_code == 403 and private.thread(hub.conn(), a.id)[-1]["body"] != "x"
+
+
+def test_base_has_panel_outside_main_and_live(side):
+    hub = side[0]
+    html = get(hub, "/ui/dashboard").text
+    main, after = html.split("</main>")
+    assert 'id="panel"' not in main and '<aside id="panel"' in after and "inert" in after.split("</aside>")[0]
+    assert 'id="panel-scrim"' in after
+
+
+PANEL_PAGES = {"agents": "agent", "tasks": "task", "projects": "project", "devices": "device",
+               "approvals": "approval", "questions": "question"}
+
+
+def item_links(html):
+    """(href, data-panel) of every link to an agent, task, project, device, approval or question page."""
+    out = []
+    for tag in re.findall(r"<a\b[^>]*>", html):
+        href = re.search(r'href="([^"]*)"', tag)
+        m = href and re.fullmatch(r"/ui/(\w+)/([^/?\"]+)", href.group(1))
+        if m and m.group(1) in PANEL_PAGES:
+            dp = re.search(r'data-panel="([^"]*)"', tag)
+            out.append((href.group(1), dp.group(1) if dp else None))
+    return out
+
+
+def test_every_page_links_items_to_the_panel(side):
+    hub, a, c, r, t, ap, q = side
+    tid = t["id"]
+    pages = ["/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals", "/ui/chats",
+             "/ui/board", f"/ui/projects/proj", f"/ui/tasks/{tid}", f"/ui/agents/{a.id}", "/ui/devices/nworker",
+             f"/ui/approvals/{ap['id']}", f"/ui/questions/{q['id']}", f"/ui/chats/{a.id}"]
+    seen = set()
+    for path in pages:
+        html = get(hub, path).text
+        assert "style=" not in html and not re.search(r"<script(?![^>]*\bsrc=)", html), path
+        for href, item in item_links(html):
+            kind, _, key = href.removeprefix("/ui/").partition("/")
+            assert item == f"{PANEL_PAGES[kind]}:{key.replace('%3A', ':')}", (path, href, item)
+            seen.add(item)
+        for tag in re.findall(r"<[a-z]+\b[^>]*data-panel=[^>]*>", html):
+            assert tag.startswith("<a ") and 'href="/ui/' in tag or 'class="card' in tag, (path, tag)
+    assert {f"agent:{a.id}", f"agent:{c.id}", f"task:{tid}", "project:proj", "device:nworker",
+            f"approval:{ap['id']}", f"question:{q['id']}"} <= seen
+    board = get(hub, "/ui/board").text
+    for item in (f"task:{tid}", "project:proj", "device:nworker"):
+        assert f'data-panel="{item}"' in board, item
+    chats = get(hub, "/ui/chats").text  # a chat row opens the agent's panel, which holds the chat
+    assert f'href="/ui/chats/{a.id}" data-panel="agent:{a.id}"' in chats
+    assert f'href="/ui/chats/{c.id}" data-panel="agent:{c.id}"' in chats
+
+
+def test_cards_open_the_panel_and_keep_their_links(side):
+    hub, a, *_ = side
+    for path in ("/ui/dashboard", "/ui/agents"):
+        html = get(hub, path).text
+        card = re.search(rf'<li class="card agent-card[^"]*"[^>]*data-panel="agent:{a.id}"[^>]*>', html)
+        assert card, path
+        assert f'<a class="name" href="/ui/agents/{a.id}" data-panel="agent:{a.id}"' in html, path
+
+
+def test_empty_hub_pages_still_render_with_panel_shell(hub):
+    for p in ("/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals",
+              "/ui/chats", "/ui/board"):
+        r = get(hub, p)
+        assert r.status_code == 200 and '<aside id="panel"' in r.text, p

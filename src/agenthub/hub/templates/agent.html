@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import message_button, chip, avatar, task_title, approval_summary %}
+{% from "_macros.html" import message_button, chip, avatar, task_title, approval_summary, open_attrs %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -17,7 +17,7 @@
 <section class="panel">
   <h3>Where it runs</h3>
   <dl class="facts">
-    <div><dt>Device</dt><dd>{{ ag.device }}{% if device_ip %} · {{ device_ip }}{% endif %}</dd></div>
+    <div><dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}{% if device_ip %} · {{ device_ip }}{% endif %}</dd></div>
     <div><dt>Agent id</dt><dd>{{ ag.id }}</dd></div>
     <div><dt>Directory <span class="small-line">reported by the agent</span></dt><dd class="dir">{{ ag.current_dir or 'None reported' }}</dd></div>
   </dl>
@@ -30,7 +30,7 @@
 <section class="panel">
   <h3>Tasks</h3>
   {% for t in ag.tasks %}
-  <p class="task-row"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · {{ t.project }} · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} {{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</p>
+  <p class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} {{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</p>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
 
@@ -38,7 +38,7 @@
 <section class="panel">
   <h3>Pending approvals</h3>
   {% for a in pending %}
-  <p><a href="/ui/approvals/{{ a.id }}">#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a>: {{ approval_summary(a) }}</p>
+  <p><a {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}>#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a>: {{ approval_summary(a) }}</p>
   {% endfor %}
 </section>
 {% endif %}

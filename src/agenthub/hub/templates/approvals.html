@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import approval_summary, chip, avatar %}
+{% from "_macros.html" import approval_summary, chip, avatar, open_attrs %}
 {% block title %}Approvals{% endblock %}
 {% block content %}
 {% set total = pending|length + questions|length %}
@@ -8,7 +8,7 @@
 <ul class="cards">
   {% for a in pending %}
   <li class="card">
-    <a class="card-link" href="/ui/approvals/{{ a.id }}">
+    <a class="card-link" {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}>
       <div class="row"><strong>{{ a.kind.replace('_', ' ') }}</strong><span class="muted">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
       <div class="summary">{{ approval_summary(a) }}</div>
       <div class="row muted"><span>{{ avatar(avatars.get(a.requester), 32) }} from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</span>
@@ -18,7 +18,7 @@
   {% endfor %}
   {% for q in questions %}
   <li class="card">
-    <a class="card-link" href="/ui/questions/{{ q.id }}">
+    <a class="card-link" {{ open_attrs('question:' ~ q.id, '/ui/questions/' ~ q.id) }}>
       <div class="row"><strong>Question</strong><span class="muted">#{{ q.id }} · {{ ago(q.created_at) }}</span></div>
       <div class="summary">{{ q.question|truncate(140) }}</div>
       <div class="row muted"><span>{{ avatar(avatars.get(q.agent_id), 32) }} from {{ q.agent_name or q.agent_id }} · {{ q.project }} · agent text</span></div>
@@ -30,11 +30,11 @@
 <h2>Recently decided</h2>
 <ul class="list">
   {% for a in recent %}
-  <li><a href="/ui/approvals/{{ a.id }}">#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a> {{ chip(a.status) }}
+  <li><a {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}>#{{ a.id }} {{ a.kind.replace('_', ' ') }}</a> {{ chip(a.status) }}
     <span class="muted">{{ a.requester_name or a.requester }} · {{ ago(a.decided_at) }}</span></li>
   {% endfor %}
   {% for q in answered %}
-  <li><a href="/ui/questions/{{ q.id }}">#{{ q.id }} question</a> {{ chip('answered') }}
+  <li><a {{ open_attrs('question:' ~ q.id, '/ui/questions/' ~ q.id) }}>#{{ q.id }} question</a> {{ chip('answered') }}
     <span class="muted">{{ q.agent_name or q.agent_id }} · {{ ago(q.answered_at) }}</span></li>
   {% endfor %}
 </ul>

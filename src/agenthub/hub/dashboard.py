@@ -79,6 +79,9 @@ async def csrf_operator(request: Request, conn: Conn) -> Operator:
 
 
 PostOp = Annotated[Operator, Depends(csrf_operator)]
+# A form inside the slide-in panel names its item (so the response can re-render the panel) and the page under it.
+PanelField = Annotated[str, Form(max_length=300)]
+NextField = Annotated[str, Form(max_length=500)]
 
 
 # --- template helpers ------------------------------------------------------------
@@ -203,6 +206,23 @@ def done(request: Request, url: str) -> Response:
     return RedirectResponse(url, status_code=303, headers=SECURITY_HEADERS)
 
 
+def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection, item: str, next: str) -> HTMLResponse:
+    """The slide-in panel fragment for ``item``; its forms post back with ``panel`` and ``next``."""
+    data = views.panel(conn, item)
+    if data["kind"] == "agent" and data["chat"]:  # the operator is looking at these now
+        with db.transaction(conn):
+            private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["chat"][0]["id"])
+    return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next), **data)
+
+
+def finish(request: Request, operator: Operator, conn: sqlite3.Connection, panel: str, next: str,
+           default: str) -> Response:
+    """After a form post: re-render the panel it came from (HTMX), else redirect (PRG)."""
+    if panel and request.headers.get("hx-request"):
+        return render_panel(request, operator, conn, panel, next)
+    return done(request, safe_next(next) or default)
+
+
 def render_event_row(event: dict[str, Any], names: dict[str, str]) -> str:
     return templates.get_template("_event_row.html").render(e=event, names=names)
 
@@ -262,12 +282,13 @@ def build_router() -> APIRouter:
 
     @router.post("/projects/{name}/notes")
     def project_note(name: str, request: Request, operator: PostOp, conn: Conn,
-                     body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+                     body: Annotated[str, Form(min_length=1, max_length=4000)],
+                     panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
                 raise store.NotFound(f"no project {name!r}")
             store.post_message(conn, author=operator.actor, project=name, channel="general", body=body)
-        return done(request, f"/ui/projects/{name}")
+        return finish(request, operator, conn, panel, next, f"/ui/projects/{name}")
 
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -313,10 +334,16 @@ def build_router() -> APIRouter:
     @router.post("/chats/{agent_id}")
     def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
                   body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
-                  next: Annotated[str, Form(max_length=500)] = "") -> Response:
+                  panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             private.send(conn, agent_id, author=operator.actor, body=body)
-        return done(request, safe_next(next) or f"/ui/chats/{agent_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/chats/{agent_id}")
+
+    # slide-in panel ------------------------------------------------------------------------
+
+    @router.get("/panel", response_class=HTMLResponse)
+    def panel_fragment(request: Request, operator: Op, conn: Conn, item: str = "", next: str = "") -> HTMLResponse:
+        return render_panel(request, operator, conn, item[:300], next)
 
     # tap to message ------------------------------------------------------------------------
 
@@ -398,10 +425,11 @@ def build_router() -> APIRouter:
 
     @router.post("/questions/{qid}/answer")
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
-                        answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)]) -> Response:
+                        answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)],
+                        panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             questions.answer(conn, qid, answer=answer, actor=operator.actor)
-        return done(request, f"/ui/questions/{qid}")
+        return finish(request, operator, conn, panel, next, f"/ui/questions/{qid}")
 
     @router.get("/approvals/{approval_id}", response_class=HTMLResponse)
     def approval_page(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -415,20 +443,22 @@ def build_router() -> APIRouter:
 
     @router.post("/approvals/{approval_id}/discuss")
     def approval_discuss(approval_id: int, request: Request, operator: PostOp, conn: Conn,
-                         body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+                         body: Annotated[str, Form(min_length=1, max_length=4000)],
+                         panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             a = approvals.post_discussion(conn, approval_id, author=operator.actor, body=body)
-        if request.headers.get("hx-request"):
+        if request.headers.get("hx-request") and not panel:  # the approval page's own thread
             return render(request, operator, "_thread.html", conn, a=a)
-        return done(request, f"/ui/approvals/{approval_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}")
 
     @router.post("/approvals/{approval_id}/decide")
     def approval_decide(approval_id: int, request: Request, operator: PostOp, conn: Conn,
                         decision: Annotated[str, Form(pattern="^(approve|reject)$")],
-                        note: Annotated[str, Form(max_length=2000)] = "") -> Response:
+                        note: Annotated[str, Form(max_length=2000)] = "",
+                        panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             approvals.decide(conn, approval_id, approve=decision == "approve", actor=operator.actor, note=note)
-        return done(request, f"/ui/approvals/{approval_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}")
 
     # tasks ------------------------------------------------------------------------------
 
@@ -485,11 +515,12 @@ def build_router() -> APIRouter:
 
     @router.post("/tasks/{task_id}/notes")
     def task_note(task_id: int, request: Request, operator: PostOp, conn: Conn,
-                  body: Annotated[str, Form(min_length=1, max_length=4000)]) -> Response:
+                  body: Annotated[str, Form(min_length=1, max_length=4000)],
+                  panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             t = tasks.get_task(conn, task_id)
             store.post_message(conn, author=operator.actor, project=t["project"], channel=f"task-{task_id}", body=body)
-        return done(request, f"/ui/tasks/{task_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/tasks/{task_id}")
 
     @router.post("/tasks/{task_id}/assign")
     def task_assign(task_id: int, request: Request, operator: PostOp, conn: Conn,
@@ -567,10 +598,11 @@ def build_router() -> APIRouter:
 
     @router.post("/devices/{node_id}/notes")
     def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
-                    body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)]) -> Response:
+                    body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)],
+                    panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             device_board.post(conn, node_id, author=operator.actor, body=body)
-        return done(request, f"/ui/devices/{quote(node_id, safe='')}")
+        return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}")
 
     # agents -------------------------------------------------------------------------
 

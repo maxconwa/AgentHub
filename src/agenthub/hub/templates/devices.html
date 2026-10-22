@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import message_button, chip, avatar %}
+{% from "_macros.html" import message_button, chip, avatar, open_attrs %}
 {% block title %}Devices{% endblock %}
 {% block content %}
 <h1>Devices</h1>
@@ -8,14 +8,14 @@
 {% block live %}
 <ul class="device-grid">
   {% for d in devices %}
-  <li class="card device-card" id="device-{{ d.node_id }}">
-    <div class="row"><a class="name" href="/ui/devices/{{ d.node_id|urlencode }}">{{ d.name }}</a>
+  <li class="card device-card" id="device-{{ d.node_id }}" data-panel="device:{{ d.node_id }}">
+    <div class="row"><a class="name" {{ open_attrs('device:' ~ d.node_id, '/ui/devices/' ~ d.node_id|urlencode) }}>{{ d.name }}</a>
       <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></div>
     <div class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</div>
     <div class="msg-row">{{ message_button('device:' ~ d.node_id, 'Message the agents on ' ~ d.name, path) }}</div>
     <ul class="device-agents">
       {% for a in d.agents %}
-      <li>{{ avatar(a.avatar, 32) }} <a class="name" href="/ui/agents/{{ a.id }}">{{ a.name }}</a> {{ chip(a.status) }}
+      <li>{{ avatar(a.avatar, 32) }} <a class="name" {{ open_attrs('agent:' ~ a.id, '/ui/agents/' ~ a.id) }}>{{ a.name }}</a> {{ chip(a.status) }}
         <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span> {% if a.id in active_ids %}{{ message_button('agent:' ~ a.id, 'Message ' ~ a.name, path) }}{% endif %}</li>
       {% endfor %}
     </ul></li>

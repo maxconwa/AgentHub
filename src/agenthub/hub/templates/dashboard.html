@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import message_button, agent_tasks, approval_summary, avatar, task_title %}
+{% from "_macros.html" import message_button, agent_tasks, approval_summary, avatar, task_title, open_attrs %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -11,13 +11,13 @@
 {% if not total %}<p class="empty">Nothing needs you right now.</p>{% endif %}
 <ul class="cards">
   {% for a in pending %}
-  <li class="card"><a class="card-link approval-card" href="/ui/approvals/{{ a.id }}">{{ avatar(avatars.get(a.requester), 40) }}
+  <li class="card"><a class="card-link approval-card" {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}>{{ avatar(avatars.get(a.requester), 40) }}
     <div class="body"><div class="row"><span class="kind">{{ a.kind.replace('_', ' ') }}</span><span class="muted small">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
       <div class="summary">{{ approval_summary(a) }}</div>
       <div class="muted small">from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</div></div></a></li>
   {% endfor %}
   {% for q in questions %}
-  <li class="card"><a class="card-link approval-card" href="/ui/questions/{{ q.id }}">{{ avatar(avatars.get(q.agent_id), 40) }}
+  <li class="card"><a class="card-link approval-card" {{ open_attrs('question:' ~ q.id, '/ui/questions/' ~ q.id) }}>{{ avatar(avatars.get(q.agent_id), 40) }}
     <div class="body"><div class="row"><span class="kind">Question</span><span class="muted small">#{{ q.id }} · {{ ago(q.created_at) }}</span></div>
       <div class="summary">{{ q.question|truncate(140) }}</div>
       <div class="muted small">from {{ q.agent_name or q.agent_id }} · {{ q.project }} · agent text</div></div></a></li>
@@ -28,8 +28,8 @@
 <div class="tally">{% for t in tally %}<span class="chip">{{ t.count }} {{ t.label }}</span>{% endfor %}</div>
 <ul class="agent-grid">
   {% for ag in agents %}
-  <li class="card agent-card">{{ avatar(ag.avatar, 64, scene=True) }}
-    <div class="info"><a class="name" href="/ui/agents/{{ ag.id }}">{{ ag.name }}</a>
+  <li class="card agent-card" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 64, scene=True) }}
+    <div class="info"><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a>
       {{ agent_tasks(ag, names, path) }}
       <div class="small-line">on {{ ag.device }}</div>
       <div class="msg-row">{% if ag.id in active_ids %}{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% endif %}</div></div></li>

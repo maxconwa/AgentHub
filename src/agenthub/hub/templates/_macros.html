@@ -3,6 +3,11 @@
 <a class="msg-btn" href="{{ href }}" hx-get="{{ href }}" hx-target="#compose" hx-swap="innerHTML" aria-label="{{ label }}">Message</a>
 {%- endmacro %}
 
+{# A link to an item's full page that opens its slide-in panel instead when JavaScript runs. #}
+{% macro open_attrs(item, href) -%}
+href="{{ href }}" data-panel="{{ item }}"
+{%- endmacro %}
+
 {% macro chip(state) -%}<span class="chip chip-{{ state }}">{{ state.replace('_', ' ') }}</span>{%- endmacro %}
 
 {% macro agent_text(text, author_id, names) -%}
@@ -34,7 +39,7 @@
 
 {% macro agent_tasks(ag, names, next) -%}
 {% for t in ag.tasks %}
-<div class="small-line"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> · {{ t.project }} · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
+<div class="small-line"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
 <div class="msg-row"><span class="msg-cap">Task</span>{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, next) }}<span class="msg-cap">Project</span>{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, next) }}</div>
 {% else %}<div class="small-line">No current task</div>{% endfor %}
 {%- endmacro %}

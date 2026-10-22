@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import message_button, chip, avatar %}
+{% from "_macros.html" import message_button, chip, avatar, open_attrs %}
 {% from "_board.html" import board %}
 {% block title %}{{ d.name }}{% endblock %}
 {% block content %}
@@ -11,7 +11,7 @@
 <h2>Agents</h2>
 <ul class="device-agents panel">
   {% for a in d.agents %}
-  <li>{{ avatar(a.avatar, 32) }} <a class="name" href="/ui/agents/{{ a.id }}">{{ a.name }}</a> {{ chip(a.status) }}
+  <li>{{ avatar(a.avatar, 32) }} <a class="name" {{ open_attrs('agent:' ~ a.id, '/ui/agents/' ~ a.id) }}>{{ a.name }}</a> {{ chip(a.status) }}
     <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span> {% if a.id in active_ids %}{{ message_button('agent:' ~ a.id, 'Message ' ~ a.name, path) }}{% endif %}</li>
   {% endfor %}
 </ul>

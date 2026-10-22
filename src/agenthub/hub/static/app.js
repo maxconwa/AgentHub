@@ -9,6 +9,81 @@
     if (form && form.hasAttribute && form.hasAttribute("data-reset") && evt.detail.successful) form.reset();
   });
 
+  // Slide-in panel: a [data-panel] link or card loads /ui/panel?item=... into <aside id="panel">
+  // and slides it in from the left. Without JavaScript the same links go to the item's full page.
+  var panel = document.getElementById("panel");
+  var scrim = document.getElementById("panel-scrim");
+  var opener = null, openerItem = null, fallback = null;
+
+  function panelOpen() { return panel.classList.contains("open"); }
+
+  function openPanel(item, href) {
+    fallback = href;
+    var url = "/ui/panel?" + new URLSearchParams({ item: item, next: location.pathname });
+    htmx.ajax("GET", url, { target: panel, swap: "innerHTML" });
+  }
+
+  function closePanel() {
+    if (!panelOpen()) return;
+    panel.classList.remove("open");
+    panel.setAttribute("inert", "");
+    scrim.hidden = true;
+    // The 10 s live refresh may have replaced the element that opened the panel; find its twin.
+    var back = opener && opener.isConnected ? opener
+      : openerItem && document.querySelector('main a[data-panel="' + CSS.escape(openerItem) + '"]');
+    if (back) back.focus();
+    opener = openerItem = null;
+  }
+
+  if (panel && scrim) {
+    document.addEventListener("click", function (evt) {
+      if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;  // new tab: follow href
+      var t = evt.target;
+      if (t === scrim || t.closest("[data-panel-close]")) { closePanel(); return; }
+      var el = t.closest("[data-panel]");
+      if (!el) return;
+      var inner = t.closest("a, button, input, select, textarea, summary, label");
+      if (inner && inner !== el && el.contains(inner)) return;  // e.g. a Message button on an agent card
+      evt.preventDefault();
+      var item = el.getAttribute("data-panel");
+      if (!panel.contains(el)) {  // opened from the page (a link inside the panel keeps the first opener)
+        opener = el.matches("a") ? el : el.querySelector('a[data-panel="' + CSS.escape(item) + '"]') || el;
+        openerItem = item;
+      }
+      var link = el.matches("a") ? el : el.querySelector("a[href]");
+      openPanel(item, link && link.href);
+    });
+
+    document.addEventListener("keydown", function (evt) {
+      if (evt.key === "Escape" && panelOpen()) { evt.preventDefault(); closePanel(); }
+    });
+
+    document.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.detail.target !== panel) return;
+      var posted = evt.detail.requestConfig && evt.detail.requestConfig.verb === "post";
+      panel.removeAttribute("inert");
+      panel.classList.add("open");
+      scrim.hidden = false;
+      if (!posted) panel.scrollTop = 0;
+      panel.querySelectorAll(".dthread").forEach(function (th) { th.scrollTop = th.scrollHeight; });
+      var focus = (posted && panel.querySelector("textarea")) || panel.querySelector("[data-panel-close]");
+      if (focus) focus.focus();
+    });
+
+    document.addEventListener("htmx:responseError", function (evt) {
+      if (evt.detail.target !== panel) return;
+      if (evt.detail.requestConfig.verb === "get") {  // let the full page explain (404 and so on)
+        if (fallback) location.assign(fallback);
+        return;
+      }
+      var note = document.createElement("p");
+      note.className = "error";
+      note.setAttribute("role", "alert");
+      note.textContent = "That didn't go through (error " + evt.detail.xhr.status + "). Open the full page to see why.";
+      if (evt.detail.elt && evt.detail.elt.after) evt.detail.elt.after(note);
+    });
+  }
+
   var feed = document.getElementById("feed");
   if (!feed) return;
   var live = document.getElementById("live");

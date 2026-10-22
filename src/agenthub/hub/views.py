@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any
 from urllib.parse import quote
 
-from agenthub.hub import avatars, device_board, private, store
+from agenthub.hub import approvals, avatars, device_board, private, questions, store, tasks
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
@@ -299,3 +299,59 @@ def pair_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
                                                   "label": "answer to ask", "body": r["answer"]}))
     entries.sort(key=lambda e: e[:2])
     return {"title": f"{names[x]} ↔ {names[y]}", "messages": [e[2] for e in entries[-BOARD_LIMIT:]], "can_post": False}
+
+
+# --- Slide-in panel ---------------------------------------------------------------------------
+
+PANEL_LIMIT = 50  # messages in a panel's chat; the full page shows more
+_PANEL_ITEM = re.compile(r"(agent|task|project|device|approval|question):(.+)")
+_ID = re.compile(r"[0-9]{1,18}")
+
+
+def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
+    """What the slide-in panel shows for ``item`` (``<kind>:<id>``): ``{kind, href, ...}``.
+
+    ``href`` is the item's full page. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not),
+    its pending ``approvals`` and ``questions`` and its private ``chat``; task: ``t`` and its board
+    ``messages``; project: ``project``, its live ``tasks`` and board ``messages``; device: ``d`` and
+    its board ``messages``; approval: ``a`` and its ``task``; question: ``q`` and its ``task``.
+    Raises store.NotFound for a malformed or unknown item.
+    """
+    m = _PANEL_ITEM.fullmatch(item)
+    if not m:
+        raise store.NotFound(f"no panel item {item!r}")
+    kind, key = m[1], m[2]
+    if kind in ("task", "approval", "question") and not _ID.fullmatch(key):
+        raise store.NotFound(f"no {kind} {key!r}")
+    if kind == "agent":
+        rows = agent_rows(conn, agent_id=key)
+        if not rows:
+            raise store.NotFound(f"no agent {key!r}")
+        return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0],
+                "approvals": approvals.list_for_agent(conn, key),
+                "questions": [q for q in questions.pending(conn) if q["agent_id"] == key],
+                "chat": private.thread(conn, key, limit=PANEL_LIMIT)}
+    if kind == "task":
+        t = tasks.get_task(conn, int(key))
+        return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t,
+                "messages": store.recent_messages(conn, project=t["project"], channel=f"task-{t['id']}",
+                                                  limit=PANEL_LIMIT)}
+    if kind == "project":
+        row = conn.execute("SELECT name, description FROM projects WHERE name = ?", (key,)).fetchone()
+        if row is None:
+            raise store.NotFound(f"no project {key!r}")
+        live = next((p["tasks"] for p in project_tree(conn) if p["name"] == key), [])
+        return {"kind": kind, "href": f"/ui/projects/{quote(key, safe='')}", "project": dict(row), "tasks": live,
+                "messages": store.recent_messages(conn, project=key, channel="general", limit=PANEL_LIMIT)}
+    if kind == "device":
+        d = device(conn, key)
+        return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": d,
+                "messages": device_messages(conn, key)[-PANEL_LIMIT:]}
+    if kind == "approval":
+        a = approvals.get(conn, int(key))
+        task_id = a["details"].get("task_id")
+        return {"kind": kind, "href": f"/ui/approvals/{a['id']}", "a": a,
+                "task": tasks.get_task(conn, task_id) if isinstance(task_id, int) else None}
+    q = questions.get(conn, int(key))
+    return {"kind": kind, "href": f"/ui/questions/{q['id']}", "q": q,
+            "task": tasks.get_task(conn, q["task_id"]) if q["task_id"] else None}
