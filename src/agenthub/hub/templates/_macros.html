@@ -17,3 +17,7 @@
 {%- elif a.kind == 'task_reassign' -%}Task #{{ d.task_id }} → {{ d.assignee or 'unassigned' }}
 {%- endif -%}
 {%- endmacro %}
+
+{% macro avatar(info, size=32, scene=False) -%}
+{%- if info %}<img class="avatar" src="{{ info.scene if scene else info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
+{%- endmacro %}

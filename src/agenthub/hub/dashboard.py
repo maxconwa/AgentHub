@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from functools import lru_cache
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -21,7 +22,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, db, events, store, task_agents, tasks
+from agenthub.hub import approvals, avatar_art, avatars, db, events, store, task_agents, tasks
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -39,6 +40,20 @@ SECURITY_HEADERS = {
     "referrer-policy": "no-referrer",
     "cache-control": "no-store",
 }
+
+# An avatar is a standalone SVG with no scripts and no agent-written text; its URL names the
+# look and pose exactly, so it can be cached for good.
+AVATAR_HEADERS = {
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "cache-control": "private, max-age=31536000, immutable",
+}
+
+
+@lru_cache(maxsize=4096)
+def avatar_svg(version: int, seed: int, pose: str, scene: bool) -> str:
+    return avatar_art.render_svg(version, seed, pose, scene=scene)
 
 Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 
@@ -141,7 +156,8 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
     pending = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0]
     html = templates.get_template(name).render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
-        pending_count=pending, names=agent_names(conn), path=request.url.path, **ctx,
+        pending_count=pending, names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
+        **ctx,
     )
     return HTMLResponse(html, headers=SECURITY_HEADERS)
 
@@ -362,6 +378,22 @@ def build_router() -> APIRouter:
             store.set_agent_projects(conn, agent_id, [p.strip() for p in projects.split(",") if p.strip()],
                                      actor=operator.actor)
         return done(request, "/ui/agents")
+
+    @router.post("/agents/{agent_id}/avatar")
+    def agent_avatar_reroll(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:
+        with db.transaction(conn):
+            avatars.reroll(conn, agent_id, actor=operator.actor)
+        return done(request, f"/ui/agents#agent-{agent_id}")
+
+    @router.get("/avatars/{version}/{seed}/{kind}/{pose}.svg")
+    def avatar_image(version: str, seed: str, kind: str, pose: str, operator: Op) -> Response:
+        if not (version.isdigit() and seed.isdigit() and len(seed) <= 10) or kind not in ("scene", "mini"):
+            raise HTTPException(404, "no such avatar")
+        try:
+            svg = avatar_svg(int(version), int(seed), pose, kind == "scene")
+        except ValueError:
+            raise HTTPException(404, "no such avatar") from None
+        return Response(svg, media_type="image/svg+xml", headers=AVATAR_HEADERS)
 
     # live feed WebSocket ------------------------------------------------------------
 

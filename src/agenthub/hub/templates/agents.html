@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip %}
+{% from "_macros.html" import chip, avatar %}
 {% block title %}Agents{% endblock %}
 {% block content %}
 <h1>Agents</h1>
@@ -22,8 +22,11 @@
 </details>
 <ul class="cards">
   {% for ag in agents %}
-  <li class="card">
-    <div class="row"><strong>{{ ag.name }}</strong>{{ chip(ag.status) }}</div>
+  <li class="card" id="agent-{{ ag.id }}">
+    <div class="agent-head">
+      {{ avatar(avatars.get(ag.id), 96, true) }}
+      <div class="row"><strong>{{ ag.name }}</strong>{{ chip(ag.status) }}</div>
+    </div>
     <div class="row muted"><span><span class="dot {{ 'on' if connected.get(ag.id) else 'off' }}"></span>{{ 'connected' if connected.get(ag.id) else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</span></div>
     <div class="muted small">{{ ag.device.name }} · {{ ag.id }}</div>
     {% if ag.status != 'revoked' %}
@@ -33,6 +36,7 @@
       <button type="submit">Save projects</button>
     </form>
     <div class="buttons">
+      <form method="post" action="/ui/agents/{{ ag.id }}/avatar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reroll look</button></form>
       {% if ag.status == 'pending' %}
       <form method="post" action="/ui/agents/{{ ag.id }}/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="approve" type="submit">Approve</button></form>
       {% endif %}

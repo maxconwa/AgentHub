@@ -266,6 +266,12 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE task_agents ADD COLUMN finish_note TEXT NOT NULL DEFAULT '';
     """,
+    # 7: each agent's avatar look, (generator version, seed); existing agents get a random seed
+    """
+    ALTER TABLE agents ADD COLUMN avatar_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE agents ADD COLUMN avatar_seed INTEGER NOT NULL DEFAULT 0;
+    UPDATE agents SET avatar_seed = abs(random() % 2147483648);
+    """,
 ]
 
 

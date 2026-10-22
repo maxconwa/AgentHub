@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import approval_summary, chip %}
+{% from "_macros.html" import approval_summary, chip, avatar %}
 {% block title %}Approvals{% endblock %}
 {% block content %}
 <h1>Waiting for you{% if pending %} <span class="count">{{ pending|length }}</span>{% endif %}</h1>
@@ -10,7 +10,7 @@
     <a class="card-link" href="/ui/approvals/{{ a.id }}">
       <div class="row"><strong>{{ a.kind.replace('_', ' ') }}</strong><span class="muted">#{{ a.id }} · {{ ago(a.created_at) }}</span></div>
       <div class="summary">{{ approval_summary(a) }}</div>
-      <div class="row muted"><span>from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</span>
+      <div class="row muted"><span>{{ avatar(avatars.get(a.requester), 32) }} from {{ a.requester_name or a.requester }}{% if a.project %} · {{ a.project }}{% endif %}</span>
         {% if a.awaiting_reply %}<span class="chip chip-waiting">waiting on agent</span>{% elif a.discussion %}<span class="chip chip-reply">agent replied</span>{% endif %}</div>
     </a>
   </li>

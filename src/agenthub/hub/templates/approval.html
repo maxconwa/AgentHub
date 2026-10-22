@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import approval_summary, chip, agent_text %}
+{% from "_macros.html" import approval_summary, chip, agent_text, avatar %}
 {% block title %}Approval #{{ a.id }}{% endblock %}
 {% block content %}
 {% set d = a.details %}
 <p><a href="/ui/approvals">← Approvals</a></p>
 <h1>#{{ a.id }} {{ a.kind.replace('_', ' ') }} {{ chip(a.status) }}</h1>
-<p class="muted">Requested by <strong>{{ a.requester_name or a.requester }}</strong>{% if a.project %} in {{ a.project }}{% endif %} · {{ ago(a.created_at) }}</p>
+<p class="muted">Requested by {{ avatar(avatars.get(a.requester), 32) }} <strong>{{ a.requester_name or a.requester }}</strong>{% if a.project %} in {{ a.project }}{% endif %} · {{ ago(a.created_at) }}</p>
 
 <section class="panel">
   <div class="summary big">{{ approval_summary(a) }}</div>

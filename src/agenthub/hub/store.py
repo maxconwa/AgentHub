@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agenthub import security
-from agenthub.hub import events
+from agenthub.hub import avatar_art, events
 from agenthub.hub.db import now_iso
 
 ENROLLMENT_TTL = timedelta(minutes=15)
@@ -208,7 +208,7 @@ def redeem_enrollment(
     token = security.new_token(agent_id)
     conn.execute(
         "INSERT INTO agents (id, name, device_name, device_ip, device_node_id, token_hash, status, "
-        "allowed_projects, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+        "allowed_projects, created_at, avatar_version, avatar_seed) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
         (
             agent_id,
             name,
@@ -218,6 +218,8 @@ def redeem_enrollment(
             security.hash_token(token),
             row["allowed_projects"],
             now_iso(now),
+            avatar_art.GENERATOR_VERSION,
+            avatar_art.new_seed(),
         ),
     )
     events.emit(

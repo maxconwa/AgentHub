@@ -131,3 +131,6 @@ table.runs th, table.runs td { text-align: left; padding: 6px 4px; border-bottom
   header.top { padding: 6px 10px; }
   nav a { padding: 8px 7px; font-size: 0.95rem; }
 }
+
+.avatar { image-rendering: pixelated; vertical-align: middle; flex: none; }
+.agent-head { display: flex; align-items: center; gap: 12px; }

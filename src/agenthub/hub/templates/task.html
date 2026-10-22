@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, agent_text %}
+{% from "_macros.html" import chip, agent_text, avatar %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
@@ -34,7 +34,7 @@
   {% if not t.agents %}<p class="muted">Nobody yet.</p>{% endif %}
   {% for m in t.agents %}
   <div class="member">
-    <p><strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %}</p>
+    <p>{{ avatar(avatars.get(m.agent_id), 32) }} <strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %}</p>
     {% if m.verdict_notes %}{{ agent_text(m.verdict_notes, m.agent_id, names) }}{% endif %}
     {% if not terminal %}
     <form method="post" action="/ui/tasks/{{ t.id }}/agents/{{ m.agent_id }}/update" class="inline">

@@ -141,6 +141,10 @@ Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` on your phone or laptop.
 - **Feed:** live events, filterable by project, agent, and type.
 - **Agents:** status, heartbeat, enrollment codes, approve, revoke, and
   allowed projects.
+- **Avatars:** every agent has a pixel-chibi avatar whose pose shows what it's
+  doing (asleep when idle, mining while working, hand raised when it needs
+  you, and so on). **Reroll look** on the Agents page until you like it. The
+  avatars are drawn by the hub itself, with no outside service.
 - **Search** over the full event log.
 
 **Phone notifications.** Set `ntfy_url`, `ntfy_topic`, and `public_url` in

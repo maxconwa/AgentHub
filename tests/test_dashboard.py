@@ -46,7 +46,8 @@ def world(hub):
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
-    return hub, a, {"approval_id": ap["id"], "task_id": t["id"], "agent_id": a.id}
+    return hub, a, {"approval_id": ap["id"], "task_id": t["id"], "agent_id": a.id,
+                    "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
 def test_route_inventory_is_not_empty(hub):
@@ -334,3 +335,62 @@ def test_role_shown_on_terminal_task(world):
     assert tasks.get_task(hub.conn(), ids["task_id"])["state"] == "cancelled"
     page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=h).text
     assert "Reviewer: check the rate limiter" in page and rev.name in page
+
+
+# --- avatars ---------------------------------------------------------------------
+
+
+def test_avatar_image_headers(world):
+    hub, agent, ids = world
+    r = hub.client.get("/ui/avatars/1/12345/scene/working.svg", headers=hub.op_headers())
+    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
+    assert r.headers["content-security-policy"] == "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert r.text.startswith("<svg") and "<script" not in r.text
+
+
+@pytest.mark.parametrize("path", ["/ui/avatars/2/1/scene/idle.svg", "/ui/avatars/1/1/scene/dancing.svg",
+                                  "/ui/avatars/1/1/huge/idle.svg", "/ui/avatars/1/-1/mini/idle.svg",
+                                  "/ui/avatars/1/abc/mini/idle.svg", "/ui/avatars/x/1/mini/idle.svg",
+                                  "/ui/avatars/1/99999999999/mini/idle.svg"])
+def test_bad_avatar_urls_are_404(world, path):
+    hub, _, _ = world
+    assert hub.client.get(path, headers=hub.op_headers()).status_code == 404
+
+
+def test_avatar_needs_an_operator(world):
+    hub, agent, _ = world
+    assert hub.client.get("/ui/avatars/1/1/mini/idle.svg").status_code == 403
+    assert hub.client.get("/ui/avatars/1/1/mini/idle.svg", headers=agent.headers).status_code == 403
+
+
+def test_reroll_needs_csrf_and_changes_the_look(world):
+    hub, agent, ids = world
+    seed = lambda: hub.conn().execute("SELECT avatar_seed FROM agents WHERE id = ?", (agent.id,)).fetchone()[0]  # noqa: E731
+    before = seed()
+    r = hub.client.post(f"/ui/agents/{agent.id}/avatar", headers=hub.op_headers(), data={}, follow_redirects=False)
+    assert r.status_code == 403 and seed() == before
+    r = hub.client.post(f"/ui/agents/{agent.id}/avatar", headers=hub.op_headers(), data={"csrf": hub.csrf()},
+                        follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/agents#agent-{agent.id}" and seed() != before
+
+
+def test_pages_show_each_agents_avatar_in_its_pose(world):
+    hub, agent, ids = world
+    other = hub.enroll("helper")
+    conn = hub.conn()
+    conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (other.id,))
+    looks = {r["id"]: (r["avatar_version"], r["avatar_seed"])
+             for r in conn.execute("SELECT id, avatar_version, avatar_seed FROM agents")}
+    html = hub.client.get("/ui/agents", headers=hub.op_headers()).text
+    v, s = looks[other.id]
+    assert f'src="/ui/avatars/{v}/{s}/scene/idle.svg" width="96" height="96" alt="helper, idle"' in html
+    v, s = looks[agent.id]  # not connected
+    assert f'src="/ui/avatars/{v}/{s}/scene/offline.svg"' in html and 'alt="worker, offline"' in html
+    page = hub.client.get(f"/ui/approvals/{ids['approval_id']}", headers=hub.op_headers()).text
+    assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in page
+    page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=hub.op_headers()).text
+    assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in page
+    hub.set_status(agent, "revoked")
+    assert f"/ui/avatars/{v}/{s}/" not in hub.client.get("/ui/agents", headers=hub.op_headers()).text
