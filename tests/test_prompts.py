@@ -224,13 +224,13 @@ def test_group_prompt_to_a_task_opens_a_channel_thread(trio):
     assert ev["payload"]["mode"] == "group"
 
 
-def test_group_prompt_to_a_project_targets_agents_on_its_live_tasks(trio):
+def test_group_prompt_to_a_project_targets_its_allowed_agents(trio):
+    """Every agent allowed into the project, on a task or not (a new project has none yet)."""
     hub, a, b, c = trio
-    mk_task(hub, a)
-    mk_task(hub, b)
-    online(hub, a, b, c)
+    elsewhere = hub.enroll("dave", projects=("other",))
+    online(hub, a, b, c, elsewhere)
     p = create(hub, "project:proj")
-    assert p["mode"] == "group" and {r["agent_id"] for r in p["recipients"]} == {a.id, b.id}
+    assert p["mode"] == "group" and {r["agent_id"] for r in p["recipients"]} == {a.id, b.id, c.id}
     assert p["thread"] == f"board:ch-proj~prompt-{p['id']}" and p["project"] == "proj"
 
 
@@ -927,7 +927,10 @@ def test_running_prompt_whose_runner_never_comes_back_fails(trio):
 
 def test_target_with_nobody_to_prompt(trio):
     hub, a, b, c = trio
-    p = create(hub, "project:proj")  # no live tasks: no recipients at all
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "empty", actor=OPERATOR)
+    p = create(hub, "project:empty")  # no agent is allowed into it: no recipients at all
     assert p["status"] == "failed" and p["recipients"] == []
     msg = build_notification(prompt_events(hub, p["id"])[0], {}, CFG)
     assert msg["title"] == f"Prompt #{p['id']}: nobody to prompt"

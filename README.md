@@ -347,6 +347,9 @@ prompts, are skipped, and the prompt's page says which.
   session; the prompt's session runs on its own. If that agent goes offline
   before starting and stays away for `prompt_discussion_minutes`, the prompt
   times out and you are told.
+- A project reaches every active agent allowed into it, whether or not it's on
+  one of the project's tasks; a task reaches the agents on it; a machine, the
+  agents enrolled from it.
 - If it reaches several connected agents (a task, a project, a machine), they
   talk it over in a shared thread (which shows only a pointer to your text, as
   other agents can read it), weigh who is free and what each machine

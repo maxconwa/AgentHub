@@ -1253,6 +1253,8 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
         await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
         pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}", "Check why the nightly build is slow.")
         await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done", timeout=5)
+        # The runner drops its record once the hub has taken the finish, so just after the hub shows it done.
+        await wait_for(lambda: runner.prompts.store.get(pid) is None, timeout=5)
     finally:
         await stop(main)
     (call,) = calls()

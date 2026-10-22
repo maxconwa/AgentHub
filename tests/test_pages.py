@@ -674,12 +674,19 @@ def test_recipients_unknown_target_is_404(hub, target):
     assert get(hub, "/ui/compose?to=" + target).status_code == 404
 
 
-def test_project_recipients_ignore_finished_tasks(reach):
+def test_project_recipients_are_its_allowed_agents_with_or_without_tasks(reach):
+    """A project reaches every active agent allowed into it, so a new project with no tasks can be prompted."""
     hub, a, b, p, r, t = reach
+    hub.enroll("elsewhere", projects=("other",))
     conn = hub.conn()
     with db.transaction(conn):
         conn.execute("UPDATE tasks SET state = 'done' WHERE id = ?", (t["id"],))
-    assert names_of(hub, "project:proj") == []
+    assert names_of(hub, "project:proj") == ["helper", "worker"]  # no live task; pending and revoked still left out
+    assert names_of(hub, "project:other") == ["elsewhere"]
+    with db.transaction(conn):  # access withdrawn: no longer reached, though still on the project's task
+        conn.execute("UPDATE agents SET allowed_projects = '[]' WHERE id = ?", (b.id,))
+        conn.execute("UPDATE tasks SET state = 'in_progress' WHERE id = ?", (t["id"],))
+    assert names_of(hub, "project:proj") == ["worker"]
 
 
 def test_compose_page_lists_recipients_and_marks_offline(reach):

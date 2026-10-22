@@ -152,9 +152,11 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
         if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (key,)).fetchone():
             raise store.NotFound(f"no project {key!r}")
         label, board = f"project {key}", (key, "general")
-        ids = [r["agent_id"] for r in conn.execute(
-            "SELECT DISTINCT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
-            "WHERE t.project = ? AND t.state NOT IN ('done', 'rejected', 'cancelled')", (key,))]
+        # Every agent allowed into the project, not only those on its open tasks: a new project has no tasks yet,
+        # and prompting it is how its agents split the work into some. An agent on a task whose project access
+        # was since withdrawn can't act on the project, so it isn't reached either.
+        ids = [r["id"] for r in conn.execute(
+            "SELECT a.id FROM agents a, json_each(a.allowed_projects) p WHERE p.value = ?", (key,))]
     elif kind == "device" and key:
         device = next((d for d in devices(conn) if d["node_id"] == key), None)
         if device is None:
