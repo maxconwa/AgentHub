@@ -16,7 +16,7 @@
     <ul class="device-agents">
       {% for a in d.agents %}
       <li>{{ avatar(a.avatar, 32) }} <a class="name" href="/ui/agents/{{ a.id }}">{{ a.name }}</a> {{ chip(a.status) }}
-        <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span> {{ message_button('agent:' ~ a.id, 'Message ' ~ a.name, path) }}</li>
+        <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span> {% if a.id in active_ids %}{{ message_button('agent:' ~ a.id, 'Message ' ~ a.name, path) }}{% endif %}</li>
       {% endfor %}
     </ul></li>
   {% endfor %}

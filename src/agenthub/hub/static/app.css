@@ -234,3 +234,5 @@ body > main > #compose:empty { display: none; }
 }
 .compose-page .compose-panel { position: static; max-height: none; width: auto; border-radius: var(--radius);
   box-shadow: none; margin: 12px 0; }
+.msg-cap { font-size: 0.75rem; color: var(--muted); align-self: center; overflow-wrap: anywhere; }
+.chat-list li.with-action { flex-wrap: wrap; }

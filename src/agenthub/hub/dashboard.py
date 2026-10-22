@@ -163,6 +163,7 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
         pending_count=pending, chat_unread=sum(private.unread_counts(conn).values()),
         names=agent_names(conn), avatars=avatars.board(conn), path=request.url.path,
+        active_ids={r[0] for r in conn.execute("SELECT id FROM agents WHERE status = 'active'")},
         **ctx,
     )
     return HTMLResponse(html, headers=SECURITY_HEADERS)

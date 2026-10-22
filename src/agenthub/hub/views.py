@@ -199,7 +199,8 @@ def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             pairs[k] = max(pairs.get(k, ""), r["ts"])
     for (x, y), ts in pairs.items():
         out["between_agents"].append({"key": f"pair-{x}-{y}", "title": f"{names[x]} ↔ {names[y]}", "last_body": None,
-                                      "last_ts": ts, "avatars": [board[i] for i in (x, y) if i in board]})
+                                      "last_ts": ts, "avatars": [board[i] for i in (x, y) if i in board],
+                                      "agents": [{"id": i, "name": names[i]} for i in (x, y)]})
     for g in out.values():
         g.sort(key=_ts_key, reverse=True)
     return out

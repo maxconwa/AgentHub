@@ -740,6 +740,30 @@ def test_every_page_has_a_compose_link_per_item(reach):
     assert {f"task%3A{tid}", "project%3Aproj"} <= board
 
 
+def test_compose_links_cover_every_task_project_and_pair_agent(reach):
+    hub, a, b, p, r, t = reach
+    conn = hub.conn()
+    with db.transaction(conn):
+        t2 = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Second chore", assignee=None)
+        task_agents.add_agent(conn, t2["id"], a.id, role="r2", stage="works", actor=OPERATOR)
+        store.post_message(conn, author=a.id, project="proj", channel="general", body="hi", to="helper")
+    for path in ("/ui/dashboard", "/ui/agents"):
+        found = links(get(hub, path).text)
+        assert {f"task%3A{t['id']}", f"task%3A{t2['id']}", "project%3Aproj"} <= found, path
+    assert {f"agent%3A{a.id}", f"agent%3A{b.id}"} <= links(get(hub, "/ui/board").text)
+
+
+def test_agent_buttons_hidden_for_pending_and_revoked_agents(reach):
+    hub, a, b, p, r, t = reach
+    tid = t["id"]
+    for path in ("/ui/dashboard", "/ui/agents", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{tid}",
+                 "/ui/devices", "/ui/board", f"/ui/agents/{p.id}", f"/ui/agents/{r.id}"):
+        found = links(get(hub, path).text)
+        assert f"agent%3A{p.id}" not in found and f"agent%3A{r.id}" not in found, path
+        assert f"agent%3A{a.id}" in found or path.startswith("/ui/agents/") or path == "/ui/board", path
+    assert f"task%3A{tid}" in links(get(hub, "/ui/tasks").text)  # task targets keep theirs
+
+
 def test_message_button_markup(reach):
     hub, a, *_ = reach
     html = get(hub, "/ui/tasks").text

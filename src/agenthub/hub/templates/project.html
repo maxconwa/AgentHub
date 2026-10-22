@@ -23,7 +23,7 @@
   <div class="row"><span><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, path) }}</div>
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><strong>{{ m.name }}</strong>{% if m.role %} — {{ m.role }}{% endif %}
-    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div>{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}</div>
+    <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div>{% if m.agent_id in active_ids %}{{ message_button('agent:' ~ m.agent_id, 'Message ' ~ m.name, path) }}{% endif %}</div>
   {% else %}<div class="member small-line">Nobody yet</div>
   {% endfor %}
 </div>

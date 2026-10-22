@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import message_button, approval_summary, avatar, task_title %}
+{% from "_macros.html" import message_button, agent_tasks, approval_summary, avatar, task_title %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -23,12 +23,9 @@
   {% for ag in agents %}
   <li class="card agent-card">{{ avatar(ag.avatar, 64, scene=True) }}
     <div class="info"><a class="name" href="/ui/agents/{{ ag.id }}">{{ ag.name }}</a>
-      {% if ag.tasks %}{% set t = ag.tasks[0] %}
-      <div class="small-line"><a href="/ui/tasks/{{ t.id }}">#{{ t.id }} {{ task_title(t, names) }}</a> · {{ t.project }}</div>
-      <div class="small-line">{% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}{% if ag.tasks|length > 1 %} · +{{ ag.tasks|length - 1 }} more{% endif %}</div>
-      {% else %}<div class="small-line">No current task</div>{% endif %}
+      {{ agent_tasks(ag, names, path) }}
       <div class="small-line">on {{ ag.device }}</div>
-      <div class="msg-row">{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% if ag.tasks %}{{ message_button('task:' ~ ag.tasks[0].id, 'Message the agents on task #' ~ ag.tasks[0].id, path) }}{% endif %}</div></div></li>
+      <div class="msg-row">{% if ag.id in active_ids %}{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% endif %}</div></div></li>
   {% endfor %}
 </ul>
 {% endblock %}

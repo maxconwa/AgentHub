@@ -7,7 +7,7 @@
 <ul class="chat-list panel">
   {% for t in items %}
   <li class="with-action"><a href="/ui/board/{{ t.key }}">{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{% if label == "Tasks" %}{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}{% else %}{{ t.title }}{% if t.created_by and not t.created_by.startswith(('human:', 'system:')) %} <span class="by-label">by {{ who(t.created_by, names) }}</span>{% endif %}{% endif %}</strong>
-    <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a>{% if label == "Projects" %}{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, path) }}{% elif label == "Tasks" %}{{ message_button('task:' ~ t.task_id, 'Message the agents on task #' ~ t.task_id, path) }}{% endif %}</li>
+    <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a>{% if label == "Projects" %}{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, path) }}{% elif label == "Tasks" %}{{ message_button('task:' ~ t.task_id, 'Message the agents on task #' ~ t.task_id, path) }}{% endif %}{% if label == "Between agents" %}<div class="msg-row">{% for ag in t.agents %}{% if ag.id in active_ids %}<span class="msg-cap">{{ ag.name }}</span>{{ message_button('agent:' ~ ag.id, 'Message ' ~ ag.name, path) }}{% endif %}{% endfor %}</div>{% endif %}</li>
   {% endfor %}
 </ul>
 {% endif %}
