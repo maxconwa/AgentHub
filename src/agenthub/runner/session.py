@@ -157,16 +157,18 @@ class SessionResult:
 def build_command(
     claude_bin: str,
     *,
-    max_turns: int,
+    max_turns: int | None,
     system_prompt: str,
     resume_session: str | None,
     extra_args: list[str],
     permission_mode: str = "auto",
     fork_session: bool = False,
 ) -> list[str]:
-    """``fork_session`` (with ``resume_session``): continue from a copy of that transcript under a new session id
-    (``--fork-session``), leaving the original to its owner."""
-    cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
+    """``max_turns`` None: no turn limit (task sessions run until they're done). ``fork_session`` (with
+    ``resume_session``): continue from a copy of that transcript under a new session id (``--fork-session``),
+    leaving the original to its owner."""
+    cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose",
+           *(["--max-turns", str(max_turns)] if max_turns is not None else []),
            "--permission-mode", permission_mode, "--append-system-prompt", system_prompt]
     if resume_session:
         cmd += ["--resume", resume_session] + (["--fork-session"] if fork_session else [])
@@ -259,7 +261,7 @@ class Session:
         prompt: str,
         cwd: Path,
         env: dict[str, str],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
         on_progress: Callable[[dict[str, str]], Awaitable[None]],
         on_session: Callable[[str], Awaitable[None]],
         kill_grace_seconds: float = 10,
@@ -305,7 +307,10 @@ class Session:
                         result_msg = value
 
         try:
-            await asyncio.wait_for(read(), timeout=max(self.timeout_seconds, 1))
+            if self.timeout_seconds is None:  # no time limit: run until the session ends
+                await read()
+            else:
+                await asyncio.wait_for(read(), timeout=max(self.timeout_seconds, 1))
         except TimeoutError:
             timed_out = True
             await self.terminate()

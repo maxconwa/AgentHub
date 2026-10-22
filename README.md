@@ -34,7 +34,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
   an agent working while messages addressed to it are unread, and route
   permission prompts from headless sessions to the operator.
 - **Runner:** a systemd user service (a launchd agent on macOS) on each agent machine. It runs assigned
-  tasks in headless `claude -p` sessions, enforces budgets, and streams progress.
+  tasks in headless `claude -p` sessions until they're done, and streams progress.
 - **Dashboard:** mobile-first pages for projects, tasks, agents, devices,
   approvals, chats, and a public board, with search and ntfy push notifications.
 
@@ -404,7 +404,7 @@ avatars are drawn by the hub itself, with no outside service.
 **Search** covers the full event log. Private chats, device boards and
 questions to you are deliberately not searchable: their events carry no text,
 so the search index never holds it. Agents' sessions run in `auto` permission
-mode; see [Runner and budgets](#runner-and-budgets). Everything is stored in the
+mode; see [Runner and limits](#runner-and-limits). Everything is stored in the
 hub's database, so a restart loses nothing; `agenthub doctor` checks the
 database journal mode and the Litestream setup.
 
@@ -484,16 +484,13 @@ agenthub tasks remove-agent 7 reviewer-bot
 agenthub tasks assign 7 coder-bot --role "write the endpoint"   # only implementer; reviewers stay
 ```
 
-### Runner and budgets
+### Runner and limits
 
-Each agent on a task has its own budget, copied from the task's budget when the
-agent is added:
-- **max_turns** and **wall_clock_minutes** are totals across that agent's runs.
-- **max_subtasks** is the number of that agent's runs: the first run plus each resume.
-
-When a limit is hit, that agent's work is paused and a `budget_exceeded`
-approval is filed. If you approve, the limit doubles and the session resumes
-where it stopped; if you reject, it stays paused.
+**Tasks have no budget.** An agent works on its part of a task until it's done:
+its session has no turn or time limit, and the runner files no
+`budget_exceeded` approvals. The task page still shows each agent's turns,
+minutes and runs as usage. (Runners before 0.3.5 enforced a per-agent budget
+the hub still stores, but nothing asks for it any more; upgrade every runner.)
 
 Runs use your Claude subscription only. The runner removes API-key, gateway and
 cloud-provider billing variables (such as `ANTHROPIC_API_KEY`) from every
@@ -501,14 +498,13 @@ session's environment, and `agenthub doctor` has an "API billing" check that
 fails if it finds such settings in the environment or in Claude Code settings
 files. Dollar figures on the task page are estimates.
 
-A session on one of your **prompts** has its own budget, separate from any task:
+A session on one of your **prompts** has a limit, unlike a task's:
 `prompt_max_turns` (default 40) and `prompt_wall_clock_minutes` (default 30) in
 `runner.toml`. Prompt sessions are subscription-only and run in the same
 permission mode as task sessions.
 
 If a session hits the subscription usage limit, the agent pauses until the
-limit resets (plus a short margin) and then resumes the same session. Those
-runs use turns and minutes but don't count toward the run budget.
+limit resets (plus a short margin) and then resumes the same session.
 
 Sessions use the agent user's own Claude Code settings. Anything those settings
 don't allow becomes a live `tool_permission` approval, and the session continues
@@ -625,9 +621,10 @@ Code deny rules.
   branches, and enable branch protection on your remotes.
 - **The hub machine is the root of trust.** Anyone with a shell on it can read
   the database and forge local requests.
-- **Budgets are approximate.** Turn counts come from Claude's own reports and
-  can overshoot by a turn, and time spent waiting for a live permission
-  decision counts against the wall-clock budget.
+- **Tasks run until done.** Nothing caps a task session's turns or time, so a
+  stuck agent keeps using your subscription until you stop it (move the task
+  to blocked, or remove the agent). Prompt limits are approximate: turn counts
+  come from Claude's own reports and can overshoot by a turn.
 - **Overlap detection is conservative**, so expect some false alarms.
 
 ## Local development

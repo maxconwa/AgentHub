@@ -257,7 +257,7 @@ def render_new(request: Request, operator: Operator, conn: sqlite3.Connection, i
                new_code: dict | None = None) -> HTMLResponse:
     """A New task / New project / New agent form in the slide-in panel (New agent shows a code once made)."""
     return render(request, operator, "_new.html", conn, item=item, kind=item.removeprefix("new:"), next=safe_next(next),
-                  projects=store.list_projects(conn), new_code=new_code, default_budget=tasks.DEFAULT_BUDGET,
+                  projects=store.list_projects(conn), new_code=new_code,
                   agents=[a for a in store.list_agents(conn) if a["status"] == "active"])
 
 
@@ -634,8 +634,7 @@ def build_router() -> APIRouter:
                                 newest_first=True)
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
         return render(request, operator, "tasks.html", conn, nav="tasks", rows=rows, project=project, state=state,
-                      states=tasks.STATES, projects=store.list_projects(conn), agents=agents,
-                      default_budget=tasks.DEFAULT_BUDGET)
+                      states=tasks.STATES, projects=store.list_projects(conn), agents=agents)
 
     @router.post("/tasks")
     def task_create(request: Request, operator: PostOp, conn: Conn,
@@ -644,16 +643,10 @@ def build_router() -> APIRouter:
                     body: Annotated[str, Form(max_length=16000)] = "",
                     assignee: Annotated[str, Form(max_length=64)] = "",
                     role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)] = "",
-                    max_turns: Annotated[int | None, Form()] = None,
-                    wall_clock_minutes: Annotated[int | None, Form()] = None,
-                    max_subtasks: Annotated[int | None, Form()] = None,
                     panel: PanelField = "", next: NextField = "") -> Response:
-        budget = {k: v for k, v in {"max_turns": max_turns, "wall_clock_minutes": wall_clock_minutes,
-                                     "max_subtasks": max_subtasks}.items() if v is not None}
-        with db.transaction(conn):
+        with db.transaction(conn):  # no budget: runners since 0.3.5 run a task until it's done
             t = tasks.create_task(conn, actor=operator.actor, project=project, title=title, body=body,
-                                  assignee=assignee or None, role=role, budget=budget,
-                                  state="open")
+                                  assignee=assignee or None, role=role, state="open")
         if panel and request.headers.get("hx-request"):  # from the + button: show the new task's panel
             return render_panel(request, operator, conn, f"task:{t['id']}", next)
         return done(request, f"/ui/tasks/{t['id']}")

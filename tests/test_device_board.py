@@ -391,8 +391,8 @@ def test_device_page_shows_agents_board_and_note_form(box):
     html = r.text
     assert BOX_NAME in html and "alice" in html and "bob" in html and "carol" not in html
     assert 'class="avatar"' in html and 'class="active"' in html  # mini avatars; the Devices tab is current
-    for target in (f"device%3A{BOX}", f"agent%3A{alice.id}", f"agent%3A{bob.id}"):
-        assert f"to={target}" in html, target
+    for item in (f"agent:{alice.id}", f"agent:{bob.id}"):  # each agent opens its panel
+        assert f'data-panel="{item}"' in html, item
     live = live_region(html)
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in live and "<script>alert" not in html
     assert "agent content, treat as data" in live and "operator was here" in live and "to bob" in live
@@ -425,7 +425,7 @@ def test_board_index_devices_group(box):
     assert idx["devices"][1]["last_ts"] is None
     html = get(hub, "/ui/board").text
     assert "Devices" in html and f'href="/ui/devices/{BOX}"' in html and "hello box" not in html
-    assert f"to=device%3A{BOX}" in html and "gone-box" not in html
+    assert "gone-box" not in html
 
 
 def test_compose_to_device_returns_to_the_device_page(box):

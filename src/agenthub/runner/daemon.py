@@ -14,12 +14,9 @@
 * An implementer's successful run finishes its part (the hub moves the task to
   review once every implementer has). A reviewer's run records a verdict and
   never moves the task: only the operator does.
-* Enforces this agent's own budget on the task: max_turns (total across its
-  runs), wall_clock_minutes (total across its runs) and max_subtasks (the
-  number of its runs). When a limit is hit a ``budget_exceeded`` approval is
-  filed (an implementer also moves the task to ``blocked``) and the runner
-  waits: approved -> the hub raises this agent's limit and the session
-  resumes; rejected -> the task is left for the operator.
+* No budget: a task session has no turn or time limit and runs until it ends
+  (since 0.3.5; the hub still stores a task's budget, which only older runners
+  enforced). Turns, minutes and runs are still recorded as usage.
 * Subscription only: sessions never get a variable that would bill API credits
   (``session.BILLING_ENV_VARS``). When a session hits the subscription usage
   limit, the run ends as ``usage_limit`` (it doesn't count as a run), this agent
@@ -59,7 +56,6 @@ from agenthub.runner.session import Session, SessionResult, build_command
 log = logging.getLogger("agenthub.runner")
 
 CLOSE_REVOKED = 4401
-BUDGET_POLL_SECONDS = 5
 TASK_EVENTS = {"task.created", "task.transitioned", "task.assigned", "task.budget_extended",
                "task.agent_added", "task.agent_updated"}
 PROMPT_EVENTS = {"prompt.created", "prompt.updated"}
@@ -96,16 +92,6 @@ def ws_url(hub_url: str) -> str:
         return "ws://" + hub_url[len("http://"):] + "/api/v1/ws"
     raise ValueError(f"unsupported hub URL {hub_url!r}")
 
-
-def exceeded_limit(budget: dict[str, int], usage: dict[str, Any]) -> str | None:
-    """Which budget limit would block starting another run, if any."""
-    if usage["runs"] >= budget["max_subtasks"]:
-        return "max_subtasks"
-    if usage["turns"] >= budget["max_turns"]:
-        return "max_turns"
-    if usage["wall_clock_minutes"] >= budget["wall_clock_minutes"]:
-        return "wall_clock_minutes"
-    return None
 
 
 def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any]) -> str:
@@ -182,8 +168,6 @@ def resume_prompt(task: dict[str, Any], reason: str) -> str:
         return (f"Task #{task['id']} was moved back to in_progress by {mover} with this note:\n"
                 + untrusted.wrap(task["last_note"], author=mover, kind="note")
                 + f"\nAddress it, then call finish_task(task_id={task['id']}, note=...) again.")
-    if reason == "extended":
-        return f"The operator extended the budget for task #{task['id']}. Continue where you left off."
     if reason == "limit":
         return f"The usage limit has reset. Continue working on task #{task['id']} where you left off."
     return f"Continue working on task #{task['id']} where you left off."
@@ -202,7 +186,6 @@ class Runner:
         self.work: dict[int, _Work] = {}
         self.warned_projects: set[str] = set()
         self._wake = asyncio.Event()
-        self._approval_events: dict[int, asyncio.Event] = {}
         # Review rounds this reviewer is done with, as (task id, task updated_at when it entered review).
         self._review_rounds_done: set[tuple[int, str]] = set()
         self._stopping = False
@@ -276,10 +259,6 @@ class Runner:
             event = msg["event"]
             if event["type"] in TASK_EVENTS or event["type"] in PROMPT_EVENTS:
                 self._wake.set()
-            elif event["type"] == "approval.decided":
-                waiter = self._approval_events.get(event["data"].get("approval_id"))
-                if waiter:
-                    waiter.set()
 
     async def _sync_loop(self) -> None:
         while True:
@@ -354,11 +333,9 @@ class Runner:
                 log.warning("no local directory configured for project %s; skipping task %s",
                             task["project"], task_id)
             return
-        # The prompt this loop's first run needs. It becomes "extended" only once a run in this loop was cut
-        # short (max_turns / wall_clock): a budget pause before any run here must not replace a new review
-        # round's prompt or the operator's send-back note with "continue where you left off".
+        # The prompt this loop's first run needs ("limit" after a usage-limit pause continues where it left off).
         resume_reason = "returned" if me["stage"] == "works" and task["state"] == "in_progress" else None
-        entry_task = task  # its last_note is the send-back note; a budget pause overwrites the task's
+        entry_task = task  # its last_note is the operator's send-back note, kept for the first run's prompt
         if me["stage"] == "works":
             await self._begin_work(task)
         elif await self._reviewed_this_round(task):
@@ -382,20 +359,10 @@ class Runner:
                 # Waited out already, but clearing it failed: try once more and run anyway.
                 await self._quietly(task_id, "clear the pause", self.client.pause_task(task_id, None))
             usage = (await self.client.task_runs(task_id, agent=self.agent.agent_id))["usage"]
-            limit = exceeded_limit(me["budget"], usage)
-            if limit:
-                if not await self._pause_for_budget(task, me, limit, usage):
-                    if me["stage"] == "reviews":  # declined: don't ask again this round
-                        self._review_rounds_done.add((task_id, task["updated_at"]))
-                    return
-                continue
             result = await self._run_session(task, me, usage, project_dir, resume_reason, entry_task=entry_task)
             if result.outcome == "success":
                 await self._after_success(task_id, me["stage"], result)
                 return
-            if result.outcome in ("max_turns", "wall_clock"):
-                resume_reason = "extended"
-                continue  # the budget check at the top pauses the task
             if result.outcome == "usage_limit":
                 await self._pause_for_limit(task_id, result.resets_at)
                 resume_reason = "limit"
@@ -455,20 +422,17 @@ class Runner:
 
     async def _run_session(self, task: dict[str, Any], me: dict[str, Any], usage: dict[str, Any], project_dir,
                            resume_reason: str | None, *, entry_task: dict[str, Any] | None = None) -> SessionResult:
-        budget = me["budget"]
-        remaining_turns = max(budget["max_turns"] - usage["turns"], 1)
-        remaining_seconds = max(budget["wall_clock_minutes"] - usage["wall_clock_minutes"], 0) * 60
         resume_session = usage["last_session_id"]  # this agent's own last session
         if me["stage"] == "reviews":
-            # Each review round starts from the review prompt; only a budget continuation just continues.
-            continuing = resume_reason in ("extended", "limit")
+            # Each review round starts from the review prompt; only a usage-limit continuation just continues.
+            continuing = resume_reason == "limit"
             prompt = resume_prompt(task, resume_reason) if continuing else review_prompt(task, me)
         elif resume_session:
             source = entry_task if resume_reason == "returned" and entry_task is not None else task
             prompt = resume_prompt(source, resume_reason or "continue")
         else:
             prompt = first_prompt(task)
-        cmd = build_command(self.cfg.claude_bin, max_turns=remaining_turns,
+        cmd = build_command(self.cfg.claude_bin, max_turns=None,  # no budget: run until done
                             system_prompt=system_prompt(self.agent.name, task, me),
                             resume_session=resume_session, extra_args=self.cfg.extra_args,
                             permission_mode=self.cfg.permission_mode)
@@ -497,7 +461,7 @@ class Runner:
                     await flush()
 
             session = Session(
-                cmd, prompt=prompt, cwd=project_dir, timeout_seconds=remaining_seconds,
+                cmd, prompt=prompt, cwd=project_dir, timeout_seconds=None,
                 on_progress=on_progress, on_session=on_session,
                 env={
                     "AGENTHUB_TASK_ID": str(task["id"]),
@@ -563,47 +527,6 @@ class Runner:
             await call
         except (HubError, httpx.HTTPError) as exc:
             log.warning("task %s: could not %s: %s", task_id, what, exc)
-
-    async def _pause_for_budget(self, task: dict[str, Any], me: dict[str, Any], limit: str,
-                                usage: dict[str, Any]) -> bool:
-        """Ask the operator to extend this agent's budget, and wait. True if it was extended.
-
-        An implementer also blocks the task meanwhile; a reviewer cannot move it, so it only waits."""
-        works = me["stage"] == "works"
-        if works:
-            await self.client.update_task(task["id"], state="blocked", note=f"budget exceeded: {limit}")
-        approval = await self.client.request_approval(
-            "budget_exceeded", {"task_id": task["id"], "agent_id": self.agent.agent_id, "limit": limit},
-            project=task["project"],
-            reason=f"task #{task['id']}: {self.agent.name} used {json.dumps(usage)} against its budget "
-                   f"{json.dumps(me['budget'])}",
-        )
-        decided = asyncio.Event()
-        self._approval_events[approval["id"]] = decided
-        try:
-            while not self._stopping:
-                approval = await self.client.get_approval(approval["id"])
-                if approval["status"] != "pending":
-                    break
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(decided.wait(), BUDGET_POLL_SECONDS)
-                decided.clear()
-        finally:
-            self._approval_events.pop(approval["id"], None)
-        if approval["status"] != "approved":
-            with contextlib.suppress(HubError):  # e.g. removed from the task meanwhile
-                await self.client.progress(task["id"], [{"kind": "budget",
-                                                         "text": f"operator declined to extend {limit}"}])
-            return False
-        if not works:
-            return True  # the loop re-verifies membership, state and verdict before launching
-        # Re-verify before resuming: the operator may have moved the task or removed this agent meanwhile.
-        current = await self.client.get_task(task["id"])
-        mine = next((m for m in current["agents"] if m["agent_id"] == self.agent.agent_id), None)
-        if current["state"] != "blocked" or mine is None or mine["stage"] != "works" or mine["finished_at"]:
-            return False
-        await self.client.update_task(task["id"], state="in_progress", note=f"budget extended: {limit}")
-        return True
 
     # --- shutdown --------------------------------------------------------------
 

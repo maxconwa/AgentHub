@@ -16,7 +16,7 @@
 {% if kind == 'task' %}
   {% if projects %}
   {% call new_form('/ui/tasks') %}
-  {{ new_task_fields(projects, '', agents, default_budget) }}
+  {{ new_task_fields(projects, '', agents) }}
   <button type="submit" class="approve">Create task</button>
   <p class="small-line">Tasks you create start open; they skip the approval step.</p>
   {% endcall %}

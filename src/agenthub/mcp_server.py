@@ -256,12 +256,9 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
     @server.tool()
     async def create_task(
         project: str, title: str, body: str = "", assignee: str | None = None, reason: str = "",
-        max_turns: int | None = None, wall_clock_minutes: int | None = None, max_subtasks: int | None = None,
     ) -> str:
         """Propose a task. It waits in awaiting_approval until the operator approves it."""
-        budget = {k: v for k, v in {"max_turns": max_turns, "wall_clock_minutes": wall_clock_minutes,
-                                     "max_subtasks": max_subtasks}.items() if v is not None}
-        r = await call(lambda c: c.create_task(project, title, body, assignee, budget or None, reason))
+        r = await call(lambda c: c.create_task(project, title, body, assignee, None, reason))
         return (f"Created task #{r['task']['id']} in state {r['task']['state']}. "
                 f"Approval #{r['approval']['id']} is pending; use wait_for_approval to wait for the decision.")
 

@@ -304,7 +304,7 @@ def test_task_note_lands_in_task_channel_as_operator(busy):
                            data={"csrf": hub.csrf(), "body": "x"}).status_code == 404
 
 
-def test_task_page_shows_each_agents_own_budget_and_use(busy):
+def test_task_page_shows_each_agents_use_without_limits(busy):
     hub, a, b, ap, t = busy
     c = hub.enroll("second")
     conn = hub.conn()
@@ -315,8 +315,8 @@ def test_task_page_shows_each_agents_own_budget_and_use(busy):
                      "VALUES (?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:03:00.000Z', 4, 'done')",
                      (t["id"], c.id))
     html = get(hub, f"/ui/tasks/{t['id']}").text
-    assert "4 / 7" in html and "3 / 9" in html and "1 / 2" in html
-    assert "0 / 50" in html  # worker: default budget, no runs
+    # Usage only: since 0.3.5 runners enforce no budget, so the page shows no "used / limit".
+    assert "4 / 7" not in html and "/ 50" not in html and "<h3>Usage</h3>" in html
 
 
 def test_task_page_keeps_activity_outside_live(busy):

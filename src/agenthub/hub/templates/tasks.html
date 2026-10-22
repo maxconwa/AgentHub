@@ -20,7 +20,7 @@
   <summary>New task</summary>
   <form class="stack" method="post" action="/ui/tasks">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    {{ new_task_fields(projects, project, agents, default_budget) }}
+    {{ new_task_fields(projects, project, agents) }}
     <p class="muted small">Tasks you create start open; they skip the approval step.</p>
     <button type="submit">Create task</button>
   </form>

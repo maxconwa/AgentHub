@@ -185,10 +185,10 @@ def test_operator_task_lifecycle(world):
     hub, agent, ids = world
     h, c = hub.op_headers(), hub.csrf()
     r = hub.client.post("/ui/tasks", headers=h, follow_redirects=False,
-                        data={"csrf": c, "project": "proj", "title": "From phone", "body": "do x", "max_turns": "7"})
+                        data={"csrf": c, "project": "proj", "title": "From phone", "body": "do x"})
     task_id = int(r.headers["location"].rsplit("/", 1)[1])
     t = tasks.get_task(hub.conn(), task_id)
-    assert t["state"] == "open" and t["created_by"] == f"human:{OP_LOGIN}" and t["budget"]["max_turns"] == 7
+    assert t["state"] == "open" and t["created_by"] == f"human:{OP_LOGIN}"
     hub.client.post(f"/ui/tasks/{task_id}/assign", headers=h, data={"csrf": c, "assignee": "worker"})
     assert [m["agent_id"] for m in tasks.get_task(hub.conn(), task_id)["agents"]] == [agent.id]
     hub.client.post(f"/ui/tasks/{task_id}/move", headers=h, data={"csrf": c, "state": "cancelled", "note": "nvm"})

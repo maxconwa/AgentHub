@@ -44,7 +44,7 @@ def main():
     argv = sys.argv[1:]
     prompt = sys.stdin.read()
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
-    max_turns = int(argv[argv.index("--max-turns") + 1])
+    max_turns = int(argv[argv.index("--max-turns") + 1]) if "--max-turns" in argv else 10  # task sessions have none
     session = str(uuid.uuid4()) if resume is None or "--fork-session" in argv else resume
     log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:

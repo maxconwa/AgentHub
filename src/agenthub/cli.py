@@ -468,20 +468,15 @@ def tasks_create(
     body: Annotated[str, typer.Option()] = "",
     assignee: Annotated[str | None, typer.Option()] = None,
     role: Annotated[str, typer.Option(help="Role text for the assignee (operator-written).")] = "",
-    max_turns: Annotated[int | None, typer.Option(help="Budget: total agent turns.")] = None,
-    wall_clock_minutes: Annotated[int | None, typer.Option(help="Budget: total minutes of runtime.")] = None,
-    max_subtasks: Annotated[int | None, typer.Option(help="Budget: number of runs (first run + resumes).")] = None,
 ) -> None:
-    """Operator-created tasks skip approval and start open."""
+    """Operator-created tasks skip approval and start open. Agents work on them until done (no budget)."""
     from agenthub.hub import db, store, tasks
 
-    budget = {k: v for k, v in {"max_turns": max_turns, "wall_clock_minutes": wall_clock_minutes,
-                                 "max_subtasks": max_subtasks}.items() if v is not None}
     conn = _hub_conn()
     try:
         with db.transaction(conn):
             t = tasks.create_task(conn, actor=_local_operator(), project=project, title=title, body=body,
-                                  assignee=assignee, role=role, state="open", budget=budget)
+                                  assignee=assignee, role=role, state="open")
     except store.StoreError as exc:
         _fail(str(exc))
     typer.echo(f"#{t['id']} open: {t['title']} (budget {t['budget']})")

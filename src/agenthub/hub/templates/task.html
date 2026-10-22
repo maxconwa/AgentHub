@@ -22,11 +22,11 @@
 </details>
 
 <section class="panel">
-  <h3>Budget</h3>
+  <h3>Usage</h3>
   <dl class="grid3">
-    <div><dt>Turns</dt><dd>{{ usage.turns }} / {{ t.budget.max_turns }}</dd></div>
-    <div><dt>Minutes</dt><dd>{{ usage.wall_clock_minutes }} / {{ t.budget.wall_clock_minutes }}</dd></div>
-    <div><dt>Runs</dt><dd>{{ usage.runs }} / {{ t.budget.max_subtasks }}</dd></div>
+    <div><dt>Turns</dt><dd>{{ usage.turns }}</dd></div>
+    <div><dt>Minutes</dt><dd>{{ usage.wall_clock_minutes }}</dd></div>
+    <div><dt>Runs</dt><dd>{{ usage.runs }}</dd></div>
   </dl>
 </section>
 
@@ -49,9 +49,9 @@
     <p>{{ avatar(avatars.get(m.agent_id), 32) }} <a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %} · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %} </p>
     {% set u = member_usage[m.agent_id] %}
     <dl class="grid3 member-budget">
-      <div><dt>Turns</dt><dd>{{ u.turns }} / {{ m.budget.max_turns }}</dd></div>
-      <div><dt>Minutes</dt><dd>{{ '%g'|format(u.wall_clock_minutes|round(1)) }} / {{ m.budget.wall_clock_minutes }}</dd></div>
-      <div><dt>Runs</dt><dd>{{ u.runs }} / {{ m.budget.max_subtasks }}</dd></div>
+      <div><dt>Turns</dt><dd>{{ u.turns }}</dd></div>
+      <div><dt>Minutes</dt><dd>{{ '%g'|format(u.wall_clock_minutes|round(1)) }}</dd></div>
+      <div><dt>Runs</dt><dd>{{ u.runs }}</dd></div>
     </dl>
     {% if m.verdict_notes %}{{ agent_text(m.verdict_notes, m.agent_id, names) }}{% endif %}
     {% if not terminal %}

@@ -89,15 +89,11 @@ href="{{ href }}" data-panel="{{ item }}"
 {%- endmacro %}
 
 {# The New task fields: the Tasks page's form and the + button's New task form in the slide-in panel. #}
-{% macro new_task_fields(projects, project, agents, default_budget) -%}
+{% macro new_task_fields(projects, project, agents) -%}
 <label>Project <select name="project" required>{% for p in projects %}<option value="{{ p.name }}" {{ 'selected' if p.name == project else '' }}>{{ p.name }}</option>{% endfor %}</select></label>
 <label>Title <input name="title" required maxlength="200"></label>
 <label>Description <textarea name="body" rows="4" maxlength="16000"></textarea></label>
 <label>Assignee <select name="assignee"><option value="">Unassigned</option>{% for ag in agents %}<option value="{{ ag.name }}">{{ ag.name }}</option>{% endfor %}</select></label>
 <label>Role <input name="role" maxlength="200" placeholder="Role for the assignee (e.g. Implementer)"></label>
-<div class="grid3">
-  <label>Max turns <input type="number" name="max_turns" min="1" max="500" placeholder="{{ default_budget.max_turns }}"></label>
-  <label>Minutes <input type="number" name="wall_clock_minutes" min="1" max="1440" placeholder="{{ default_budget.wall_clock_minutes }}"></label>
-  <label>Runs <input type="number" name="max_subtasks" min="0" max="50" placeholder="{{ default_budget.max_subtasks }}"></label>
-</div>
+<p class="small-line">The agents work on it until it's done: there's no turn, time or run limit.</p>
 {%- endmacro %}
