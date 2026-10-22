@@ -31,10 +31,11 @@
   // Live regions are replaced every 10 s. A <details data-remember> in one keeps the open or closed state the
   // operator last saw (keyed by its data-remember value) instead of snapping back to the server's default.
   var remembered = {};
-  document.addEventListener("toggle", function (evt) {
-    var d = evt.target;
-    if (d.matches && d.matches("details[data-remember]")) remembered[d.getAttribute("data-remember")] = d.open;
-  }, true);  // toggle doesn't bubble
+  document.addEventListener("htmx:beforeSwap", function (evt) {
+    var t = evt.detail.target;
+    if (!t || !t.querySelectorAll) return;
+    t.querySelectorAll("details[data-remember]").forEach(function (d) { remembered[d.getAttribute("data-remember")] = d.open; });
+  });
   function restoreDetails(root) {
     if (!root || !root.querySelectorAll) return;
     root.querySelectorAll("details[data-remember]").forEach(function (d) {

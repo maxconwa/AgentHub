@@ -183,6 +183,16 @@ def test_narrow_screen_and_math_rules_in_the_stylesheet(hub):
     assert re.search(r"\.inline \{[^}]*flex-wrap: wrap", css)  # the task page's member forms wrap at 360px
     assert re.search(r"^select \{ max-width: 100%; \}", css, re.M)
     assert re.search(r"\.md \.math\.inline \.katex \{ display: inline-block; max-width: 100%; overflow-x: auto;", css)
+    # A list row's subtitle is nowrap; a long task title in the row's own spans must still wrap.
+    assert ".chat-list .t > span { display: block;" in css and ".chat-list .t span " not in css
+    assert re.search(r"^\.member-card \{", css, re.M)
+
+
+def test_task_page_member_blocks_stack(site):
+    hub, a, ids = site
+    html = get(hub, f"/ui/tasks/{ids['task']}").text
+    agents = html.split("<h3>Agents</h3>")[1].split("</section>")[0]
+    assert '<div class="member-card">' in agents and '<div class="member">' not in agents
 
 
 def test_new_project_form_says_how_agents_get_in(hub):
