@@ -165,6 +165,7 @@ SHARED_CONFIG_DIR = "${AGENTHUB_CONFIG_DIR:-"
 
 def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
     from agenthub.hooks import guard
+    from agenthub.hooks.install import hub_host
 
     found: dict[str, dict] = {}
     deny: set[str] = set()
@@ -197,12 +198,18 @@ def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
                          "installed" if event in found else "not installed; run `agenthub hook install`"))
     try:
         cfg = guard.load_guard_config()
-        out.append(Check("guard config", OK, f"{len(cfg.rules)} rules"))
-        missing = [r for r in guard.default_deny_rules(cfg.protected_branches) if r not in deny]
-        out.append(Check("deny rules", OK if not missing else WARN,
-                         "never-allow list installed" if not missing else f"{len(missing)} missing; reinstall hooks"))
+        out.append(Check("guard config", OK, "ok") if not cfg.ignored_keys else Check(
+            "guard config", WARN, f"ignoring {', '.join(cfg.ignored_keys)}: since 0.3.6 Claude Code's permission "
+            "mode decides which commands run; remove them from guard.toml"))
     except guard.GuardConfigError as exc:
-        out.append(Check("guard config", FAIL, f"{exc} (all Bash commands are blocked)"))
+        out.append(Check("guard config", WARN, f"{exc} (the Stop hook uses its defaults)"))
+    missing = [r for r in guard.default_deny_rules(hub_host(config_dir)) if r not in deny]
+    old = [r for r in deny if guard.is_old_deny_rule(r)]
+    if missing or old:
+        out.append(Check("deny rules", WARN, f"{len(missing)} missing, {len(old)} left over from agenthub 0.3.5 or "
+                         "earlier; run `agenthub hook install`"))
+    else:
+        out.append(Check("deny rules", OK, "installed"))
     return out
 
 

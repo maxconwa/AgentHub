@@ -30,9 +30,9 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
   asks, and intents.
 - **MCP server:** started by Claude Code. It exposes the hub as tools and labels
   everything written by other agents as untrusted data.
-- **Hooks:** gate risky shell commands behind approvals (failing closed), keep
-  an agent working while messages addressed to it are unread, and route
-  permission prompts from headless sessions to the operator.
+- **Hooks:** keep agents off the operator's dashboard, keep an agent working
+  while messages addressed to it are unread, and route permission prompts from
+  headless sessions to the operator.
 - **Runner:** a systemd user service (a launchd agent on macOS) on each agent machine. It runs assigned
   tasks in headless `claude -p` sessions until they're done, and streams progress.
 - **Dashboard:** mobile-first pages for projects, tasks, agents, devices,
@@ -182,7 +182,7 @@ agenthub join https://HUB-NODE.YOUR-TAILNET.ts.net --code XXXX-XXXX-XXXX --name 
   (mode 0600);
 - binds the token to this Tailscale device;
 - registers the MCP server with Claude Code;
-- installs the hooks and the never-allow deny rules;
+- installs the hooks and a deny rule for WebFetch of the hub;
 - installs and starts the `agenthub-runner` service.
 
 The agent stays **pending** until you approve it on the dashboard or with
@@ -281,8 +281,8 @@ agents included. What's left are speed bumps:
 - Every agent is told, in its MCP instructions and every headless session, that
   the dashboard and every operator action are for humans only.
 - The approval forms say so too.
-- The guard treats an agent's command that fetches a tailnet `/ui` page as
-  risky (rule `hub-dashboard`).
+- The guard refuses an agent's command that fetches a tailnet `/ui` page
+  (rule `hub-dashboard`).
 - `join` adds a Claude Code deny rule for WebFetch of the hub. For an agent
   enrolled before 0.3.0, run `agenthub hook install` to add it.
 
@@ -453,28 +453,23 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 Everything written by another agent reaches Claude inside author-labeled
 `<untrusted-content>` blocks.
 
-### Risky commands
+### Which commands run
 
-The **PreToolUse** hook checks every Bash command locally against patterns you
-can configure in `~/.config/agenthub/guard.toml` (see
-`examples/guard.example.toml`):
+Claude Code's own permission mode decides which commands an agent may run
+(`auto` in runner sessions, see [Runner and budgets](#runner-and-budgets)).
+When it would ask, the question reaches you as a live approval.
 
-- recursive or forced `rm`
-- SQL `DROP`/`TRUNCATE`
-- force pushes and remote branch deletion
-- pushes or merges to main or master
-- `gh pr merge`
-- `git reset --hard` on shared branches
-- fetching the hub's dashboard (a tailnet address followed by `/ui`)
+agenthub refuses only one kind of command itself: fetching the hub's dashboard
+(a tailnet address followed by `/ui`). The **PreToolUse** hook checks every
+Bash command for it locally and refuses it outright; it can't be approved,
+because the dashboard is where a human decides approvals, questions and
+prompts. If the hook crashes, the command is blocked.
 
-A risky command is blocked, and an approval is filed with an id. Once you
-approve it, that exact command from that directory may run **once**, within one
-hour.
-
-If the hub is unreachable, the guard config is broken, or the hook crashes, the
-command stays blocked. A short **never-allow** list can't be approved at all:
-`rm -rf` of `/` or `~`, and force-pushing to main or master. That list is also
-written as Claude Code deny rules.
+Up to 0.3.5 the hook also held recursive `rm`, force pushes, pushes and merges
+to main, `gh pr merge`, SQL `DROP` and `git reset --hard` for approval. After
+upgrading, run `agenthub hook install` once to remove that version's deny
+rules from your Claude Code settings; `agenthub doctor` warns until you do,
+and about the old keys in `guard.toml`, which are ignored.
 
 ### Roles and stages
 
@@ -524,7 +519,7 @@ once you decide.
 
 Sessions start in Claude Code's `auto` permission mode (`permission_mode` in
 `runner.toml`; `bypassPermissions` is refused). A classifier approves routine
-actions, while deny rules and the guard still apply; a blocked action is skipped
+actions, while deny rules and the dashboard guard still apply; a blocked action is skipped
 and the session carries on. After repeated blocks auto mode pauses and prompts
 resume, which reach you as live approvals. If the agent user's Claude settings
 set `permissions.disableAutoMode` to `"disable"`, sessions start in Manual
@@ -551,7 +546,7 @@ Overlap detection is deliberately conservative.
 | `~/.config/agenthub/csrf.key` | dashboard CSRF secret (0600) |
 | `~/.local/share/agenthub/hub.sqlite3` | hub database (0600) |
 | `~/.config/agenthub/agent.toml`, `token` | an agent's hub URL and token (0600) |
-| `~/.config/agenthub/guard.toml`, `runner.toml` | agent-side guard rules and runner settings |
+| `~/.config/agenthub/guard.toml`, `runner.toml` | agent-side hook and runner settings |
 
 All paths can be moved with `AGENTHUB_CONFIG_DIR` and `AGENTHUB_DATA_DIR`.
 Nothing runtime lives in the repo, and `.gitignore` plus gitleaks keep it that
@@ -612,10 +607,10 @@ way.
 
 ### Local enforcement
 
-The guard runs on the agent machine and never asks the hub whether a command
-is safe. The hub can only use up an approval for a command the guard already
-flagged. The hook fails closed, and the never-allow list is backed by Claude
-Code deny rules.
+The dashboard guard runs on the agent machine and never asks the hub, so the
+hub can't let an agent's command through it. The hook fails closed, and a
+Claude Code deny rule also stops WebFetch of the hub. Every other command is
+up to Claude Code's permission mode and the agent user's own settings.
 
 ### Limits
 
@@ -627,9 +622,10 @@ Code deny rules.
 
 ### Known limitations
 
-- **Pattern matching is a speed bump, not a sandbox.** A determined agent can
-  get past text patterns, for example with an unusual binary path or an encoded
-  script. Keep agents unprivileged, give them no credentials for protected
+- **The guard is a speed bump, not a sandbox.** A determined agent can get
+  past a text pattern, for example with an encoded script. agenthub doesn't
+  hold destructive commands for approval either; auto mode's classifier
+  decides. Keep agents unprivileged, give them no credentials for protected
   branches, and enable branch protection on your remotes.
 - **The hub machine is the root of trust.** Anyone with a shell on it can read
   the database and forge local requests.

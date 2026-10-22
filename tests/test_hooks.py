@@ -9,11 +9,7 @@ from typer.testing import CliRunner
 from agenthub.cli import app as cli_app
 from agenthub.client import HubClient
 from agenthub.hooks import guard, install, pretooluse, stop
-from agenthub.hub import approvals, db
-
-from .conftest import OPERATOR
-
-FORCE_PUSH = "git push --force origin feature/login"
+from agenthub.hub import approvals
 
 
 @pytest.fixture
@@ -32,118 +28,32 @@ def decision(out):
     return out["hookSpecificOutput"]["permissionDecision"], out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def feature_branch(cwd):
-    return "feature/login"
-
-
-def approve(hub, approval_id, ok=True):
-    conn = hub.conn()
-    with db.transaction(conn):
-        approvals.decide(conn, approval_id, approve=ok, actor=OPERATOR)
-
-
-def test_force_push_flows_through_approval_and_is_allowed_exactly_once(agent_env):
+def test_fetching_the_dashboard_is_refused_without_an_approval(agent_env):
     hub, agent, factory = agent_env
-    out = pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch)
-    kind, reason = decision(out)
-    assert kind == "deny" and "wait_for_approval" in reason
-    pending = approvals.list_approvals(hub.conn())
-    assert [a["kind"] for a in pending] == ["command"]
-    cmd = pending[0]
-    assert f"approval_id={cmd['id']}" in reason and cmd["details"] == {"command": FORCE_PUSH, "cwd": "/work/repo"}
-
-    # retrying before the decision: still denied, same approval
-    _, reason2 = decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))
-    assert f"approval_id={cmd['id']}" in reason2
-
-    approve(hub, cmd["id"])
-    kind, reason = decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))
-    assert kind == "allow" and f"#{cmd['id']}" in reason
-
-    # exactly once: the next attempt needs a fresh approval
-    kind, reason = decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))
-    assert kind == "deny" and f"approval_id={cmd['id']}" not in reason
+    kind, reason = decision(pretooluse.handle(bash("curl -s https://hub.tail1234.ts.net/ui/approvals")))
+    assert kind == "deny" and "never allowed" in reason and "dashboard" in reason
+    assert not approvals.list_approvals(hub.conn())
 
 
-def test_rejected_command_stays_blocked(agent_env):
-    hub, agent, factory = agent_env
-    pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch)
-    cmd = [a for a in approvals.list_approvals(hub.conn()) if a["kind"] == "command"][0]
-    approve(hub, cmd["id"], ok=False)
-    kind, _ = decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))
+@pytest.mark.parametrize("command", ["pytest -q", "rm -rf build", "git push --force origin main",
+                                     "git checkout main && git merge feature", "rm -rf ~"])
+def test_other_commands_are_left_to_claude_code(command):
+    assert pretooluse.handle(bash(command)) is None
+
+
+def test_non_bash_tools_pass():
+    assert pretooluse.handle({"tool_name": "Read", "tool_input": {"file_path": "/x"}}) is None
+
+
+def test_unreadable_command_is_blocked():
+    kind, _ = decision(pretooluse.handle({"tool_name": "Bash", "tool_input": {"command": None}, "cwd": "/r"}))
     assert kind == "deny"
 
 
-def test_approval_is_bound_to_cwd(agent_env):
-    hub, agent, factory = agent_env
-    pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch)
-    cmd = [a for a in approvals.list_approvals(hub.conn()) if a["kind"] == "command"][0]
-    approve(hub, cmd["id"])
-    kind, _ = decision(pretooluse.handle(bash(FORCE_PUSH, cwd="/other"), client_factory=factory,
-                                         branch_of=feature_branch))
-    assert kind == "deny"
-
-
-def test_safe_and_non_bash_commands_pass_without_hub(agent_env):
-    def explode():
-        raise AssertionError("hub must not be contacted")
-
-    assert pretooluse.handle(bash("pytest -q"), client_factory=explode, branch_of=feature_branch) is None
-    assert pretooluse.handle({"tool_name": "Read", "tool_input": {"file_path": "/x"}}, client_factory=explode) is None
-
-
-def test_never_list_denied_without_creating_an_approval(agent_env):
-    hub, agent, factory = agent_env
-    kind, reason = decision(pretooluse.handle(bash("git push --force origin main"), client_factory=factory,
-                                              branch_of=feature_branch))
-    assert kind == "deny" and "never allowed" in reason
-    assert not [a for a in approvals.list_approvals(hub.conn()) if a["kind"] == "command"]
-
-
-def test_hub_unreachable_fails_closed():
-    def refuse(request):
-        raise httpx.ConnectError("refused")
-
-    def factory():
-        return HubClient("http://hub", "ahk_x_y", transport=httpx.MockTransport(refuse))
-
-    kind, reason = decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))
-    assert kind == "deny" and "could not be reached" in reason
-
-
-def test_hub_error_status_fails_closed():
-    def factory():
-        return HubClient("http://hub", "ahk_x_y", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
-
-    assert decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))[0] == "deny"
-
-
-def test_missing_agent_config_fails_closed():
-    # no `join` happened in this isolated config dir
-    kind, _ = decision(pretooluse.handle(bash(FORCE_PUSH), branch_of=feature_branch))
-    assert kind == "deny"
-
-
-def test_hub_cannot_allow_without_a_matching_consumed_approval(agent_env):
-    """A hub that always answers 'allowed' is still only consulted for risky commands,
-    and a hub saying 'not allowed' always results in deny."""
-    def lying(request):
-        if request.url.path.endswith("/consume"):
-            return httpx.Response(200, json={"allowed": False, "approval_id": None})
-        return httpx.Response(201, json={"id": 1, "status": "approved"})
-
-    def factory():
-        return HubClient("http://hub", "ahk_x_y", transport=httpx.MockTransport(lying))
-
-    assert decision(pretooluse.handle(bash(FORCE_PUSH), client_factory=factory, branch_of=feature_branch))[0] == "deny"
-
-
-def test_invalid_guard_config_blocks_all_bash(agent_env, monkeypatch):
-    hub, agent, factory = agent_env
+def test_invalid_guard_config_does_not_block_bash():
     guard.guard_config_path().parent.mkdir(parents=True, exist_ok=True)
     guard.guard_config_path().write_text("this is [not toml")
-    kind, reason = decision(pretooluse.handle(bash("ls"), client_factory=factory, branch_of=feature_branch))
-    assert kind == "deny" and "guard config is invalid" in reason
+    assert pretooluse.handle(bash("ls")) is None
 
 
 def test_cli_hook_fails_closed_on_garbage_input():
@@ -233,7 +143,8 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     existing = {
         "model": "opus",
-        "permissions": {"deny": ["Bash(curl *)"], "allow": ["Bash(ls *)"]},
+        "permissions": {"deny": ["Bash(curl *)", "Bash(rm -rf ~)", "Bash(git push --force origin camera_ready *)"],
+                        "allow": ["Bash(ls *)"]},
         "hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt"}]}]},
     }
     path.write_text(json.dumps(existing))
@@ -241,8 +152,7 @@ def test_install_merges_and_is_idempotent(tmp_path, monkeypatch):
         install.install("user", exe="/opt/agenthub/bin/agenthub", fallback_dir=tmp_path / "cfg")
     data = json.loads(path.read_text())
     assert data["model"] == "opus" and data["permissions"]["allow"] == ["Bash(ls *)"]
-    assert "Bash(curl *)" in data["permissions"]["deny"] and "Bash(rm -rf /)" in data["permissions"]["deny"]
-    assert len(data["permissions"]["deny"]) == len(set(data["permissions"]["deny"]))
+    assert data["permissions"]["deny"] == ["Bash(curl *)"]  # the old guard's deny rules are gone
     pre = data["hooks"]["PreToolUse"]
     assert pre[0]["matcher"] == "Edit"
     ours = [e for e in pre if e["matcher"] == "Bash"]

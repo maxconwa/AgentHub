@@ -1,4 +1,4 @@
-"""Install agenthub's hooks and never-list deny rules into Claude Code settings.
+"""Install agenthub's hooks and deny rules into Claude Code settings.
 
 Settings layout per code.claude.com/docs/en/hooks and /settings (fetched
 2026-10-21, Claude Code 2.1.306):
@@ -9,8 +9,9 @@ Hook entries and permission arrays from all scopes are merged by Claude Code.
 ``onFailure: "block"`` (v2.1.295+) makes a crashed or timed-out PreToolUse
 hook block the tool call instead of letting it through.
 
-Install is idempotent: existing agenthub entries are replaced, everything
-else in the file is preserved, and a one-time backup is written first.
+Install is idempotent: existing agenthub entries are replaced, the deny rules
+of agenthub's old never-list (up to 0.3.5) are removed, everything else in the
+file is preserved, and a one-time backup is written first.
 
 One set of hooks serves every agent on the account. Each hook runs as the
 agent named by the session's $AGENTHUB_CONFIG_DIR, which the runner sets for
@@ -93,8 +94,10 @@ def merge_settings(settings: dict[str, Any], *, exe: str, fallback_dir: Path, de
     perm.append({"hooks": [{"type": "command", "command": hook_command(exe, "permission", fallback_dir),
                             "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]})
     hooks["PermissionRequest"] = perm
-    deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+    permissions = settings.setdefault("permissions", {})
+    deny = [r for r in permissions.get("deny", []) if not guard.is_old_deny_rule(r)]
     deny.extend(r for r in deny_rules if r not in deny)
+    permissions["deny"] = deny
     return settings
 
 
@@ -107,7 +110,8 @@ def remove_from_settings(settings: dict[str, Any], *, deny_rules: list[str]) -> 
             if not hooks[event]:
                 del hooks[event]
     if "deny" in settings.get("permissions", {}):
-        settings["permissions"]["deny"] = [r for r in settings["permissions"]["deny"] if r not in deny_rules]
+        settings["permissions"]["deny"] = [r for r in settings["permissions"]["deny"]
+                                           if r not in deny_rules and not guard.is_old_deny_rule(r)]
     return settings
 
 
@@ -130,7 +134,7 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _hub_host(config_dir: Path) -> str | None:
+def hub_host(config_dir: Path) -> str | None:
     """The enrolled hub's hostname, or None before `join` has written agent.toml."""
     try:
         return urlsplit(AgentConfig.load(config_dir / "agent.toml").hub_url).hostname
@@ -140,17 +144,14 @@ def _hub_host(config_dir: Path) -> str | None:
 
 def install(scope: str, *, exe: str, fallback_dir: Path, project_dir: Path | None = None) -> Path:
     path = settings_path(scope, project_dir)
-    cfg = guard.load_guard_config()
-    hub_host = _hub_host(paths.config_dir())
     merged = merge_settings(_load(path), exe=exe, fallback_dir=fallback_dir,
-                            deny_rules=guard.default_deny_rules(cfg.protected_branches, hub_host))
+                            deny_rules=guard.default_deny_rules(hub_host(paths.config_dir())))
     _write(path, merged)
     return path
 
 
 def uninstall(scope: str, *, project_dir: Path | None = None) -> Path:
     path = settings_path(scope, project_dir)
-    cfg = guard.load_guard_config()
-    rules = guard.default_deny_rules(cfg.protected_branches, _hub_host(paths.config_dir()))
+    rules = guard.default_deny_rules(hub_host(paths.config_dir()))
     _write(path, remove_from_settings(_load(path), deny_rules=rules))
     return path

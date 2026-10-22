@@ -61,6 +61,19 @@ def test_hook_checks_detect_fail_open(tmp_path, monkeypatch):
     assert checks["hook PreToolUse"].status == "fail" and "fail open" in checks["hook PreToolUse"].detail
 
 
+def test_hook_checks_warn_about_the_old_guard(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    path = install.install("user", exe="/bin/agenthub", fallback_dir=paths.config_dir())
+    data = json.loads(path.read_text())
+    data["permissions"]["deny"].append("Bash(rm -rf ~)")
+    path.write_text(json.dumps(data))
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    (paths.config_dir() / "guard.toml").write_text('protected_branches = ["main"]\n')
+    checks = {c.name: c for c in doctor.check_hooks(paths.config_dir(), tmp_path)}
+    assert checks["deny rules"].status == "warn" and "hook install" in checks["deny rules"].detail
+    assert checks["guard config"].status == "warn" and "protected_branches" in checks["guard config"].detail
+
+
 def test_hub_checks(tmp_path):
     HubConfig(bind_host="0.0.0.0", db_path=str(tmp_path / "h.db"), port=8700).save()
     run = fake_run({"tailscale status": status(tags=["tag:agent-hub"]), "tailscale serve": (0, "{}")})

@@ -694,7 +694,7 @@ def _read_hook_input() -> dict[str, Any]:
 
 @hook_app.command("pretooluse")
 def hook_pretooluse() -> None:
-    """PreToolUse hook: blocks risky Bash commands until approved. Fails closed."""
+    """PreToolUse hook: refuses Bash commands that fetch the hub's operator dashboard. Fails closed."""
     from agenthub.hooks import pretooluse
 
     try:

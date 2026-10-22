@@ -1,30 +1,10 @@
 # Copy to ~/.config/agenthub/guard.toml on an agent machine to customize the
-# PreToolUse guard. Everything is optional; omitted keys use the defaults shown.
-# A file that fails to parse blocks ALL Bash commands (fail closed).
-
-# Branches you can't push to, merge into, or force-push to without approval.
-# Force-push to these is on the never-allow list and can't be approved at all.
-protected_branches = ["main", "master"]
-
-# Branches where `git reset --hard` needs approval (shell-style globs).
-shared_branches = ["main", "master", "develop", "release/*"]
-
-# Built-in rules to turn off, by id: rm-recursive-or-force, sql-drop-truncate,
-# git-push-force, git-push-protected, git-merge-into-protected, gh-pr-merge, hub-dashboard
-disabled_rules = []
+# hooks. Everything is optional; omitted keys use the defaults shown.
+#
+# Since 0.3.6 agenthub holds no commands for approval: Claude Code's permission
+# mode decides, and only fetching the hub's dashboard is refused. The old keys
+# protected_branches, shared_branches, disabled_rules and [[rules]] are ignored.
 
 # How many times in a row the Stop hook may keep an agent working because of
 # unread messages addressed to it.
 stop_max_continuations = 3
-
-# Extra rules: Python regexes matched against the raw command text.
-[[rules]]
-id = "terraform-destroy"
-pattern = 'terraform\s+(destroy|apply\s+-destroy)'
-description = "terraform destroy"
-
-[[rules]]
-id = "kubectl-delete"
-pattern = 'kubectl\s+delete\b'
-description = "kubectl delete"
-ignore_case = false
