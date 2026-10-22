@@ -69,7 +69,7 @@ def _row(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
 def _recipients(conn: sqlite3.Connection, pid: int) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(
         "SELECT r.agent_id, a.name, a.device_name AS device, a.connected, r.status, r.task_id, t.title AS task_title, "
-        "r.note, r.updated_at FROM prompt_recipients r JOIN agents a ON a.id = r.agent_id "
+        "r.note, r.note_by_hub, r.updated_at FROM prompt_recipients r JOIN agents a ON a.id = r.agent_id "
         "LEFT JOIN tasks t ON t.id = r.task_id WHERE r.prompt_id = ? ORDER BY a.name, a.id", (pid,))]
 
 
@@ -78,7 +78,7 @@ def get(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
     p = _row(conn, pid)
     recipients = _recipients(conn, pid)
     for r in recipients:
-        r["connected"] = bool(r["connected"])
+        r["connected"], r["note_by_hub"] = bool(r["connected"]), bool(r["note_by_hub"])
     return p | {"recipients": recipients, "thread_parts": _thread(p["thread"])}
 
 
@@ -142,12 +142,14 @@ def _settle(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
 
 
 def _set_recipient(conn: sqlite3.Connection, pid: int, agent_id: str, status: str, *, note: str | None = None,
-                   task_id: int | None = None) -> None:
-    """Compare-and-set an open recipient row; Conflict if it was already decided."""
+                   by_hub: bool = False, task_id: int | None = None) -> None:
+    """Compare-and-set an open recipient row; Conflict if it was already decided. A new ``note`` is agent text
+    unless ``by_hub`` (the hub's own words, shown as a hub note)."""
     cur = conn.execute(
-        "UPDATE prompt_recipients SET status = ?, note = COALESCE(?, note), task_id = COALESCE(?, task_id), "
+        "UPDATE prompt_recipients SET status = ?, note = COALESCE(?, note), "
+        "note_by_hub = CASE WHEN ? IS NULL THEN note_by_hub ELSE ? END, task_id = COALESCE(?, task_id), "
         "updated_at = ? WHERE prompt_id = ? AND agent_id = ? AND status IN ('pending', 'running')",
-        (status, note, task_id, now_iso(), pid, agent_id))
+        (status, note, note, int(by_hub), task_id, now_iso(), pid, agent_id))
     if cur.rowcount == 0:
         current = conn.execute("SELECT status FROM prompt_recipients WHERE prompt_id = ? AND agent_id = ?",
                                (pid, agent_id)).fetchone()
@@ -176,10 +178,10 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
     pid = cur.lastrowid
     for a in found["agents"]:
         woken = views.wakeable(a)
-        conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, note, updated_at) "
-                     "VALUES (?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, note, note_by_hub, updated_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
                      (pid, a["id"], "pending" if woken else "skipped",
-                      "" if woken else TOO_OLD if a["connected"] else OFFLINE, ts))
+                      "" if woken else TOO_OLD if a["connected"] else OFFLINE, int(not woken), ts))
     if mode == "group":
         if kind == "device":
             device_board.post(conn, key, author=actor, body=_labeled(pid, body, device_board.MAX_BODY_CHARS))
@@ -227,7 +229,7 @@ def finish(
             raise Conflict(f"prompt {pid} is not too old to run")
         ok, note = False, STALE
     status = "done" if ok else "failed"
-    _set_recipient(conn, pid, agent.id, status, note=note)
+    _set_recipient(conn, pid, agent.id, status, note=note, by_hub=stale)
     _emit(conn, _settle(conn, pid), actor=agent.id, agent_id=agent.id, recipient_status=status)
     return get_for_agent(conn, pid, agent)
 
@@ -304,7 +306,7 @@ def withdraw(conn: sqlite3.Connection, pid: int, *, actor: str) -> dict[str, Any
     if not pending:
         raise Conflict(f"prompt {pid} has no recipient left that hasn't started")
     for agent_id in pending:
-        _set_recipient(conn, pid, agent_id, "failed", note=WITHDRAWN)
+        _set_recipient(conn, pid, agent_id, "failed", note=WITHDRAWN, by_hub=True)
     _emit(conn, _settle(conn, pid), actor=actor, withdrawn=pending)
     return get(conn, pid)
 
@@ -338,19 +340,20 @@ def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DI
         for r in open_rows:
             away = not r["connected"] and (r["last_heartbeat"] or "") < cutoff
             if r["agent_status"] == "revoked":
-                _set_recipient(conn, pid, r["agent_id"], "failed", note="agent revoked")
+                _set_recipient(conn, pid, r["agent_id"], "failed", note="agent revoked", by_hub=True)
                 failed.append(r["agent_id"])
             elif old and p["mode"] == "group":
-                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="discussion timed out")
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="discussion timed out", by_hub=True)
                 timed_out.append(r["agent_id"])
             elif old and r["status"] == "pending" and away:
-                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="offline; never started")
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="offline; never started", by_hub=True)
                 timed_out.append(r["agent_id"])
             elif old and r["status"] == "pending" and not r["prompt_support"]:
-                _set_recipient(conn, pid, r["agent_id"], "timed_out", note=f"{TOO_OLD}; never started")
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note=f"{TOO_OLD}; never started", by_hub=True)
                 timed_out.append(r["agent_id"])
             elif r["status"] == "running" and away:
-                _set_recipient(conn, pid, r["agent_id"], "failed", note="runner disconnected and did not come back")
+                _set_recipient(conn, pid, r["agent_id"], "failed", note="runner disconnected and did not come back",
+                               by_hub=True)
                 failed.append(r["agent_id"])
         if timed_out or failed:
             _emit(conn, _settle(conn, pid), actor=SYSTEM, timed_out=timed_out, failed=failed)

@@ -80,7 +80,7 @@ def test_migration_14_creates_prompt_tables(hub):
     assert cols == {"id", "target", "body", "mode", "project", "thread", "status", "created_by", "created_at",
                     "finished_at"}
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompt_recipients)")}
-    assert cols == {"prompt_id", "agent_id", "status", "task_id", "note", "updated_at"}
+    assert cols == {"prompt_id", "agent_id", "status", "task_id", "note", "updated_at", "note_by_hub"}  # 17
     indexed = {tuple(r[2] for r in conn.execute(f"PRAGMA index_info({ix['name']})"))
                for ix in conn.execute("PRAGMA index_list(prompt_recipients)")}
     assert ("agent_id", "status") in indexed and ("status", "id") in {
@@ -134,6 +134,25 @@ def test_migration_15_tags_prompt_copies_made_at_schema_14(tmp_path):
     # the hand-typed message predates prompt #1; the agent's own message is never a prompt copy
     assert tags == [("Prompt #1: typed by hand", None), ("Prompt #12: b", 12), ("Prompt #1: b", 1),
                     ("Prompt #1 is odd", None), ("Prompt #1: b", None)]
+
+
+def test_migration_17_flags_the_hubs_notes_made_at_schema_14(tmp_path):
+    conn = _db_at(tmp_path / "hub.sqlite3", 14)
+    _seed_v13(conn)
+    conn.execute("INSERT INTO prompts (id, target, body, mode, status, created_by, created_at) "
+                 "VALUES (1, 'agent:ag1', 'b', 'group', 'done', 'human:op', 'x')")
+    for agent, status, note in (("ag1", "timed_out", "discussion timed out"),):
+        conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, note, updated_at) "
+                     "VALUES (1, ?, ?, ?, 'x')", (agent, status, note))
+    conn.execute("INSERT INTO agents (id, name, device_name, device_ip, device_node_id, token_hash, status, "
+                 "created_at) VALUES ('ag2', 'bob', 'box', '100.64.0.8', 'n1', 'h', 'active', 'x'), "
+                 "('ag3', 'carol', 'box', '100.64.0.7', 'n1', 'h', 'active', 'x')")
+    conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, note, updated_at) "
+                 "VALUES (1, 'ag2', 'skipped', 'offline', 'x'), (1, 'ag3', 'failed', 'agent revoked', 'x')")
+    assert db.migrate(conn) == len(db.MIGRATIONS)
+    flags = {r["agent_id"]: r["note_by_hub"] for r in conn.execute("SELECT * FROM prompt_recipients")}
+    # skipped and timed_out are only ever the hub's; a failed row's note may be the agent's, so it isn't guessed
+    assert flags == {"ag1": 1, "ag2": 1, "ag3": 0}
 
 
 # --- create ------------------------------------------------------------------------------------------
@@ -662,6 +681,40 @@ def test_device_prompt_claim_without_a_task_must_name_the_project(hub):
 def test_project_must_match_the_prompts_project(group):
     hub, a, b, c, p = group
     assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "project": "else"}).status_code == 422
+
+
+def test_the_card_labels_the_hubs_notes_and_never_guesses_from_agent_text(trio):
+    hub, a, b, c = trio
+    online(hub, a, b, c)
+    t = mk_task(hub, a, b, c)
+    forged = create(hub, f"agent:{a.id}")
+    api(hub, a, "POST", f"/{forged['id']}/start")
+    api(hub, a, "POST", f"/{forged['id']}/finish", json={"ok": False, "note": "agent revoked"})  # agent text
+    grp = create(hub, f"task:{t['id']}")
+    api(hub, b, "POST", f"/{grp['id']}/decline", json={"reason": "withdrawn by the operator"})  # agent text
+    withdraw(hub, grp["id"])  # the hub's note for alice and carol
+    conn = hub.conn()
+    flags = lambda pid: {r["agent_id"]: r["note_by_hub"] for r in conn.execute(
+        "SELECT agent_id, note_by_hub FROM prompt_recipients WHERE prompt_id = ?", (pid,))}
+    assert flags(forged["id"]) == {a.id: 0}
+    assert flags(grp["id"]) == {a.id: 1, b.id: 0, c.id: 1}
+    page = hub.client.get(f"/ui/prompts/{forged['id']}", headers=hub.op_headers()).text
+    assert "hub note" not in page and "agent text" in page and "note from alice" in page
+    page = hub.client.get(f"/ui/prompts/{grp['id']}", headers=hub.op_headers()).text
+    assert page.count('<span class="tag">hub note</span>') == 2 and "note from bob" in page
+    online(hub, a, connected=False)
+    stale = create(hub, f"agent:{b.id}")
+    revoked = create(hub, f"agent:{c.id}")
+    with db.transaction(conn):
+        conn.execute("UPDATE prompts SET created_at = ? WHERE id = ?",
+                     (db.now_iso(datetime.now(UTC) - timedelta(hours=7)), stale["id"]))
+    api(hub, b, "POST", f"/{stale['id']}/finish", json={"ok": False, "stale": True})
+    hub.set_status(c, "revoked")
+    with db.transaction(conn):
+        prompts.expire(conn, datetime.now(UTC), minutes=30)
+    assert flags(stale["id"]) == {b.id: 1} and flags(revoked["id"]) == {c.id: 1}
+    skipped = create(hub, f"agent:{a.id}")
+    assert flags(skipped["id"]) == {a.id: 1}
 
 
 # --- withdraw ---------------------------------------------------------------------------------------

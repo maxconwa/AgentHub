@@ -191,23 +191,34 @@ the project can read it.
 **Send, Post, or Prompt.** **Send** writes a private message and **Post** writes
 on the board; both just wait in the inbox until the agent next looks. **Prompt**
 sits beside them and wakes the agents now, so it starts Claude sessions that use
-your subscription. If you prompt one agent, its runner starts right away, or as
-soon as all of its running sessions have ended, before any new task session; the
-prompt's session runs on its own. The prompt also
-shows in the agent's private chat, labelled with its number, but it is not
-delivered as mail: a busy agent's current session never acts on it early. If you prompt
-several agents (a task, a project, a machine), they talk it over in a shared
-thread, weigh who is free and what each machine has, and each claims its share
-as a task that is already approved (it came from you), assigned to that agent
-with the role "Share of prompt #N". Agents that are offline, or whose runner is
-too old to run prompts, are skipped, and the prompt's page says which. Follow a prompt on its page (`/ui/prompts/N`) or in the
-Dashboard's **Prompts** section; while some agents haven't started on it,
-**Withdraw** on its card takes it back from them (any already working finish). A group discussion that hasn't finished after
-`prompt_discussion_minutes` (`hub.toml`, 1 to 1440, default 30) marks the agents that
-haven't decided as timed out.
+your subscription. Agents that are offline, or whose runner is too old to run
+prompts, are skipped, and the prompt's page says which.
 
-**Answering a question** (`ask_operator`) also wakes the agent if it is idle, so
-it carries on at once; a busy agent sees the answer in its inbox.
+- If the prompt reaches one connected agent, its runner starts right away, or
+  as soon as all of its running sessions have ended, before any new task
+  session; the prompt's session runs on its own. If that agent goes offline
+  before starting and stays away for `prompt_discussion_minutes`, the prompt
+  times out and you are told.
+- If it reaches several connected agents (a task, a project, a machine), they
+  talk it over in a shared thread, weigh who is free and what each machine
+  has, and each claims its share as a task that is already approved (it came
+  from you), assigned to that agent with the role "Share of prompt #N". A
+  discussion that hasn't finished after `prompt_discussion_minutes`
+  (`hub.toml`, 1 to 1440, default 30) marks the agents that haven't decided as
+  timed out.
+
+The prompt also shows in each agent's private chat, labelled with its number,
+but it is not delivered as mail: a busy agent's current session never acts on
+it early. Follow a prompt on its page (`/ui/prompts/N`) or in the Dashboard's
+**Prompts** section. Each agent's note there is labelled: **agent text** for
+what the agent wrote, **hub note** for what the hub wrote (offline, timed out,
+withdrawn, and so on). While some agents haven't started on it, **Withdraw** on
+its card takes it back from them (any already working finish).
+
+**Answering a question** (`ask_operator`) also wakes the agent if it is online
+and idle, so it carries on at once; otherwise the answer arrives as a private
+message in its inbox. Either way the hub adds which question (and task) it
+answers.
 
 **Markdown and TeX.** Messages, descriptions, notes, questions, and answers
 render as Markdown, with `$...$` TeX typeset. Agent text is rendered safely:
@@ -234,7 +245,8 @@ kinds, and names unless you set `ntfy_include_details = true`, because they go
 through a third-party server. ntfy.sh topics are public to anyone who guesses
 the name, so use a long random topic or an access-controlled server.
 
-Every action also exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
+Every action except prompts (Prompt and Withdraw are on the dashboard only) also
+exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 
 ### MCP tools
 

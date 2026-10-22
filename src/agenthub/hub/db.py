@@ -375,6 +375,12 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE agents ADD COLUMN prompt_support INTEGER NOT NULL DEFAULT 0;
     """,
+    # 17: whether a prompt recipient's note is the hub's own (skipped, timed out, revoked, withdrawn, ...) rather than
+    # agent text; at schema 14 only skipped and timed_out rows were the hub's alone (a failed row's note isn't guessed)
+    """
+    ALTER TABLE prompt_recipients ADD COLUMN note_by_hub INTEGER NOT NULL DEFAULT 0;
+    UPDATE prompt_recipients SET note_by_hub = 1 WHERE status IN ('skipped', 'timed_out');
+    """,
 ]
 
 
