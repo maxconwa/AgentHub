@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, prompt_only %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -51,11 +51,11 @@
 {% endblock %}
 {% block after_live %}
 {% if ag.status != 'revoked' %}
-<form class="composer" method="post" action="/ui/chats/{{ ag.id }}">
+<form class="composer" method="post" action="/ui/prompts">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="next" value="/ui/agents/{{ ag.id }}">
-  <textarea name="body" rows="2" maxlength="4000" required aria-label="Message to {{ ag.name }}" placeholder="Write to {{ ag.name }}…"></textarea>
-  {% call send_and_prompt(prompt) %}<button type="submit">Send</button>{% endcall %}
+  <textarea name="body" rows="2" maxlength="4000" required aria-label="Prompt for {{ ag.name }}" placeholder="Prompt {{ ag.name }}…"></textarea>
+  {{ prompt_only(prompt) }}
 </form>
 {% endif %}
 <p class="small-line"><a href="/ui/chats/{{ ag.id }}">Open the full chat</a></p>

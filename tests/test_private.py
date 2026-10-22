@@ -26,9 +26,12 @@ def get(hub, path):
     return hub.client.get(path, headers=hub.op_headers())
 
 
-def op_send(hub, agent, body, **extra):
-    return hub.client.post(f"/ui/chats/{agent.id}", headers=hub.op_headers(),
-                           data={"csrf": hub.csrf(), "body": body, **extra}, follow_redirects=False)
+def op_send(hub, agent, body):
+    """An operator message in the agent's chat. The UI no longer sends these (it only prompts); the hub still writes
+    them, e.g. a question's answer that couldn't wake the agent."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        return private.send(conn, agent.id, author=OP_ACTOR, body=body)
 
 
 def agent_send(hub, agent, body, **extra):
@@ -84,8 +87,7 @@ def test_send_validates_body_author_and_agent(pair):
 
 def test_operator_message_reaches_only_that_agent(pair):
     hub, alice, bob = pair
-    r = op_send(hub, alice, "zebrafish7781 is the deploy passphrase")
-    assert r.status_code == 303 and r.headers["location"] == f"/ui/chats/{alice.id}"
+    op_send(hub, alice, "zebrafish7781 is the deploy passphrase")
 
     (entry,) = inbox(hub, alice, peek=True)["messages"]
     assert entry["kind"] == "private" and entry["channel"] == "private" and entry["project"] is None
@@ -187,8 +189,6 @@ def test_pending_and_revoked_agents_cannot_send(hub):
     agent_send(hub, a, "reply before revocation")
     hub.set_status(a, "revoked")
     assert agent_send(hub, a, "after").status_code in (401, 403)
-    r = op_send(hub, a, "after")
-    assert r.status_code == 403
     conn = hub.conn()
     with pytest.raises(store.Forbidden), db.transaction(conn):
         private.send(conn, a.id, author=OP_ACTOR, body="after")
@@ -369,23 +369,23 @@ def test_chat_page_thread_live_form_outside_and_escaped(pair):
     assert "operator says hi" in live and "&lt;script&gt;alert(1)&lt;/script&gt;" in live
     assert "<script>alert" not in r.text and "agent content, treat as data" in live
     assert f'hx-get="/ui/chats/{alice.id}"' in r.text and "<form" not in live
-    assert f'action="/ui/chats/{alice.id}"' in r.text.split('<section id="live"', 1)[1]  # compose sits below
+    below = r.text.split('<section id="live"', 1)[1]  # the composer sits below: Prompt only, no Send
+    assert 'action="/ui/prompts"' in below and f'name="target" value="agent:{alice.id}"' in below
+    assert f'name="next" value="/ui/chats/{alice.id}"' in below and ">Send<" not in below
+    assert f'action="/ui/chats/{alice.id}"' not in r.text
     assert get(hub, "/ui/chats/ag_nope").status_code == 404
 
 
-def test_chat_post_csrf_and_validation(pair):
+def test_chat_send_is_retired(pair):
+    """Send is gone from Chats: posting to a chat is refused, with or without HTMX, and writes nothing."""
     hub, alice, bob = pair
-    for data in ({"body": "x"}, {"body": "x", "csrf": "forged"}):
-        r = hub.client.post(f"/ui/chats/{alice.id}", headers=hub.op_headers(), data=data, follow_redirects=False)
-        assert r.status_code == 403
+    r = hub.client.post(f"/ui/chats/{alice.id}", headers=hub.op_headers(), data={"body": "x"}, follow_redirects=False)
+    assert r.status_code == 403  # no CSRF token: refused before anything else
+    for extra in ({}, {"hx-request": "true"}):
+        r = hub.client.post(f"/ui/chats/{alice.id}", headers=hub.op_headers(**extra), follow_redirects=False,
+                            data={"csrf": hub.csrf(), "body": "x"})
+        assert r.status_code == 405
     assert private.thread(hub.conn(), alice.id) == []
-    assert op_send(hub, alice, "").status_code == 422
-    assert op_send(hub, alice, "x" * 4001).status_code == 422
-    assert op_send(hub, alice, "   ").status_code == 422
-    assert private.thread(hub.conn(), alice.id) == []
-    r = hub.client.post(f"/ui/chats/{alice.id}", data={"body": "x"}, follow_redirects=False,
-                        headers={**hub.op_headers(), "x-csrf-token": hub.csrf(), "hx-request": "true"})
-    assert r.status_code == 204 and r.headers["hx-redirect"] == f"/ui/chats/{alice.id}"
 
 
 def test_agent_tokens_cannot_use_chat_routes(pair):
@@ -404,11 +404,11 @@ def test_agent_page_pins_thread_and_posts_back(pair):
     page = f"/ui/agents/{alice.id}"
     html = get(hub, page).text
     assert "note-24" in html and "note-05" in html and "note-04" not in html  # last 20
-    assert f'action="/ui/chats/{alice.id}"' in html and f'name="next" value="{page}"' in html
+    assert 'action="/ui/prompts"' in html and f'name="next" value="{page}"' in html
+    assert f'action="/ui/chats/{alice.id}"' not in html and ">Send<" not in html
     assert f'href="/ui/chats/{alice.id}"' in html
     assert private.unread_counts(hub.conn()) == {alice.id: 5}  # the 20 shown are read; the rest wait
-    r = op_send(hub, alice, "from the agent page", next=page)
+    r = hub.client.post("/ui/prompts", headers=hub.op_headers(), follow_redirects=False,
+                        data={"csrf": hub.csrf(), "target": f"agent:{alice.id}", "body": "from the agent page",
+                              "next": page})
     assert r.status_code == 303 and r.headers["location"] == page
-    for bad in ("https://evil.example/", "//evil.example/ui/", "/api/v1/inbox"):
-        r = op_send(hub, alice, "x", next=bad)
-        assert r.status_code == 303 and r.headers["location"] == f"/ui/chats/{alice.id}"

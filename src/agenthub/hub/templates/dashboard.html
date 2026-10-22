@@ -39,7 +39,7 @@
 </ul>
 {% set shown = prompts.open + prompts.recent %}
 <div class="section-head"><h2>Prompts{% if prompts.open %} <span class="count">{{ prompts.open|length }} in progress</span>{% endif %}</h2></div>
-{% if not shown %}<p class="empty">No prompts yet. Prompt, next to Send, wakes the agents now.</p>{% endif %}
+{% if not shown %}<p class="empty">No prompts yet. Prompt wakes the agents now.</p>{% endif %}
 <ul class="cards prompts">
   {% for p in shown %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}
 </ul>

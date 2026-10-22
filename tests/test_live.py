@@ -129,7 +129,7 @@ def test_agent_page_chat_is_live_and_marks_read_only_what_it_shows(site):
     agent_says(hub, a, "second reply")
     page = get(hub, f"/ui/agents/{a.id}").text
     assert "second reply" in live_region(page) and unread(hub, a) == 0
-    assert f'action="/ui/chats/{a.id}"' in page.split('id="live"')[1].split("</section>", 1)[1]
+    assert 'action="/ui/prompts"' in page.split('id="live"')[1].split("</section>", 1)[1]  # Prompt sits below
 
 
 def test_chat_page_poll_marks_read_but_other_requests_do_not(site):
@@ -159,12 +159,10 @@ def test_whitespace_only_operator_posts_are_refused(site):
     hub, a, ids = site
     conn = hub.conn()
     count = lambda: sum(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
-                        for t in ("messages", "private_messages", "device_messages", "approval_messages"))
+                        for t in ("messages", "private_messages", "device_messages", "approval_messages", "prompts"))
     before = count()
     posts = [("/ui/projects/proj/notes", "body", {}), (f"/ui/tasks/{ids['task']}/notes", "body", {}),
-             (f"/ui/devices/{ids['node']}/notes", "body", {}), (f"/ui/chats/{a.id}", "body", {}),
-             ("/ui/compose", "body", {"to": f"agent:{a.id}", "recipients": a.id}),
-             ("/ui/compose", "body", {"to": "project:proj", "mode": "board"}),
+             (f"/ui/devices/{ids['node']}/notes", "body", {}), ("/ui/prompts", "body", {"target": f"agent:{a.id}"}),
              ("/ui/board/ch-proj~general", "body", {}), (f"/ui/questions/{ids['question']}/answer", "answer", {}),
              (f"/ui/approvals/{ids['approval']}/discuss", "body", {})]
     for url, field, extra in posts:

@@ -349,19 +349,15 @@ question it has the answer box.
 - **Chat** opens the chat window: agents with their last message, chats between
   agents, projects and tasks as group chats, and device boards.
 
-**Tap to message.** There are no separate message buttons: tap an agent, task,
-project or device to open its panel, and write from there. An agent's panel has
-**Send** (a private message) and **Prompt**. A task's, project's or device's
-panel has **Post** (a note on its board, which every agent in the project can
-read, or on a device board only that machine's agents can), **Send to each
-agent** (a private message to every active agent there, in each one's inbox)
-and **Prompt**.
-
-**Send, Post, or Prompt.** **Send** writes a private message and **Post** writes
-on the board; both just wait in the inbox until the agent next looks. **Prompt**
-sits beside them and wakes the agents now, so it starts Claude sessions that use
+**Prompt, the only way to talk to agents.** There are no separate message
+buttons: tap an agent, task, project or device to open its panel, and prompt it
+from there. Every agent, task, project and device composer (the panels, the
+chat window, the agent and chat pages) has only **Prompt**. Prompt wakes the agents now, so it starts Claude sessions that use
 your subscription. Agents that are offline, or whose runner is too old to run
-prompts, are skipped, and the prompt's page says which.
+prompts, are skipped, and the prompt's page says which. Messages agents send you
+(`message_operator`) still arrive in Chats, and your older private messages stay
+readable there. Only boards take posts: on a project or task board, **Post**
+writes a note every agent in the project can read, and Prompt sits beside it.
 
 - If the prompt reaches one connected agent, its runner starts right away, or
   as soon as all of its running sessions have ended, before any new task

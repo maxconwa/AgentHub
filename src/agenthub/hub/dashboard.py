@@ -435,13 +435,9 @@ def build_router() -> APIRouter:
                       prompt=views.prompt_state(conn, f"agent:{agent_id}"))
 
     @router.post("/chats/{agent_id}")
-    def chat_send(agent_id: str, request: Request, operator: PostOp, conn: Conn,
-                  body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
-                  panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        written(body)
-        with db.transaction(conn):
-            private.send(conn, agent_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/chats/{agent_id}", messenger)
+    def chat_send(agent_id: str, operator: PostOp) -> Response:
+        """Retired: agents are only prompted (POST /ui/prompts); their messages to the operator still arrive here."""
+        raise HTTPException(405, "Send is gone: prompt the agent instead")
 
     # slide-in panel ------------------------------------------------------------------------
 
@@ -459,7 +455,7 @@ def build_router() -> APIRouter:
     def messenger_conversation(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         return render_conversation(request, operator, conn, key[:300])
 
-    # tap to message ------------------------------------------------------------------------
+    # the Prompt sheet -------------------------------------------------------------------------
 
     @router.get("/compose", response_class=HTMLResponse)
     def compose_page(request: Request, operator: Op, conn: Conn, to: str = "", next: str = "") -> HTMLResponse:
@@ -475,37 +471,9 @@ def build_router() -> APIRouter:
         return HTMLResponse("", headers=SECURITY_HEADERS)
 
     @router.post("/compose")
-    def compose_send(request: Request, operator: PostOp, conn: Conn,
-                     to: Annotated[str, Form(max_length=200)],
-                     body: Annotated[str, Form(min_length=1, max_length=private.MAX_BODY_CHARS)],
-                     mode: Annotated[str, Form(pattern="^(send|board)$")] = "send",
-                     recipients: Annotated[list[str], Form()] = [],  # noqa: B006 (never mutated)
-                     everyone: Annotated[bool, Form()] = False,
-                     next: Annotated[str, Form(max_length=500)] = "", panel: PanelField = "") -> Response:
-        """The compose sheet's Send/Post, and a group panel's "Send to each agent" (``everyone``: every active
-        agent the target reaches, re-rendering the panel it came from)."""
-        written(body)
-        reach = views.recipients(conn, to)
-        if everyone:
-            recipients = [a["id"] for a in reach["agents"]]
-            if not recipients:
-                raise HTTPException(400, "there is no active agent here to send to")
-        with db.transaction(conn):
-            if mode == "board":
-                if reach["board"] is None:
-                    raise HTTPException(400, "this target has no board")
-                project, channel = reach["board"]
-                store.post_message(conn, author=operator.actor, project=project, channel=channel, body=body)
-            else:
-                chosen = list(dict.fromkeys(recipients))
-                allowed = {a["id"] for a in reach["agents"]}
-                if not chosen:
-                    raise HTTPException(400, "choose at least one recipient")
-                if not set(chosen) <= allowed:
-                    raise HTTPException(400, "a recipient is not reachable from this target")
-                for agent_id in chosen:
-                    private.send(conn, agent_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, safe_next(next) or target_page(to))
+    def compose_send(operator: PostOp) -> Response:
+        """Retired: the Prompt sheet posts to /ui/prompts, and boards take posts on the Board."""
+        raise HTTPException(405, "Send is gone: use Prompt, or post on the board")
 
     # prompts: wake the agents now ----------------------------------------------------------
 
@@ -514,7 +482,7 @@ def build_router() -> APIRouter:
                       target: Annotated[str, Form(max_length=200)],
                       body: Annotated[str, Form(min_length=1, max_length=prompts.MAX_BODY_CHARS)],
                       panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        """Every composer's Prompt button: the same form as its Send, posted here with the composer's ``target``."""
+        """Every composer's Prompt button, with the composer's ``target`` (a board's Post shares its form)."""
         written(body)
         with db.transaction(conn):
             p = prompts.create(conn, target=target, body=body, actor=operator.actor)

@@ -1,17 +1,30 @@
-{# Send and Prompt side by side, sharing one form and its textarea: the caller's Send (or Post) button(s), then
-   Prompt, a second submit button that posts the same form to /ui/prompts (formaction) with this hidden target.
-   `prompt` is views.prompt_state: whom Prompt wakes, or (while nobody there is connected) why it is disabled.
-   `button` is the caller's button label, which the hint names. #}
-{% macro send_and_prompt(prompt, button='Send') -%}
-<input type="hidden" name="target" value="{{ prompt.target }}">
-<div class="composer-buttons">{{ caller() }}<button type="submit" class="prompt-btn" formaction="/ui/prompts"{% if prompt.reason %} disabled{% endif %}>Prompt</button></div>
-<p class="small-line">{{ button }} {{ 'delivers a message.' if button == 'Send' else 'adds a note to the board.' }} Prompt wakes the agents now and uses your subscription.</p>
+{# Whom Prompt wakes, or (while nobody there is connected) why it is off. `prompt` is views.prompt_state. #}
+{% macro prompt_hint(prompt) -%}
 {%- if prompt.reason %}
 <p class="small-line prompt-off">{{ prompt.reason }}</p>
 {%- else %}
 <p class="small-line prompt-wakes">Prompt wakes: {{ prompt.label }} ({{ prompt.wakes|join(', ') }}){% if prompt.too_old %}; not {{ prompt.too_old|join(', ') }} (runner too old for prompts; upgrade it){% endif %}</p>
 {%- if prompt.no_checkout %}
 <p class="small-line prompt-off">{{ prompt.no_checkout|join(', ') }} {{ 'has' if prompt.no_checkout|length == 1 else 'have' }} no checkout {{ 'for ' ~ prompt.project if prompt.project else 'configured' }}, so {{ 'it' if prompt.no_checkout|length == 1 else 'they' }} will fail the prompt: map the project to a folder under [projects] in that agent's runner.toml.</p>{% endif %}{% endif %}
+{%- endmacro %}
+
+{# The Prompt-only composer's buttons, inside a form that posts to /ui/prompts: agents, tasks and devices are
+   talked to only by prompting them. `prompt` is views.prompt_state. #}
+{% macro prompt_only(prompt) -%}
+<input type="hidden" name="target" value="{{ prompt.target }}">
+<div class="composer-buttons"><button type="submit" class="prompt-btn"{% if prompt.reason %} disabled{% endif %}>Prompt</button></div>
+<p class="small-line">Prompt wakes the agents now and uses your subscription.</p>
+{{- prompt_hint(prompt) }}
+{%- endmacro %}
+
+{# A board's Post and Prompt side by side, sharing one form and its textarea: the caller's Post button, then
+   Prompt, a second submit button that posts the same form to /ui/prompts (formaction) with this hidden target.
+   Only boards post; everything else uses prompt_only. `button` is the caller's button label. #}
+{% macro send_and_prompt(prompt, button='Post') -%}
+<input type="hidden" name="target" value="{{ prompt.target }}">
+<div class="composer-buttons">{{ caller() }}<button type="submit" class="prompt-btn" formaction="/ui/prompts"{% if prompt.reason %} disabled{% endif %}>Prompt</button></div>
+<p class="small-line">{{ button }} adds a note to the board. Prompt wakes the agents now and uses your subscription.</p>
+{{- prompt_hint(prompt) }}
 {%- endmacro %}
 
 {# A link to an item's full page that opens its slide-in panel instead when JavaScript runs. #}

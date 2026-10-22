@@ -6,7 +6,7 @@ import re
 
 from fastapi.testclient import TestClient
 
-from agenthub.hub import db, store, task_agents, tasks
+from agenthub.hub import db, private, store, task_agents, tasks
 from agenthub.hub.app import HubState, create_app
 
 from .conftest import OPERATOR, Hub, make_hub
@@ -55,7 +55,8 @@ def test_restart_loses_nothing(tmp_path):
                      (json.dumps({"proj": "/src/proj-checkout"}), "/src/proj-checkout", alice.id))
     form(hub, "/ui/projects/proj/notes", body="PROJECT-NOTE-A")
     form(hub, f"/ui/tasks/{tid}/notes", body="TASK-NOTE-B")
-    form(hub, f"/ui/chats/{alice.id}", body="OP-TO-ALICE-C")
+    with db.transaction(conn):  # the UI only prompts now; the hub still writes the operator's private messages
+        private.send(conn, alice.id, author=OPERATOR, body="OP-TO-ALICE-C")
     assert hub.client.post("/api/v1/private", json={"body": "ALICE-TO-OP-D"}, headers=alice.headers).status_code < 300
     assert hub.client.post("/api/v1/projects/proj/messages", json={"body": "PAIR-MSG-E", "to": "bob"},
                            headers=alice.headers).status_code == 201
