@@ -161,9 +161,10 @@ def build_command(
     system_prompt: str,
     resume_session: str | None,
     extra_args: list[str],
+    permission_mode: str = "auto",
 ) -> list[str]:
     cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose", "--max-turns", str(max_turns),
-           "--append-system-prompt", system_prompt]
+           "--permission-mode", permission_mode, "--append-system-prompt", system_prompt]
     if resume_session:
         cmd += ["--resume", resume_session]
     return cmd + list(extra_args)

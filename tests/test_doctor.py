@@ -153,3 +153,30 @@ def test_doctor_flags_api_billing(tmp_path, monkeypatch):
     (other / ".claude" / "settings.json").write_text(json.dumps({"apiKeyHelper": "echo k"}))
     assert billing().status == "ok"
     assert billing(projects=[other]).status == "fail"
+
+
+def test_doctor_warns_when_auto_mode_is_disabled(tmp_path, monkeypatch):
+    from agenthub.runner.config import RunnerConfig
+
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+    monkeypatch.setattr(doctor, "MANAGED_SETTINGS", tmp_path / "no-managed.json")
+    auto, plan = RunnerConfig(), RunnerConfig(permission_mode="plan")
+
+    check = doctor.check_permission_mode(auto)  # no settings file: not an error
+    assert (check.name, check.status) == ("permission mode", "ok") and "auto" in check.detail
+
+    (claude_dir / "settings.json").write_text(json.dumps({"permissions": {"disableAutoMode": "disable"}}))
+    check = doctor.check_permission_mode(auto)
+    assert check.status == "warn" and "disableAutoMode" in check.detail and "Manual" in check.detail
+    assert doctor.check_permission_mode(plan).status == "ok"  # only matters for auto
+
+    (claude_dir / "settings.json").write_text("{not json")
+    assert doctor.check_permission_mode(auto).status == "ok"
+
+    managed = tmp_path / "managed.json"
+    managed.write_text(json.dumps({"permissions": {"disableAutoMode": "disable"}}))
+    monkeypatch.setattr(doctor, "MANAGED_SETTINGS", managed)
+    check = doctor.check_permission_mode(auto)
+    assert check.status == "warn" and str(managed) in check.detail

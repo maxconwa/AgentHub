@@ -242,6 +242,14 @@ Sessions use the agent user's own Claude Code settings. Anything those settings
 don't allow becomes a live `tool_permission` approval, and the session continues
 once you decide.
 
+Sessions start in Claude Code's `auto` permission mode (`permission_mode` in
+`runner.toml`; `bypassPermissions` is refused). A classifier approves routine
+actions, while deny rules and the guard still apply; a blocked action is skipped
+and the session carries on. After repeated blocks auto mode pauses and prompts
+resume, which reach you as live approvals. If the agent user's Claude settings
+set `permissions.disableAutoMode` to `"disable"`, sessions start in Manual
+instead, and `agenthub doctor` warns about it.
+
 ### Coordinating overlapping work
 
 When two agents announce intents that overlap (`src/api/**` and

@@ -448,7 +448,8 @@ class Runner:
             prompt = first_prompt(task)
         cmd = build_command(self.cfg.claude_bin, max_turns=remaining_turns,
                             system_prompt=system_prompt(self.agent.name, task, me),
-                            resume_session=resume_session, extra_args=self.cfg.extra_args)
+                            resume_session=resume_session, extra_args=self.cfg.extra_args,
+                            permission_mode=self.cfg.permission_mode)
         async with self.slots:
             run = await self.client.start_run(task["id"])
             buffer: list[dict[str, str]] = []

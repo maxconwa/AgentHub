@@ -21,11 +21,11 @@ from agenthub.config import AgentConfig, HubConfig
 from agenthub.hub import approvals, db, store, task_agents, tasks
 from agenthub.hub.app import HubState, create_app
 from agenthub.runner import daemon
-from agenthub.runner.config import RunnerConfig
+from agenthub.runner.config import RunnerConfig, RunnerConfigError, load_runner_config
 from agenthub.runner.daemon import (
     Revoked, Runner, exceeded_limit, first_prompt, resume_prompt, review_prompt, system_prompt,
 )
-from agenthub.runner.session import BILLING_ENV_VARS, Session, parse_limit, parse_line, result_from, session_env
+from agenthub.runner.session import BILLING_ENV_VARS, Session, build_command, parse_limit, parse_line, result_from, session_env
 
 from .conftest import OPERATOR
 
@@ -736,6 +736,31 @@ async def test_runner_sessions_never_see_api_key(live_hub, fake_claude, tmp_path
     assert "ANTHROPIC_API_KEY" not in call["env_names"]
 
 
+def _command(mode: str | None = None, resume: str | None = None) -> list[str]:
+    cfg = RunnerConfig() if mode is None else RunnerConfig(permission_mode=mode)
+    return build_command(cfg.claude_bin, max_turns=5, system_prompt="s", resume_session=resume,
+                         extra_args=cfg.extra_args, permission_mode=cfg.permission_mode)
+
+
+def test_sessions_default_to_auto_mode():
+    for cmd in (_command(), _command(resume="sess-1")):
+        assert cmd[cmd.index("--permission-mode") + 1] == "auto"
+    assert "--resume" in _command(resume="sess-1")
+    plan = _command("plan")
+    assert plan[plan.index("--permission-mode") + 1] == "plan"
+
+
+def test_permission_mode_is_validated(tmp_path):
+    path = tmp_path / "runner.toml"
+    assert load_runner_config(path).permission_mode == "auto"  # no file
+    path.write_text('permission_mode = "plan"\n')
+    assert load_runner_config(path).permission_mode == "plan"
+    for bad in ("bypassPermissions", "yolo"):
+        path.write_text(f'permission_mode = "{bad}"\n')
+        with pytest.raises(RunnerConfigError, match="permission_mode"):
+            load_runner_config(path)
+
+
 def test_parse_limit():
     now = datetime(2026, 10, 21, 14, 0)  # a Wednesday, local time
     assert parse_limit("You've hit your session limit · resets 3:45pm", now) == (True, datetime(2026, 10, 21, 15, 45))
@@ -838,7 +863,9 @@ async def test_usage_limit_pauses_and_resumes(live_hub, fake_claude, tmp_path, m
     assert paused_during is not None and datetime.fromisoformat(paused_during) == until
     assert live_hub.member(task_id, agent_cfg.agent_id)["paused_until"] is None  # cleared
     assert len(live_hub.events("task.agent_paused")) == 2  # set, then cleared
-    _, second = calls()
+    first, second = calls()
+    for call in (first, second):  # fresh and resumed sessions both run in auto mode
+        assert call["argv"][call["argv"].index("--permission-mode") + 1] == "auto"
     runs = tasks.list_runs(live_hub.conn(), task_id)
     assert [r["outcome"] for r in runs] == ["usage_limit", "success"]
     assert second["argv"][second["argv"].index("--resume") + 1] == runs[0]["session_id"]

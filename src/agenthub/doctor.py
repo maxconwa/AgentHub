@@ -126,6 +126,26 @@ def check_api_billing(cwd: Path, project_dirs: list[Path] | tuple[Path, ...] = (
     return Check("API billing", OK, "no API key, gateway or cloud provider settings found")
 
 
+MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
+
+
+def check_permission_mode(cfg) -> Check:
+    """Report the runner's permission mode; warn if Claude settings would turn auto mode into Manual."""
+    mode = cfg.permission_mode
+    if mode == "auto":
+        for path in (_settings_files(Path.cwd())[0], MANAGED_SETTINGS):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue  # missing or unreadable is not an error
+            perms = data.get("permissions") if isinstance(data, dict) else None
+            if isinstance(perms, dict) and perms.get("disableAutoMode") == "disable":
+                return Check("permission mode", WARN,
+                             f"auto, but permissions.disableAutoMode is \"disable\" in {path}: sessions will "
+                             "start in Manual and every unapproved action waits for you")
+    return Check("permission mode", OK, mode)
+
+
 def check_hooks(config_dir: Path, cwd: Path) -> list[Check]:
     from agenthub.hooks import guard
 
@@ -231,6 +251,7 @@ def agent_checks(run: Runner = run_cmd, cwd: Path | None = None) -> list[Check]:
                          "or `claude mcp add-json` (local-scope entries only show in their project directory)"))
     try:
         rcfg = load_runner_config()
+        out.append(check_permission_mode(rcfg))
         missing = [n for n, d in rcfg.projects.items() if not Path(d).expanduser().is_dir()]
         if not rcfg.projects:
             out.append(Check("runner config", WARN, "no [projects] mapped; the runner cannot run tasks"))

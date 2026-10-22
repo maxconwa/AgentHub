@@ -9,6 +9,8 @@ example-project = "/home/agent/src/example-project"
 # will read them as project names. Shown here commented out with defaults:
 # concurrency = 1                 # parallel headless sessions
 # claude_bin = "claude"
+# permission_mode = "auto"        # passed to every session as --permission-mode; one of
+#                                 # acceptEdits, auto, manual, dontAsk, plan (never bypassPermissions)
 # extra_args = []                 # extra `claude -p` flags; no permission flags needed:
 #                                 # sessions use this user's Claude Code settings, and anything
 #                                 # else is approved live by the operator

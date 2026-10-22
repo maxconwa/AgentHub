@@ -13,15 +13,21 @@ class RunnerConfigError(Exception):
     pass
 
 
+# `bypassPermissions` is deliberately absent: agenthub never runs sessions with permission checks off.
+PERMISSION_MODES = ("acceptEdits", "auto", "manual", "dontAsk", "plan")
+
+
 @dataclass
 class RunnerConfig:
     # project name -> local checkout where that project's tasks run
     projects: dict[str, str] = field(default_factory=dict)
     concurrency: int = 1
     claude_bin: str = "claude"
-    # Extra arguments for every `claude -p` session. Permission flags are left
-    # out on purpose: sessions use the agent user's own Claude Code settings,
-    # and anything else is granted live through the PermissionRequest hook.
+    # Passed as `--permission-mode` to every session (`claude -p` would start in Manual otherwise).
+    permission_mode: str = "auto"
+    # Extra arguments for every `claude -p` session. Sessions use the agent
+    # user's own Claude Code settings, and anything they don't allow is granted
+    # live through the PermissionRequest hook.
     extra_args: list[str] = field(default_factory=list)
     heartbeat_seconds: float = 15
     permission_wait_seconds: int = 600
@@ -49,6 +55,9 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
         raise RunnerConfigError(f"invalid {path}: {exc}") from exc
     if not 1 <= cfg.concurrency <= 32:
         raise RunnerConfigError("concurrency must be between 1 and 32")
+    if cfg.permission_mode not in PERMISSION_MODES:
+        raise RunnerConfigError(f"permission_mode must be one of {', '.join(PERMISSION_MODES)} "
+                                f"(got {cfg.permission_mode!r}; bypassPermissions is not allowed)")
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):
         raise RunnerConfigError("[projects] must map project names to directory paths")
     return cfg
