@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import agent_tasks, chip, avatar, task_title, open_attrs %}
+{% from "_macros.html" import agent_tasks, chip, avatar, task_title, open_attrs, fail_attrs %}
 {% block title %}Agents{% endblock %}
 {% block content %}
 <h1>Agents</h1>
@@ -25,7 +25,7 @@
 {% block live %}
 <ul class="agent-grid">
   {% for ag in agents %}
-  <li class="card agent-card" id="agent-{{ ag.id }}" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 96, scene=True) }}
+  <li class="card agent-card{{ ' is-failed' if ag.avatar and ag.avatar.pose == 'failed' }}" {{ fail_attrs('agent:' ~ ag.id, ag.avatar and ag.avatar.pose == 'failed') }} id="agent-{{ ag.id }}" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 96, scene=True) }}
     <div class="info"><span><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a> {{ chip(ag.status) }}</span>
       {{ agent_tasks(ag, names, path) }}
       <div class="small-line">on {{ ag.device }}</div>

@@ -1,10 +1,10 @@
-{% from "_macros.html" import chip, avatar, open_attrs, task_title, agent_text %}
+{% from "_macros.html" import chip, avatar, open_attrs, task_title, agent_text, fail_attrs %}
 {#- A prompt's progress (views.prompt): its target, mode and status, the operator's text, and each recipient
     with its status, its share task (a panel link) and its note. Import with context (it shows `avatars`).
     A recipient's note is agent text (labeled, rendered with md) unless the hub wrote it (`note_by_hub`: shown as
     a hub note); a skipped recipient's note is the hub's reason. -#}
 {% macro prompt_card(p, names, full=False) -%}
-<article class="prompt-card">
+<article class="prompt-card{{ ' is-failed' if p.status == 'failed' }}" {{ fail_attrs('prompt:' ~ p.id, p.status == 'failed') }}>
   <div class="row"><span><a href="/ui/prompts/{{ p.id }}"><strong>Prompt #{{ p.id }}</strong></a> {{ chip(p.status) }}</span>
     <span class="small-line">{{ ago(p.created_at) }}</span></div>
   <div class="small-line">to <a {{ open_attrs(p.target_item, p.target_href) }}>{{ p.target_label }}</a> ·
@@ -16,7 +16,7 @@
   {% elif p.thread_href %}<p class="small-line"><a href="{{ p.thread_href }}">The discussion thread</a></p>{% endif %}
   <ul class="precipients">
     {% for r in p.recipients %}
-    <li>{{ avatar(avatars.get(r.agent_id), 24) }}<a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.name }}</a> {{ chip(r.status) }}
+    <li>{{ avatar(avatars.get(r.agent_id), 24) }}<a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.name }}</a> {{ chip(r.status, 'prompt:' ~ p.id ~ '/agent:' ~ r.agent_id) }}
       {%- if r.status == 'skipped' and r.note == 'runner too old for prompts' %} <span class="small-line">runner too old for prompts (upgrade it), so not woken</span>
       {%- elif r.status == 'skipped' %} <span class="small-line">offline when it was sent, so not woken</span>
       {%- elif r.status == 'pending' %} <span class="small-line">{{ 'deciding' if p.mode == 'group' else 'its runner starts it next' }}</span>
@@ -43,5 +43,5 @@
 
 {# One line for the chat window: the target's latest prompt and its status, linking to its page. #}
 {% macro prompt_line(p) -%}
-<p class="mprompt small-line"><a href="/ui/prompts/{{ p.id }}">Prompt #{{ p.id }}</a> {{ chip(p.status) }} · {{ ago(p.created_at) }}</p>
+<p class="mprompt small-line{{ ' is-failed' if p.status == 'failed' }}" {{ fail_attrs('prompt:' ~ p.id, p.status == 'failed') }}><a href="/ui/prompts/{{ p.id }}">Prompt #{{ p.id }}</a> {{ chip(p.status) }} · {{ ago(p.created_at) }}</p>
 {%- endmacro %}

@@ -19,7 +19,17 @@
 href="{{ href }}" data-panel="{{ item }}"
 {%- endmacro %}
 
-{% macro chip(state) -%}<span class="chip chip-{{ state }}">{{ state.replace('_', ' ') }}</span>{%- endmacro %}
+{# The failed hook: an item that can fail (a prompt, a recipient, an agent) carries data-fail-key, plus data-failed
+   and class is-failed (a red edge) while it is failed. app.js plays .failed-new once on the live swap that turns a
+   key failed; a page that loads it already failed shows just the edge. #}
+{% macro fail_attrs(key, failed) -%}
+data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
+{%- endmacro %}
+
+{# A state chip; with `key`, a failed one carries the failed hook. #}
+{% macro chip(state, key=None) -%}
+<span class="chip chip-{{ state }}{{ ' is-failed' if key and state == 'failed' }}"{% if key %} {{ fail_attrs(key, state == 'failed') }}{% endif %}>{{ state.replace('_', ' ') }}</span>
+{%- endmacro %}
 
 {% macro agent_text(text, author_id, names) -%}
 <figure class="agent-text">

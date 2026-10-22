@@ -45,6 +45,27 @@
   }
   if (window.htmx) htmx.onLoad(restoreDetails);
 
+  // Failed: an item that can fail carries data-fail-key (and data-failed while failed; see fail_attrs in
+  // _macros.html). When a swap brings in a key failed that this page last showed not failed, the new element plays
+  // .failed-new once. A key first seen already failed (on page load, say) only shows its red edge.
+  var failedSeen = {};
+  function playFailed(root) {
+    if (!root || !root.querySelectorAll) return;
+    var els = Array.prototype.slice.call(root.querySelectorAll("[data-fail-key]"));
+    if (root.hasAttribute && root.hasAttribute("data-fail-key")) els.unshift(root);
+    els.forEach(function (el) {
+      if (!el.hasAttribute("data-failed") || failedSeen[el.getAttribute("data-fail-key")] !== false) return;
+      el.classList.add("failed-new");
+      el.addEventListener("animationend", function done(e) {
+        if (e.target !== el) return;  // a child's animation bubbling up
+        el.classList.remove("failed-new");
+        el.removeEventListener("animationend", done);
+      });
+    });
+    els.forEach(function (el) { failedSeen[el.getAttribute("data-fail-key")] = el.hasAttribute("data-failed"); });
+  }
+  if (window.htmx) htmx.onLoad(playFailed); else playFailed(document.body);
+
   // Clear chat forms after a successful HTMX post.
   document.addEventListener("htmx:afterRequest", function (evt) {
     var form = evt.detail.elt;

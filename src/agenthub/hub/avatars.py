@@ -35,6 +35,7 @@ def _ids(conn: sqlite3.Connection, sql: str, *args: Any) -> set[str]:
 
 def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, str]:
     """Agent id -> pose for every agent that isn't revoked."""
+    from agenthub.hub import prompts  # imported here: prompts imports views, which imports this module
     now_s = now_iso(now or datetime.now(UTC))
     agents = conn.execute("SELECT id, connected FROM agents WHERE status != 'revoked'").fetchall()
     needs_you = _ids(conn, "SELECT requester FROM approvals WHERE status = 'pending' "
@@ -61,6 +62,14 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
         "SELECT r.agent_id FROM task_runs r JOIN tasks t ON t.id = r.task_id "
         "WHERE r.outcome = 'error' AND t.state NOT IN ('done', 'cancelled') AND r.id = "
         "(SELECT MAX(id) FROM task_runs WHERE agent_id = r.agent_id AND ended_at IS NOT NULL)")
+    # The latest prompt session the agent finished failed, and no task run ended after it. A withdrawn recipient
+    # never ran a session, so it doesn't count.
+    failed = _ids(conn,
+        "SELECT r.agent_id FROM prompt_recipients r WHERE r.status = 'failed' AND r.note != ? "
+        "AND r.updated_at = (SELECT MAX(updated_at) FROM prompt_recipients WHERE agent_id = r.agent_id "
+        "AND status NOT IN ('pending', 'running', 'skipped')) "
+        "AND NOT EXISTS (SELECT 1 FROM task_runs WHERE agent_id = r.agent_id AND ended_at > r.updated_at)",
+        prompts.WITHDRAWN)
     part_done = _ids(conn,
         "SELECT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
         "WHERE ta.stage = 'works' AND ta.finished_at IS NOT NULL AND t.state IN ('in_progress', 'review')")
@@ -79,6 +88,8 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
             pose = prompting[aid]
         elif aid in waiting:
             pose = "waiting"
+        elif aid in failed:
+            pose = "failed"
         elif aid in errored:
             pose = "error"
         elif aid in part_done:

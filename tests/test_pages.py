@@ -1748,6 +1748,91 @@ def test_dashboard_lists_open_prompts_first_then_five_recent(window):
     assert shown == [running] + failed[::-1][:5]
 
 
+def fail_hook(html, key):
+    """The opening tags in ``html`` that carry the failed hook for ``key``."""
+    return re.findall(r'<[a-z]+\b[^>]*data-fail-key="' + re.escape(key) + r'"[^>]*>', html)
+
+
+def test_a_failed_prompt_and_a_failed_recipient_carry_the_failed_hook(window):
+    hub, a, c, r, t, ap, q = window
+    from agenthub.hub import prompts
+    nobody = make_prompt(hub, f"agent:{c.id}", body="anyone?")  # helper is offline: failed at send
+    withdrawn = make_prompt(hub, f"agent:{a.id}", body="never mind")
+    conn = hub.conn()
+    with db.transaction(conn):
+        prompts.withdraw(conn, withdrawn["id"], actor=OPERATOR)  # its one recipient fails, so the prompt does too
+    for pid in (nobody["id"], withdrawn["id"]):
+        live = get(hub, f"/ui/prompts/{pid}").text.split('id="live"')[1]
+        [card] = fail_hook(live, f"prompt:{pid}")
+        assert card.startswith('<article class="prompt-card is-failed"') and card.endswith(" data-failed>")
+    live = get(hub, f"/ui/prompts/{withdrawn['id']}").text.split('id="live"')[1]
+    [chip] = fail_hook(live, f"prompt:{withdrawn['id']}/agent:{a.id}")
+    assert chip == (f'<span class="chip chip-failed is-failed" data-fail-key="prompt:{withdrawn["id"]}/agent:{a.id}"'
+                    " data-failed>")
+    skipped = fail_hook(get(hub, f"/ui/prompts/{nobody['id']}").text, f"prompt:{nobody['id']}/agent:{c.id}")
+    assert skipped == [f'<span class="chip chip-skipped" data-fail-key="prompt:{nobody["id"]}/agent:{c.id}">']
+    dash = get(hub, "/ui/dashboard").text.split('id="live"')[1]
+    for pid in (nobody["id"], withdrawn["id"]):
+        [card] = fail_hook(dash, f"prompt:{pid}")
+        assert "is-failed" in card and "data-failed" in card
+    [card] = fail_hook(panel(hub, f"agent:{c.id}").text, f"prompt:{nobody['id']}")
+    assert "is-failed" in card and "data-failed" in card
+    [line] = fail_hook(messenger(hub, f"agent:{c.id}").text, f"prompt:{nobody['id']}")  # the chat window's line
+    assert line.startswith('<p class="mprompt small-line is-failed"') and line.endswith(" data-failed>")
+
+
+def test_no_failed_hook_on_prompts_that_did_not_fail(window):
+    hub, a, c, r, t, ap, q = window
+    from agenthub.hub import prompts
+    d = hub.enroll("dora")
+    online(hub, d)
+    pending = make_prompt(hub, f"agent:{a.id}", body="pending")
+    running = make_prompt(hub, f"agent:{d.id}", body="running")
+    discussing = make_prompt(hub, "project:proj", body="talk it over")
+    conn = hub.conn()
+    with db.transaction(conn):
+        prompts.start(conn, running["id"], store.get_agent(conn, d.id))
+    done = make_prompt(hub, f"agent:{d.id}", body="done")
+    with db.transaction(conn):
+        prompts.start(conn, done["id"], store.get_agent(conn, d.id))
+        prompts.finish(conn, done["id"], store.get_agent(conn, d.id), ok=True)
+    statuses = {pid: prompts.get(conn, pid)["status"] for pid in (pending["id"], running["id"], discussing["id"],
+                                                                  done["id"])}
+    assert sorted(statuses.values()) == ["discussing", "done", "pending", "running"]
+    for pid in statuses:
+        html = get(hub, f"/ui/prompts/{pid}").text
+        tags = [x for x in re.findall(r"<[a-z]+\b[^>]*data-fail-key=[^>]*>", html)]
+        assert tags and not any("is-failed" in x or "data-failed" in x for x in tags), (statuses[pid], tags)
+        assert "failed-new" not in html  # app.js adds it, only on the swap that turns a key failed
+
+
+def test_an_agent_whose_prompt_session_failed_gets_the_failed_card(window):
+    hub, a, c, r, t, ap, q = window
+    from agenthub.hub import prompts
+    d = hub.enroll("dora")
+    online(hub, d)
+    p = make_prompt(hub, f"agent:{d.id}", body="try it")
+    for path in ("/ui/dashboard", "/ui/agents"):
+        [card] = fail_hook(get(hub, path).text, f"agent:{d.id}")
+        assert "is-failed" not in card and "data-failed" not in card
+    conn = hub.conn()
+    with db.transaction(conn):
+        prompts.start(conn, p["id"], store.get_agent(conn, d.id))
+        prompts.finish(conn, p["id"], store.get_agent(conn, d.id), ok=False, note="crashed")
+    for path in ("/ui/dashboard", "/ui/agents"):
+        html = get(hub, path).text
+        [card] = fail_hook(html, f"agent:{d.id}")
+        assert card.startswith('<li class="card agent-card is-failed"') and " data-failed " in card
+        assert "/failed.svg" in html and 'class="avatar-status status-failed">failed<' in html
+
+
+def test_app_js_plays_failed_new_once_when_a_key_turns_failed(hub):
+    js = hub.client.get("/ui/static/app.js").text
+    assert "[data-fail-key]" in js and 'hasAttribute("data-failed")' in js
+    assert 'classList.add("failed-new")' in js and 'classList.remove("failed-new")' in js  # one shot, replayable
+    assert "failedSeen[" in js and "!== false" in js  # only a key this page last showed not failed
+
+
 def test_answering_a_question_prompts_the_asking_agent(window):
     hub, a, c, r, t, ap, q = window  # worker is connected
     from agenthub.hub import prompts

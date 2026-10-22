@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agenthub.hub import avatar_art, avatars, db
+from agenthub.hub import avatar_art, avatars, db, prompts
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import NotFound
 
@@ -140,6 +140,41 @@ def test_no_error_once_the_task_is_done(setup):
     _, a, conn = setup
     _run(conn, _task(conn, a.id, state="done"), a.id, outcome="error")
     assert avatars.poses(conn)[a.id] == "idle"
+
+
+def test_failed_when_the_latest_prompt_session_failed(setup):
+    _, a, conn = setup
+    pid = _prompt(conn, a.id, mode="single", status="failed")
+    assert avatars.poses(conn)[a.id] == "failed"
+    assert avatars.board(conn)[a.id]["pose"] == "failed" and avatars.board(conn)[a.id]["label"] == "failed"
+    conn.execute("UPDATE prompt_recipients SET updated_at = 'w' WHERE prompt_id = ?", (pid,))
+    later = _prompt(conn, a.id, mode="single", status="done")  # a later session went fine
+    assert avatars.poses(conn)[a.id] == "idle"
+    conn.execute("UPDATE prompt_recipients SET status = 'running' WHERE prompt_id = ?", (later,))
+    assert avatars.poses(conn)[a.id] == "working"  # still going: the earlier failure is not the latest
+    conn.execute("UPDATE prompt_recipients SET status = 'pending' WHERE prompt_id = ?", (later,))
+    assert avatars.poses(conn)[a.id] == "failed"  # queued, not started: the failure is still the latest
+
+
+def test_no_failed_pose_for_a_withdrawn_prompt_or_after_a_later_task_run(setup):
+    _, a, conn = setup
+    pid = _prompt(conn, a.id, mode="single", status="failed")
+    conn.execute("UPDATE prompt_recipients SET note = ? WHERE prompt_id = ?", (prompts.WITHDRAWN, pid))
+    assert avatars.poses(conn)[a.id] == "idle"  # withdrawn before it started: no session failed
+    conn.execute("UPDATE prompt_recipients SET note = 'crashed' WHERE prompt_id = ?", (pid,))
+    tid = _task(conn, a.id)
+    _run(conn, tid, a.id, outcome="success")  # ended_at 'y' > updated_at 'x': a task run ended after it
+    assert avatars.poses(conn)[a.id] == "idle"
+    _run(conn, tid, a.id, outcome="error")
+    assert avatars.poses(conn)[a.id] == "error"
+
+
+def test_failed_shows_over_an_older_task_error(setup):
+    _, a, conn = setup
+    _run(conn, _task(conn, a.id), a.id, outcome="error")  # ended 'y'
+    pid = _prompt(conn, a.id, mode="single", status="failed")
+    conn.execute("UPDATE prompt_recipients SET updated_at = 'z' WHERE prompt_id = ?", (pid,))
+    assert avatars.poses(conn)[a.id] == "failed"
 
 
 def test_part_done_while_the_task_waits(setup):
