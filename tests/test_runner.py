@@ -1104,6 +1104,112 @@ async def test_slots_put_a_queued_prompt_before_waiting_task_sessions():
     assert order[:2] == ["first", "prompt"] and sorted(order[2:]) == ["second", "third"]
 
 
+async def test_slots_drain_every_running_session_before_a_prompt_and_run_it_alone():
+    """concurrency 2: a busy agent (any session running) runs the prompt only once all of its sessions have ended,
+    no new task session starts meanwhile, and none starts alongside the prompt's session."""
+    slots = Slots(2)
+    order: list[str] = []
+    gates = {name: asyncio.Event() for name in ("a", "b", "c", "prompt")}
+
+    async def task(name: str) -> None:
+        async with slots.task():
+            order.append(name)
+            await gates[name].wait()
+            order.append(f"/{name}")
+
+    async def prompt() -> None:
+        async with slots.prompt(7):
+            order.append("prompt")
+            await gates["prompt"].wait()
+            order.append("/prompt")
+
+    a, b = asyncio.create_task(task("a")), asyncio.create_task(task("b"))
+    await asyncio.sleep(0.01)
+    assert order == ["a", "b"]
+    slots.queue(7)
+    queued = asyncio.create_task(prompt())
+    c = asyncio.create_task(task("c"))  # a task loop that comes along after the prompt
+    gates["a"].set()
+    await asyncio.sleep(0.01)
+    assert order == ["a", "b", "/a"]  # a slot is free, but b's session is still running: the prompt waits
+    gates["b"].set()
+    await asyncio.sleep(0.01)
+    assert order == ["a", "b", "/a", "/b", "prompt"]  # c doesn't start alongside the prompt
+    gates["prompt"].set()
+    gates["c"].set()
+    await asyncio.gather(a, b, c, queued)
+    assert order == ["a", "b", "/a", "/b", "prompt", "/prompt", "c", "/c"]
+    assert not slots.queued
+
+
+async def test_slots_two_queued_prompts_run_one_after_the_other():
+    slots = Slots(2)
+    order: list[str] = []
+    release = asyncio.Event()
+
+    async def prompt(pid: int) -> None:
+        async with slots.prompt(pid):
+            order.append(f"{pid}")
+            await release.wait()
+            order.append(f"/{pid}")
+
+    first, second = asyncio.create_task(prompt(1)), asyncio.create_task(prompt(2))
+    await asyncio.sleep(0.01)
+    assert order == ["1"]
+    release.set()
+    await asyncio.gather(first, second)
+    assert order == ["1", "/1", "2", "/2"]
+
+
+async def test_busy_runner_with_two_slots_drains_before_the_prompt(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "hold")
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_RELEASE", str(release))
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    runner.cfg.concurrency, runner.slots = 2, Slots(2)
+    first = live_hub.op_task("first", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: len(calls()) == 1 and _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: pid in runner.slots.queued)
+        second = live_hub.op_task("second", assignee="worker")
+        await asyncio.sleep(1.5)  # several syncs: a slot is free, but a session is running
+        assert len(calls()) == 1 and _prompt_row(live_hub, pid)["status"] == "pending"
+        release.touch()
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done"
+                       and all(live_hub.task(t)["state"] == "review" for t in (first, second)))
+    finally:
+        await stop(main)
+    task_call, prompt_call, next_call = calls()
+    assert task_call["env"]["AGENTHUB_TASK_ID"] == str(first) and next_call["env"]["AGENTHUB_TASK_ID"] == str(second)
+    assert prompt_call["env"]["AGENTHUB_PROMPT_ID"] == str(pid)
+
+
+async def test_task_prompt_does_not_fork_a_session_whose_run_is_in_progress(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("t", assignee="worker")
+    live_hub.move(task_id, "claimed", "in_progress")
+    _past_run(live_hub, task_id, "worker", "sess-old", turns=1)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        a = store.find_agent(conn, "worker")
+        run = tasks.start_run(conn, task_id, a)  # its session is still going (not here: elsewhere, or orphaned)
+        tasks.set_run_session(conn, task_id, run["id"], a, "sess-live")
+    live_hub.move(task_id, "blocked")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"task:{task_id}", "Why is this blocked?")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert "--resume" not in call["argv"] and "--fork-session" not in call["argv"]
+
+
 def test_prompt_budget_config(tmp_path):
     cfg = RunnerConfig()
     assert (cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes) == (40, 30)

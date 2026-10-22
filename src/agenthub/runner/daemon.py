@@ -29,8 +29,8 @@
   nor blocks. A pause left by a previous runner process is waited out too.
 * Streams progress (assistant text snippets and tool calls) to the hub as
   ``task.progress`` events.
-* Runs the operator's prompts (``runner/prompts.py``): a pending prompt takes the next free session slot,
-  before any new task session; a running session is never interrupted.
+* Runs the operator's prompts (``runner/prompts.py``): a pending prompt runs alone once every running session
+  has ended (drain, then run), before any new task session; a running session is never interrupted.
 """
 
 from __future__ import annotations

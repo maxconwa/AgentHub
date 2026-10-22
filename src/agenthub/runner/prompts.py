@@ -1,8 +1,9 @@
 """Prompts from the operator: the runner wakes for them and runs a session on each.
 
 * ``sync`` fetches the prompts this agent still has to act on (``GET /prompts/pending``) and starts one flow
-  per prompt. A prompt runs as soon as a session slot is free and before any new task session
-  (:class:`Slots`); a running session is never interrupted.
+  per prompt. A busy agent (any session running) runs a prompt once all of its running sessions have ended,
+  before any new task session, and the prompt's session runs alone (:class:`Slots`); a running session is never
+  interrupted.
 * Where it runs: a task target in that project's checkout, resuming this agent's latest session on the task
   when there is one (forked, so a task session never shares the id); a project target in that project's
   checkout; an agent or device target in the checkout of the agent's current task's project, else its first
@@ -59,48 +60,57 @@ _STATE_RANK = {"in_progress": 0, "review": 1, "claimed": 2, "open": 3, "blocked"
 
 
 class Slots:
-    """The runner's session slots. A queued prompt takes the next free slot before any new task session."""
+    """The runner's session slots (``concurrency``). A prompt runs alone, once every running session has ended:
+    from the moment it is queued no new task session starts, and none starts while it runs (drain, then run).
+    Several queued prompts run one after the other, before any new task session."""
 
     def __init__(self, n: int) -> None:
-        self._sem = asyncio.Semaphore(n)
+        self.n = n
         self.queued: set[int] = set()
-        self._no_prompt_queued = asyncio.Event()
-        self._no_prompt_queued.set()
+        self.running = 0  # task sessions holding a slot
+        self.prompt_running = False
+        self._changed = asyncio.Event()
+
+    def _notify(self) -> None:
+        """Wake everything waiting in :meth:`_until` to re-check its condition."""
+        self._changed.set()
+        self._changed = asyncio.Event()
+
+    async def _until(self, ready) -> None:
+        while not ready():
+            await self._changed.wait()
 
     def queue(self, prompt_id: int) -> None:
-        """New task sessions wait from now on until this prompt has a slot (or is dropped)."""
+        """New task sessions wait from now on until this prompt has run (or is dropped)."""
         self.queued.add(prompt_id)
-        self._no_prompt_queued.clear()
 
     def unqueue(self, prompt_id: int) -> None:
         self.queued.discard(prompt_id)
-        if not self.queued:
-            self._no_prompt_queued.set()
+        self._notify()
 
     @contextlib.asynccontextmanager
     async def task(self) -> AsyncIterator[None]:
-        while True:
-            await self._no_prompt_queued.wait()
-            await self._sem.acquire()
-            if self._no_prompt_queued.is_set():
-                break
-            self._sem.release()  # a prompt was queued while this waited: it goes first
+        await self._until(lambda: not self.queued and not self.prompt_running and self.running < self.n)
+        self.running += 1
         try:
             yield
         finally:
-            self._sem.release()
+            self.running -= 1
+            self._notify()
 
     @contextlib.asynccontextmanager
     async def prompt(self, prompt_id: int) -> AsyncIterator[None]:
         self.queue(prompt_id)
         try:
-            await self._sem.acquire()
+            await self._until(lambda: self.running == 0 and not self.prompt_running)
+            self.prompt_running = True
         finally:
             self.unqueue(prompt_id)
         try:
             yield
         finally:
-            self._sem.release()
+            self.prompt_running = False
+            self._notify()
 
 
 class PromptSessions:
@@ -374,13 +384,21 @@ class PromptRunner:
         return (mine[0]["project"] if mine else None), None
 
     async def _task_session(self, task_id: int) -> str | None:
-        """This agent's latest session on the task, to resume (forked), if any."""
+        """This agent's latest session on the task, to resume (forked), if any. None while a run of this agent on
+        the task is in progress (here or as the hub sees it): its session is never forked while in use."""
+        work = self.runner.work.get(task_id)
+        if work is not None and work.session is not None:
+            return None
+        me = self.runner.agent.agent_id
         try:
-            usage = (await self.runner.client.task_runs(task_id, agent=self.runner.agent.agent_id))["usage"]
+            found = await self.runner.client.task_runs(task_id, agent=me)
         except (HubError, httpx.HTTPError) as exc:
             log.warning("could not read the runs of task %s: %s", task_id, exc)
             return None
-        return usage["last_session_id"]
+        if any(r["agent_id"] == me and r["ended_at"] is None for r in found["runs"]):
+            log.info("task %s has a run in progress; its prompt starts a new session", task_id)
+            return None
+        return found["usage"]["last_session_id"]
 
     async def _session(self, p: dict[str, Any], text: str, *, resume: str | None, fork: bool, cwd: Path,
                        project: str | None, task_id: int | None, turns: int, seconds: float) -> SessionResult:
