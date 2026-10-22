@@ -714,6 +714,41 @@ def test_single_prompt_to_an_agent_that_went_offline_times_out(trio):
     assert event_summary(ev, {a.id: "alice"}) == f"prompt #{stuck['id']} failed: alice timed out"
 
 
+def test_pending_single_prompt_survives_a_brief_disconnect(trio):
+    """A hub restart or a network blip right at the expiry check doesn't time out a pending prompt: like a running
+    one, it times out only once the agent has been gone for longer than the discussion time."""
+    hub, a, b, c = trio
+    online(hub, a, b)
+    blip, gone = create(hub, f"agent:{a.id}"), create(hub, f"agent:{b.id}")
+    conn = hub.conn()
+    later = datetime.now(UTC) + timedelta(minutes=31)
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 0, last_heartbeat = ? WHERE id = ?",
+                     (db.now_iso(later - timedelta(seconds=5)), a.id))
+        conn.execute("UPDATE agents SET connected = 0, last_heartbeat = ? WHERE id = ?",
+                     (db.now_iso(later - timedelta(minutes=31)), b.id))
+    with db.transaction(conn):
+        assert prompts.expire(conn, later, minutes=30) == [gone["id"]]
+    assert prompts.get(conn, blip["id"])["status"] == "pending"
+    assert prompts.get(conn, gone["id"])["recipients"][0]["status"] == "timed_out"
+
+
+def test_pending_prompt_whose_runner_was_downgraded_times_out(trio):
+    """A connected agent whose runner went back to one too old for prompts would never run it."""
+    hub, a, b, c = trio
+    online(hub, a)
+    p = create(hub, f"agent:{a.id}")
+    online(hub, a, prompts=False)
+    conn = hub.conn()
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=29), minutes=30) == []
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=31), minutes=30) == [p["id"]]
+    got = prompts.get(conn, p["id"])
+    assert got["status"] == "failed" and got["recipients"][0]["status"] == "timed_out"
+    assert got["recipients"][0]["note"] == "runner too old for prompts; never started"
+
+
 def test_running_prompt_whose_runner_never_comes_back_fails(trio):
     hub, a, b, c = trio
     online(hub, a, b)

@@ -295,37 +295,43 @@ def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DI
     """Settle prompts nobody will act on, so nothing waits forever. Returns the prompts changed.
 
     Older than ``minutes``: a group discussion's undecided recipients, and a single prompt's recipient that never
-    started and is disconnected, become ``timed_out`` (the single prompt fails). In any open prompt, recipients
-    that were revoked fail, and so do running recipients whose agent has been disconnected for longer than
-    ``minutes`` (its runner never came back to finish)."""
+    started and whose agent has been disconnected for longer than ``minutes`` (a brief disconnect, such as a hub
+    restart, doesn't count) or whose runner is now too old to run prompts, become ``timed_out`` (the single prompt
+    fails). In any open prompt, recipients that were revoked fail, and so do running recipients whose agent has
+    been disconnected for longer than ``minutes`` (its runner never came back to finish)."""
     cutoff = now_iso(now - timedelta(minutes=minutes))
     changed: list[int] = []
+    gone = "(a.connected = 0 AND COALESCE(a.last_heartbeat, '') < ?)"  # disconnected for longer than ``minutes``
     stale = conn.execute(
         "SELECT DISTINCT p.id FROM prompts p JOIN prompt_recipients r ON r.prompt_id = p.id "
         "JOIN agents a ON a.id = r.agent_id WHERE p.status NOT IN ('done', 'failed') "
         "AND r.status IN ('pending', 'running') AND (a.status = 'revoked' OR (p.created_at < ? AND "
-        "(p.mode = 'group' OR (r.status = 'pending' AND a.connected = 0))) OR (r.status = 'running' "
-        "AND a.connected = 0 AND COALESCE(a.last_heartbeat, '') < ?)) ORDER BY p.id", (cutoff, cutoff)).fetchall()
+        f"(p.mode = 'group' OR (r.status = 'pending' AND ({gone} OR a.prompt_support = 0)))) "
+        f"OR (r.status = 'running' AND {gone})) ORDER BY p.id", (cutoff, cutoff, cutoff)).fetchall()
     for (pid,) in stale:
         p = _row(conn, pid)
         open_rows = conn.execute(
-            "SELECT r.agent_id, r.status, a.status AS agent_status, a.connected, a.last_heartbeat "
+            "SELECT r.agent_id, r.status, a.status AS agent_status, a.connected, a.last_heartbeat, a.prompt_support "
             "FROM prompt_recipients r "
             "JOIN agents a ON a.id = r.agent_id WHERE r.prompt_id = ? AND r.status IN ('pending', 'running') "
             "ORDER BY r.agent_id", (pid,)).fetchall()
         timed_out, failed = [], []
         old = p["created_at"] < cutoff
         for r in open_rows:
+            away = not r["connected"] and (r["last_heartbeat"] or "") < cutoff
             if r["agent_status"] == "revoked":
                 _set_recipient(conn, pid, r["agent_id"], "failed", note="agent revoked")
                 failed.append(r["agent_id"])
             elif old and p["mode"] == "group":
                 _set_recipient(conn, pid, r["agent_id"], "timed_out", note="discussion timed out")
                 timed_out.append(r["agent_id"])
-            elif old and r["status"] == "pending" and not r["connected"]:
+            elif old and r["status"] == "pending" and away:
                 _set_recipient(conn, pid, r["agent_id"], "timed_out", note="offline; never started")
                 timed_out.append(r["agent_id"])
-            elif r["status"] == "running" and not r["connected"] and (r["last_heartbeat"] or "") < cutoff:
+            elif old and r["status"] == "pending" and not r["prompt_support"]:
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note=f"{TOO_OLD}; never started")
+                timed_out.append(r["agent_id"])
+            elif r["status"] == "running" and away:
                 _set_recipient(conn, pid, r["agent_id"], "failed", note="runner disconnected and did not come back")
                 failed.append(r["agent_id"])
         if timed_out or failed:
