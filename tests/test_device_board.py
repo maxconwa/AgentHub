@@ -309,7 +309,7 @@ def test_event_summary_names_the_device_without_body(box):
     from agenthub.hub.dashboard import agent_names
 
     assert event_summary(e, agent_names(hub.conn())) == f"device board note on {BOX_NAME}"
-    feed = get(hub, "/ui/feed").text
+    feed = get(hub, "/ui/activity").text
     assert f"device board note on {BOX_NAME}" in feed and "secret-ish body" not in feed
 
 

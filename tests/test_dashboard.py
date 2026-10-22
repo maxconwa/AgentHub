@@ -54,7 +54,9 @@ def world(hub):
 
 def test_route_inventory_is_not_empty(hub):
     routes = ui_routes(hub.client.app)
-    assert ("POST", "/ui/approvals/{approval_id}/decide") in routes and len(routes) >= 15
+    assert ("POST", "/ui/approvals/{approval_id}/decide") in routes
+    assert ("GET", "/ui/activity") in routes and ("GET", "/ui/feed") in routes
+    assert len(routes) == 58, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):
@@ -125,7 +127,7 @@ def test_insecure_dev_disables_operator_access(dev_hub):
 def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
-                 "/ui/feed", "/ui/feed?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
+                 "/ui/activity", "/ui/activity?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
                  f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
                  "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board"]:
         r = hub.client.get(path, headers=hub.op_headers())
@@ -213,7 +215,7 @@ def test_agent_content_is_escaped(world):
     evil = '<script>alert(1)</script><img src=x onerror=alert(2)>'
     hub.client.post("/api/v1/projects/proj/messages", json={"body": evil}, headers=agent.headers)
     hub.client.post(f"/api/v1/approvals/{ids['approval_id']}/discussion", json={"body": evil}, headers=agent.headers)
-    for path in ["/ui/feed", f"/ui/approvals/{ids['approval_id']}", "/ui/search?q=script"]:
+    for path in ["/ui/activity", f"/ui/approvals/{ids['approval_id']}", "/ui/search?q=script"]:
         html = hub.client.get(path, headers=hub.op_headers()).text
         assert "<script>alert" not in html and "<img src=x" not in html
         assert "&lt;script&gt;" in html or path.startswith("/ui/search")

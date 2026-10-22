@@ -48,9 +48,24 @@ def test_top_bar_order_and_active(hub, path, label):
     assert 'action="/ui/search"' in html
 
 
-def test_feed_and_search_have_no_active_link(hub):
-    for p in ("/ui/feed", "/ui/search"):
-        assert 'class="active"' not in get(hub, p).text
+def test_search_has_no_active_link(hub):
+    assert 'class="active"' not in get(hub, "/ui/search").text
+
+
+def test_activity_page_has_board_active_and_filters(hub):
+    html = get(hub, "/ui/activity").text
+    nav = re.search(r"<nav.*?</nav>", html, re.S).group(0)
+    assert re.findall(r'<a href="(/ui/\w+)" class="active"', nav) == ["/ui/board"]
+    assert 'action="/ui/activity"' in html and 'name="project"' in html and 'id="feed"' in html
+    assert get(hub, "/ui/activity?type=task").status_code == 200
+
+
+def test_old_feed_url_redirects_to_activity(hub):
+    r = hub.client.get("/ui/feed?project=proj&type=task", headers=hub.op_headers(), follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/ui/activity?project=proj&type=task"
+    r = hub.client.get("/ui/feed", headers=hub.op_headers(), follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/ui/activity"
+    assert hub.client.get("/ui/feed", follow_redirects=False).status_code in (401, 403)
 
 
 def test_dashboard_lists_approval_and_agents_not_revoked(busy):
@@ -456,7 +471,7 @@ def test_board_index_groups(talk):
     for key in ("ch-proj~general", f"ch-proj~task-{t['id']}", "ch-proj~coordination-1"):
         assert f'href="/ui/board/{key}"' in html
     assert "Between agents" not in html and pair_key(a, c) not in html
-    assert 'href="/ui/feed"' in html and "All activity" in html
+    assert 'href="/ui/activity"' in html and "All activity" in html
 
 
 def test_board_empty_hub(hub):
@@ -1436,7 +1451,7 @@ def test_unknown_new_form_is_404(hub):
 
 
 FAB_PAGES = ["/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals", "/ui/chats",
-             "/ui/board", "/ui/reports", "/ui/search?q=x", "/ui/feed"]
+             "/ui/board", "/ui/reports", "/ui/search?q=x", "/ui/activity"]
 
 
 def test_floating_buttons_and_chat_window_on_every_page(window):

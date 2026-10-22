@@ -168,7 +168,7 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
 # --- Board: public channels; Chats: agent-to-agent threads -----------------------------------
 
 BOARD_LIMIT = 200
-ACTIVITY_LINK = "/ui/feed"  # Task 11 moves "All activity"
+ACTIVITY_LINK = "/ui/activity"
 _TASK_CHANNEL = re.compile(r"task-(\d+)")
 _PAIR_KEY = re.compile(r"pair-(ag[0-9a-f]+)-(ag[0-9a-f]+)")
 _TASK_BOARD = re.compile(r"task-([1-9][0-9]{0,17})")  # a task board's channel as tasks name it (no leading zeros)

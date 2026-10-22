@@ -641,8 +641,14 @@ def build_router() -> APIRouter:
 
     # feed and search ---------------------------------------------------------------
 
-    @router.get("/feed", response_class=HTMLResponse)
-    def feed_page(request: Request, operator: Op, conn: Conn, project: str = "", agent: str = "",
+    @router.get("/feed")
+    def feed_moved(request: Request, operator: Op) -> RedirectResponse:
+        # Old ntfy links and bookmarks point here.
+        q = request.url.query
+        return RedirectResponse("/ui/activity" + (f"?{q}" if q else ""), status_code=308, headers=SECURITY_HEADERS)
+
+    @router.get("/activity", response_class=HTMLResponse)
+    def activity_page(request: Request, operator: Op, conn: Conn, project: str = "", agent: str = "",
                   type: str = "") -> HTMLResponse:
         sql, params = "SELECT * FROM events WHERE 1 = 1", []
         if project:
@@ -656,7 +662,7 @@ def build_router() -> APIRouter:
             params.append(type.replace("%", "") + "%")
         rows = conn.execute(sql + " ORDER BY id DESC LIMIT 200", params).fetchall()
         types = [r[0] for r in conn.execute("SELECT DISTINCT type FROM events ORDER BY type")]
-        return render(request, operator, "feed.html", conn, events=[events.row_to_event(r) for r in rows],
+        return render(request, operator, "activity.html", conn, nav="board", events=[events.row_to_event(r) for r in rows],
                       projects=store.list_projects(conn), agents=store.list_agents(conn), types=types,
                       filters={"project": project, "agent": agent, "type": type})
 

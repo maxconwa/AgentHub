@@ -106,4 +106,4 @@ def test_conflict_notifies_operator():
     e = {"id": 1, "ts": "", "type": "intent.conflict", "project": "proj", "actor": "system:hub", "device": None,
          "payload": {"agents": ["alice", "bob"], "intents": [1, 2], "overlap": [["a", "a"]]}}
     msg = build_notification(e, {}, cfg)
-    assert "alice and bob" in msg["message"] and msg["click"] == "https://hub/ui/feed?project=proj"
+    assert "alice and bob" in msg["message"] and msg["click"] == "https://hub/ui/activity?project=proj"

@@ -80,7 +80,7 @@ def build_notification(
         agents = " and ".join(p.get("agents") or [])
         return {"title": f"Work overlap in {event['project']}", "message": f"{agents} plan overlapping changes "
                 f"and are coordinating.", "priority": 3, "tags": ["handshake"],
-                "click": f"{base}/ui/feed?project={event['project']}" if base else None}
+                "click": f"{base}/ui/activity?project={event['project']}" if base else None}
     if etype == "task.transitioned" and p.get("to") in ("review", "blocked"):
         return {"title": f"Task #{p['task_id']} is {p['to']}", "message": f"{who} moved it to {p['to']}.",
                 "priority": 3, "tags": ["white_check_mark" if p["to"] == "review" else "construction"],
