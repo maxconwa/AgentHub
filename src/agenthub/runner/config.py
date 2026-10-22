@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,3 +80,21 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):
         raise RunnerConfigError("[projects] must map project names to directory paths")
     return cfg
+
+
+def configured_model(cfg: RunnerConfig) -> str | None:
+    """The model this runner's sessions will use, as far as it can tell before one runs: ``--model`` in
+    ``extra_args``, else ``model`` in this account's Claude Code user settings, else ``$ANTHROPIC_MODEL``.
+    None means Claude Code's default for the account."""
+    args = cfg.extra_args
+    for i, arg in enumerate(args):
+        if arg == "--model" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--model="):
+            return arg.split("=", 1)[1]
+    settings = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    try:
+        model = json.loads(settings.read_text()).get("model")
+    except (OSError, ValueError, AttributeError):
+        model = None
+    return model if isinstance(model, str) and model else os.environ.get("ANTHROPIC_MODEL") or None

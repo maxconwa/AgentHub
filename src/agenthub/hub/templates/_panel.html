@@ -45,6 +45,7 @@
       <div class="small-line">{% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></div></div>
       {% else %}No current task{% endfor %}</dd>
     <dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}</dd>
+    <dt>Model</dt><dd>{{ ag.model or 'Not reported yet' }} <span class="small-line">reported by the agent</span></dd>
     <dt>Directory</dt><dd><span class="dir">{{ ag.current_dir or 'None reported' }}</span> <span class="small-line">reported by the agent</span></dd>
   </dl>
   {% set waiting = approvals|length + questions|length %}

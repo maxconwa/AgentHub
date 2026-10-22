@@ -1857,3 +1857,13 @@ def test_a_delivered_answer_still_says_so_after_the_agent_is_revoked(window):
     hub.set_status(c, "revoked")
     html = get(hub, f"/ui/questions/{q2['id']}").text
     assert "as a private message" in html and "not delivered" not in html
+
+
+def test_agent_page_and_panel_show_the_reported_model(busy):
+    hub, a, b, ap, t = busy
+    assert "Not reported yet" in get(hub, f"/ui/agents/{a.id}").text
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET model = 'claude-opus-5-5' WHERE id = ?", (a.id,))
+    assert "claude-opus-5-5" in get(hub, f"/ui/agents/{a.id}").text
+    assert "claude-opus-5-5" in panel(hub, f"agent:{a.id}").text

@@ -245,3 +245,15 @@ def test_agents_on_one_machine_keep_separate_status(hub):
     _beat(hub, second, {"checkouts": {"proj": "/src/second"}, "current_dir": None})
     assert _agent_dirs(hub, second.id) == ({"proj": "/src/second"}, None)
     assert hub.client.get("/api/v1/agents/me", headers=first.headers).status_code in (401, 403)
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 101, "<script>", "two words", 5, None])
+def test_heartbeat_model_is_stored_when_valid(hub, bad):
+    a = hub.enroll("a")
+    model = lambda: hub.conn().execute("SELECT model FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
+    _beat(hub, a, {"model": "claude-opus-5-5"})
+    assert model() == "claude-opus-5-5"
+    _beat(hub, a, {"model": bad}, {})  # an invalid or missing model keeps the stored one
+    assert model() == "claude-opus-5-5"
+    _beat(hub, a, {"model": "opus[1m]"})
+    assert model() == "opus[1m]"

@@ -52,7 +52,7 @@ from websockets.asyncio.client import connect as ws_connect
 from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import AgentConfig
-from agenthub.runner.config import RunnerConfig
+from agenthub.runner.config import RunnerConfig, configured_model
 from agenthub.runner.prompts import PromptRunner, Slots
 from agenthub.runner.session import Session, SessionResult, build_command
 
@@ -208,6 +208,8 @@ class Runner:
         self._stopping = False
         # task id -> the paused_until this runner already waited out (the hub may still show it if clearing failed)
         self._waited_out: dict[int, datetime] = {}
+        # The model the latest session ran on (its init line); until one has run, the configured model is reported.
+        self.last_model: str | None = None
         # Working directories of the sessions running now, oldest first (dicts keep insertion order).
         self._session_dirs: dict[Session, str] = {}
         self.prompts = PromptRunner(self)
@@ -257,8 +259,9 @@ class Runner:
         """Tells the hub where this runner's checkouts are, where its newest running session works, and that it
         runs prompts (``"prompts": 1``; without it the hub doesn't wake this agent with prompts)."""
         dirs = list(self._session_dirs.values())
+        model = self.last_model or configured_model(self.cfg)
         return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
-                "current_dir": dirs[-1] if dirs else None, "prompts": 1}
+                "current_dir": dirs[-1] if dirs else None, "prompts": 1, **({"model": model} if model else {})}
 
     async def _heartbeat(self, ws) -> None:
         while True:
@@ -509,6 +512,7 @@ class Runner:
             flusher = asyncio.create_task(periodic_flush())
             try:
                 result = await session.run()
+                self.last_model = session.model or self.last_model
             finally:
                 flusher.cancel()
                 self.work[task["id"]].session = None

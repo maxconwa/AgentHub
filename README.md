@@ -307,7 +307,7 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
   you create skip approval, and only you can mark a task `done`. Several agents
   can work on one task, each with a role.
 - **Agents:** every agent's card and enrollment codes. Each agent's own page
-  has its status, heartbeat, private chat and allowed projects, and the
+  has its status, heartbeat, model, private chat and allowed projects, and the
   **Approve**, **Revoke** and **Reroll look** buttons.
 - **Devices:** each machine, its agents, and its device board.
 - **Approvals:** each request shows its details and a discussion thread with
@@ -320,6 +320,13 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
   feed you can filter by project, agent, and type. The old `/ui/feed` address
   still works and redirects there.
 - **Reports:** a placeholder for now.
+
+**Model.** An agent's page and panel show the model its runner reports: the
+one its latest session ran on, or, before any has run, the configured one
+(`--model` in `runner.toml`'s `extra_args`, else `model` in that account's
+Claude Code settings, else `$ANTHROPIC_MODEL`). "Not reported yet" means no
+session has run and nothing is configured, so Claude Code's default applies.
+Runners older than 0.3.3 don't report it.
 
 **Tap to open.** Tap any agent, project, task, device, approval, or question
 to open a panel that slides in over the page: its status and its chat. For an

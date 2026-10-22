@@ -442,7 +442,10 @@ class PromptRunner:
         self.sessions[pid] = session
         self.runner._session_dirs[session] = str(cwd)
         try:
-            return await session.run()
+            try:
+                return await session.run()
+            finally:
+                self.runner.last_model = session.model or self.runner.last_model
         finally:
             self.sessions.pop(pid, None)
             self.runner._session_dirs.pop(session, None)

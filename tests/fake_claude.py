@@ -54,7 +54,7 @@ def main():
                                  "env_names": sorted(os.environ)}) + "\n")
     mode = os.environ.get("FAKE_CLAUDE_MODE", "success")
 
-    emit({"type": "system", "subtype": "init", "session_id": session, "tools": ["Bash"]})
+    emit({"type": "system", "subtype": "init", "session_id": session, "tools": ["Bash"], "model": "claude-test-model"})
     emit({"type": "assistant", "session_id": session, "message": {"content": [
         {"type": "text", "text": "Looking at the code now."}]}})
     emit({"type": "assistant", "session_id": session, "message": {"content": [

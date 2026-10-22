@@ -1272,6 +1272,7 @@ async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, t
     assert me["status"] == "done" and me["note"] == "Implemented the change and ran the tests."
     assert runner.prompts.store.get(pid) is None  # nothing left to resume
     assert not runner._session_dirs
+    assert runner._heartbeat_frame()["model"] == "claude-test-model"  # what the session's init line said
 
 
 async def test_first_sync_fails_pending_prompts_too_old_to_run(live_hub, fake_claude, tmp_path):
@@ -1645,3 +1646,26 @@ def test_system_prompt_says_operator_actions_are_for_humans():
 
     prompt = system_prompt("w", {"id": 7, "project": "p"}, {"role": "", "stage": "works"})
     assert untrusted.HUMAN_ONLY in prompt and untrusted.HUMAN_ONLY in INSTRUCTIONS
+
+
+def test_configured_model_before_any_session(tmp_path, monkeypatch):
+    from agenthub.runner.config import RunnerConfig, configured_model
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    assert configured_model(RunnerConfig()) is None  # Claude Code's default
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-env")
+    assert configured_model(RunnerConfig()) == "claude-env"
+    (tmp_path / "claude").mkdir()
+    (tmp_path / "claude" / "settings.json").write_text('{"model": "opus"}')
+    assert configured_model(RunnerConfig()) == "opus"
+    assert configured_model(RunnerConfig(extra_args=["--model", "sonnet"])) == "sonnet"
+    assert configured_model(RunnerConfig(extra_args=["--verbose", "--model=haiku"])) == "haiku"
+
+
+def test_session_init_line_carries_the_model():
+    from agenthub.runner.session import parse_line
+
+    line = '{"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5-5"}'
+    assert parse_line(line) == [("session", "s1"), ("model", "claude-opus-5-5")]
+    assert parse_line('{"type": "system", "subtype": "init", "session_id": "s1"}') == [("session", "s1")]

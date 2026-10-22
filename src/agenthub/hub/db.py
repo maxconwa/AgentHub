@@ -383,6 +383,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE prompt_recipients ADD COLUMN note_by_hub INTEGER NOT NULL DEFAULT 0;
     UPDATE prompt_recipients SET note_by_hub = 1 WHERE status IN ('skipped', 'timed_out');
     """,
+    # 18: the model the agent's runner reports (its sessions' model, else the one configured), shown on its page
+    """
+    ALTER TABLE agents ADD COLUMN model TEXT;
+    """,
 ]
 
 

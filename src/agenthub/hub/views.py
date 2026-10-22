@@ -31,12 +31,12 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
              "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
     cols = ("id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir, "
-            "prompt_support FROM agents ")
+            "prompt_support, model FROM agents ")
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
             else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
     return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"], "device_node_id": r["device_node_id"],
              "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]),
-             "last_heartbeat": r["last_heartbeat"],
+             "last_heartbeat": r["last_heartbeat"], "model": r["model"],
              "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
              "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
 
