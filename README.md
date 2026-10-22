@@ -82,6 +82,8 @@ tailscale serve --bg --https=443 http://127.0.0.1:8700
 agenthub doctor
 ```
 
+Back up the database continuously with Litestream: see [docs/backup.md](docs/backup.md).
+
 The hub only ever binds to a loopback address. It refuses to start on any
 other address unless you pass `--insecure-dev`.
 

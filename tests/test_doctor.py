@@ -180,3 +180,24 @@ def test_doctor_warns_when_auto_mode_is_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "MANAGED_SETTINGS", managed)
     check = doctor.check_permission_mode(auto)
     assert check.status == "warn" and str(managed) in check.detail
+
+
+def test_journal_mode_and_litestream_checks(tmp_path, monkeypatch):
+    from agenthub.hub import db
+
+    db_path = tmp_path / "h.db"
+    db.init_db(str(db_path)).close()
+    db_path.chmod(0o600)
+    HubConfig(db_path=str(db_path), operators=["op@example.com"]).save()
+    monkeypatch.setattr(doctor, "LITESTREAM_CONFIG", tmp_path / "litestream.yml")
+    checks = {c.name: c for c in doctor.hub_checks(fake_run({}))}
+    assert checks["journal_mode"].status == "ok" and checks["journal_mode"].detail == "wal"
+    assert checks["litestream"].status == "warn" and "docs/backup.md" in checks["litestream"].detail
+    (tmp_path / "litestream.yml").write_text("dbs: []\n")
+    assert {c.name: c for c in doctor.hub_checks(fake_run({}))}["litestream"].status == "ok"
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=delete")
+    conn.close()
+    bad = {c.name: c for c in doctor.hub_checks(fake_run({}))}["journal_mode"]
+    assert bad.status == "fail" and "delete" in bad.detail

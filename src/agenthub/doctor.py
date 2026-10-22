@@ -284,6 +284,17 @@ def serve_targets(run: Runner, tailscale: str = "tailscale") -> list[str]:
             for h in (web.get("Handlers") or {}).values() if h.get("Proxy")]
 
 
+# Where the Litestream package reads its config; tests point this at a temp file.
+LITESTREAM_CONFIG = Path("/etc/litestream.yml")
+
+
+def check_litestream() -> Check:
+    if LITESTREAM_CONFIG.is_file():
+        return Check("litestream", OK, f"config at {LITESTREAM_CONFIG}")
+    return Check("litestream", WARN, f"no {LITESTREAM_CONFIG}: the database is not backed up continuously; "
+                 "see docs/backup.md")
+
+
 def hub_checks(run: Runner = run_cmd) -> list[Check]:
     import ipaddress
 
@@ -316,9 +327,13 @@ def hub_checks(run: Runner = run_cmd) -> list[Check]:
         current = len(db.MIGRATIONS)
         out.append(Check("schema", OK if version == current else WARN,
                          f"version {version}" + ("" if version == current else f" (hub will migrate to {current})")))
-        out.append(Check("WAL mode", OK if journal == "wal" else WARN, journal))
+        out.append(Check("journal_mode", OK if journal == "wal" else FAIL,
+                         journal if journal == "wal" else
+                         f"{journal}, not wal: the hub and Litestream both need WAL; the hub sets it when it "
+                         "opens the database, so is something else (a copy, a restore) replacing the file?"))
     else:
         out.append(Check("database", WARN, f"{db_path} not created yet (run `agenthub hub init` or start the hub)"))
+    out.append(check_litestream())
     csrf = paths.config_dir() / "csrf.key"
     if csrf.exists():
         out.append(check_private(csrf, "csrf key", 0o600))
