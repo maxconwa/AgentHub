@@ -199,8 +199,14 @@ def prompt_state(conn: sqlite3.Connection, target: str, found: dict[str, Any] | 
         reason = f"Prompt is off: {agents[0]['name']} is not connected right now."
     else:
         reason = "Prompt is off: none of the agents here is connected right now."
+    # A prompt session runs in a checkout from the agent's runner.toml (its heartbeat reports them): the target's
+    # project's, else (no project: an agent or a device) any. An agent reporting none would fail the prompt with
+    # "no checkout configured", so say so before it's sent.
+    project = found["board"][0] if found["board"] else None
+    no_checkout = [a["name"] for a in agents if wakeable(a)
+                   and (project not in a["checkouts"] if project else not a["checkouts"])]
     return {"target": target, "label": found["label"], "wakes": wakes, "too_old": too_old, "reason": reason,
-            "agents": len(agents)}
+            "agents": len(agents), "no_checkout": no_checkout, "project": project}
 
 
 def board_prompt_target(conn: sqlite3.Connection, project: str, channel: str) -> str | None:

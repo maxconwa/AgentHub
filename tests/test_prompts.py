@@ -1028,3 +1028,20 @@ def test_event_summaries(group):
     assert event_summary(created, names) == f"prompt #{p['id']} to alice, bob, carol (group)"
     api(hub, b, "POST", f"/{p['id']}/decline", json={"reason": "no"})
     assert event_summary(prompt_events(hub, p["id"])[-1], names) == f"prompt #{p['id']}: bob declined"
+
+
+def test_prompt_hint_names_agents_without_a_checkout(trio):
+    """A prompt runs in a checkout from the agent's runner.toml; one reporting none would fail it, so say so first."""
+    from agenthub.hub import views
+
+    hub, a, b, c = trio
+    online(hub, a, b)
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET checkouts = '{\"proj\": \"/src/proj\"}' WHERE id = ?", (a.id,))
+        conn.execute("UPDATE agents SET checkouts = '{\"other\": \"/src/other\"}' WHERE id = ?", (b.id,))
+    state = views.prompt_state(conn, "project:proj")
+    assert state["no_checkout"] == ["bob"] and state["project"] == "proj"
+    assert views.prompt_state(conn, f"agent:{b.id}")["no_checkout"] == []  # any checkout will do
+    html = hub.client.get("/ui/panel", params={"item": "project:proj"}, headers=hub.op_headers(**{"hx-request": "true"})).text
+    assert "bob has no checkout for proj, so it will fail the prompt" in html
