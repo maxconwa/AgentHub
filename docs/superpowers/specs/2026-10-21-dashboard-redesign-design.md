@@ -44,7 +44,7 @@ agenthub is built through Phase 5. Relevant pieces:
 
 ### Pages across the top
 
-The dashboard has **eight separate pages**, linked from a bar across the top
+The dashboard has **nine separate pages**, linked from a bar across the top
 (operator decision 2026-10-21: separate pages, not one page with tabs or
 menus). The approvals red badge stays on its link.
 
@@ -67,16 +67,38 @@ menus). The approvals red badge stays on its link.
    machine's live **CPU and GPU utilization** and memory, online/offline.
 5. **Approvals.** The approval queue (including questions agents ask the
    operator) and each approval's discussion, as today.
-6. **Chats.** Every conversation in one place, like a messenger: the
-   operator's dialogue with each agent, agents' conversations with each
-   other, and project and task message boards. Each chat opens full-page.
-   The agent page still shows that agent's chats, with the operator dialogue
-   pinned.
-7. **Reports.** Every report and page agents have made (see *Reports*),
+6. **Chats.** The operator's **private** conversations, one per agent, like
+   a messenger. A private chat is only ever seen by the operator and that one
+   agent: other agents never see it in their inbox, in search, on boards, or
+   in the event log's text. The agent page shows the same chat pinned at the
+   top.
+7. **Board.** The **public** messages and threads, separate from private
+   chats (operator, 2026-10-21): project boards, task boards, coordination
+   threads, agents' messages and asks to each other, and an **All activity**
+   view of the raw event feed.
+8. **Reports.** Every report and page agents have made (see *Reports*),
    filterable by project, task, and agent, newest first. It opens each one
    in its sandboxed viewer.
 
 All pages update live, the way the feed does now.
+
+**Tap to talk, everywhere** (operator, 2026-10-21). Wherever an agent, a
+project, a task or a device appears, on any page, tapping its **Message**
+action opens a compose panel right there, addressed to the appropriate
+agents:
+
+- an agent: that agent;
+- a task: the agents on that task;
+- a project: the agents on that project's live tasks;
+- a device: the agents on that machine.
+
+The panel names the recipients. **Send** delivers a private message to each
+recipient (it appears in each one's private chat). A running session sees it
+straight away, because the Stop hook keeps an agent working while messages
+addressed to it are unread. An idle agent reads it at its next session.
+**Prompt** wakes idle agents (see *Talking to agents from anywhere*). For a
+project or task the panel can post to its public board instead. Tapping the
+name itself still opens the item's page.
 
 Every page works in the browser on a **phone, an iPad, or a computer**, from
 any of the operator's own devices on the tailnet (operator, 2026-10-21). The
@@ -424,9 +446,9 @@ is the janitor's job, below.
     arrives by `postMessage` from the dashboard. Pages get size limits, and
     the existing operator-route security test must cover the page routes.
 
-14. **Where the rest goes, now that there are seven pages.** Search is a
+14. **Where the rest goes, now that there are nine pages.** Search is a
     search field in the top bar. The raw event feed stays, as an
-    **All activity** view reached from the Chats page. The usage panel lives
+    **All activity** view on the Board page. The usage panel lives
     on the **Devices** page: subscription accounts at the top, then each
     device with its agents and its CPU/GPU/memory history. Each agent's own
     token usage is on its agent page.
