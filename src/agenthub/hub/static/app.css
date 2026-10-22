@@ -132,5 +132,9 @@ table.runs th, table.runs td { text-align: left; padding: 6px 4px; border-bottom
   nav a { padding: 8px 7px; font-size: 0.95rem; }
 }
 
-.avatar { image-rendering: pixelated; vertical-align: middle; flex: none; }
+.avatar { image-rendering: pixelated; display: block; }
+.avatar-wrap { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; vertical-align: middle;
+  flex: none; max-width: 6.5rem; }
+.avatar-status { font-size: 0.7rem; line-height: 1.15; color: var(--muted); text-align: center; }
+.avatar-status.status-needs_you, .avatar-status.status-error { color: var(--bad); font-weight: 600; }
 .agent-head { display: flex; align-items: center; gap: 12px; }

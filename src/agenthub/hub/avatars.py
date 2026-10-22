@@ -87,12 +87,12 @@ def url(version: int, seed: int, pose: str, *, scene: bool) -> str:
 
 
 def board(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, dict[str, Any]]:
-    """What templates need to draw each non-revoked agent: both image URLs, alt text, pose."""
+    """What templates need to draw each non-revoked agent: both image URLs, alt text, pose and its label."""
     current = poses(conn, now)
     out = {}
     for r in conn.execute("SELECT id, name, avatar_version, avatar_seed FROM agents WHERE status != 'revoked'"):
         pose = current.get(r["id"], "idle")
         v, s = r["avatar_version"], r["avatar_seed"]
         out[r["id"]] = {"pose": pose, "scene": url(v, s, pose, scene=True), "mini": url(v, s, pose, scene=False),
-                        "alt": f"{r['name']}, {avatar_art.POSE_LABELS[pose]}"}
+                        "alt": r["name"], "label": avatar_art.POSE_LABELS[pose]}
     return out

@@ -19,5 +19,5 @@
 {%- endmacro %}
 
 {% macro avatar(info, size=32, scene=False) -%}
-{%- if info %}<img class="avatar" src="{{ info.scene if scene else info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
+{%- if info %}<span class="avatar-wrap"><img class="avatar" src="{{ info.scene if scene else info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy"><span class="avatar-status status-{{ info.pose }}">{{ info.label }}</span></span>{% endif -%}
 {%- endmacro %}

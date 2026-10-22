@@ -392,12 +392,12 @@ def test_pages_show_each_agents_avatar_in_its_pose(world):
              for r in conn.execute("SELECT id, avatar_version, avatar_seed FROM agents")}
     html = hub.client.get("/ui/agents", headers=hub.op_headers()).text
     v, s = looks[other.id]
-    assert f'src="/ui/avatars/{v}/{s}/scene/idle.svg" width="96" height="96" alt="helper, idle"' in html
+    assert (f'src="/ui/avatars/{v}/{s}/scene/idle.svg" width="96" height="96" alt="helper" loading="lazy">'
+            '<span class="avatar-status status-idle">idle</span>') in html
     v, s = looks[agent.id]  # not connected
-    assert f'src="/ui/avatars/{v}/{s}/scene/offline.svg"' in html and 'alt="worker, offline"' in html
-    page = hub.client.get(f"/ui/approvals/{ids['approval_id']}", headers=hub.op_headers()).text
-    assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in page
-    page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=hub.op_headers()).text
-    assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in page
+    assert f'src="/ui/avatars/{v}/{s}/scene/offline.svg"' in html and '<span class="avatar-status status-offline">offline</span>' in html
+    for page in (f"/ui/approvals/{ids['approval_id']}", f"/ui/tasks/{ids['task_id']}", "/ui/approvals"):
+        text = hub.client.get(page, headers=hub.op_headers()).text
+        assert f'/ui/avatars/{v}/{s}/mini/offline.svg' in text and 'status-offline">offline</span>' in text, page
     hub.set_status(agent, "revoked")
     assert f"/ui/avatars/{v}/{s}/" not in hub.client.get("/ui/agents", headers=hub.op_headers()).text

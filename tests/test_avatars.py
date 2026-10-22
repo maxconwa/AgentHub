@@ -140,7 +140,7 @@ def test_board_urls_and_alt_text(setup):
     v, s = conn.execute("SELECT avatar_version, avatar_seed FROM agents").fetchone()
     info = avatars.board(conn)[a.id]
     assert info == {"pose": "idle", "scene": f"/ui/avatars/{v}/{s}/scene/idle.svg",
-                    "mini": f"/ui/avatars/{v}/{s}/mini/idle.svg", "alt": "worker, idle"}
+                    "mini": f"/ui/avatars/{v}/{s}/mini/idle.svg", "alt": "worker", "label": "idle"}
 
 
 def test_new_agents_get_a_look(hub):
