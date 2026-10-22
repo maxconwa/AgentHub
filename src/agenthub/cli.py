@@ -366,7 +366,8 @@ def tasks_list(
     except store.StoreError as exc:
         _fail(str(exc))
     for t in rows:
-        typer.echo(f"#{t['id']:<5} {t['project']:<16} {t['state']:<18} {t['assignee_name'] or '-':<16} {t['title']}")
+        members = ", ".join(f"{m['name']}({m['role']})" if m["role"] else m["name"] for m in t["agents"]) or "-"
+        typer.echo(f"#{t['id']:<5} {t['project']:<16} {t['state']:<18} {members:<24} {t['title']}")
 
 
 @tasks_app.command("create")
@@ -375,6 +376,7 @@ def tasks_create(
     title: str,
     body: Annotated[str, typer.Option()] = "",
     assignee: Annotated[str | None, typer.Option()] = None,
+    role: Annotated[str, typer.Option(help="Role text for the assignee (operator-written).")] = "",
     max_turns: Annotated[int | None, typer.Option(help="Budget: total agent turns.")] = None,
     wall_clock_minutes: Annotated[int | None, typer.Option(help="Budget: total minutes of runtime.")] = None,
     max_subtasks: Annotated[int | None, typer.Option(help="Budget: number of runs (first run + resumes).")] = None,
@@ -388,23 +390,61 @@ def tasks_create(
     try:
         with db.transaction(conn):
             t = tasks.create_task(conn, actor=_local_operator(), project=project, title=title, body=body,
-                                  assignee=assignee, state="open", budget=budget)
+                                  assignee=assignee, role=role, state="open", budget=budget)
     except store.StoreError as exc:
         _fail(str(exc))
     typer.echo(f"#{t['id']} open: {t['title']} (budget {t['budget']})")
 
 
 @tasks_app.command("assign")
-def tasks_assign(task_id: int, assignee: str) -> None:
+def tasks_assign(
+    task_id: int,
+    assignee: str,
+    role: Annotated[str | None, typer.Option(help="Role text; default keeps the existing role.")] = None,
+) -> None:
+    """Make AGENT the only implementer (reviewers stay)."""
     from agenthub.hub import db, store, tasks
 
     conn = _hub_conn()
     try:
         with db.transaction(conn):
-            t = tasks.assign(conn, task_id, assignee, actor=_local_operator())
+            t = tasks.assign(conn, task_id, assignee, actor=_local_operator(), role=role)
     except store.StoreError as exc:
         _fail(str(exc))
-    typer.echo(f"#{t['id']} {t['state']} → {t['assignee_name']}")
+    typer.echo(f"#{t['id']} {t['state']} → {', '.join(m['name'] for m in t['agents']) or '-'}")
+
+
+@tasks_app.command("add-agent")
+def tasks_add_agent(
+    task_id: int,
+    agent: str,
+    role: Annotated[str, typer.Option(help="What this agent is for (operator-written, max 200 chars).")] = "",
+    stage: Annotated[str, typer.Option(help="works or reviews.")] = "works",
+) -> None:
+    """Add AGENT to a task as an implementer (works) or reviewer (reviews)."""
+    from agenthub.hub import db, store, task_agents
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            t = task_agents.add_agent(conn, task_id, agent, role=role, stage=stage, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    typer.echo(f"#{t['id']} {t['state']}: {', '.join(f'{m['name']}({m['stage']})' for m in t['agents'])}")
+
+
+@tasks_app.command("remove-agent")
+def tasks_remove_agent(task_id: int, agent: str) -> None:
+    """Remove AGENT from a task."""
+    from agenthub.hub import db, store, task_agents
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            t = task_agents.remove_agent(conn, task_id, agent, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    typer.echo(f"#{t['id']} {t['state']}: {', '.join(m['name'] for m in t['agents']) or '-'}")
 
 
 @tasks_app.command("move")

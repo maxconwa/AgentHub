@@ -7,7 +7,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agenthub.hub import approvals, db, store, tasks
+from agenthub.hub import approvals, db, store, task_agents, tasks
 
 from .conftest import OP_IP, OP_LOGIN, OPERATOR
 
@@ -179,7 +179,7 @@ def test_operator_task_lifecycle(world):
     t = tasks.get_task(hub.conn(), task_id)
     assert t["state"] == "open" and t["created_by"] == f"human:{OP_LOGIN}" and t["budget"]["max_turns"] == 7
     hub.client.post(f"/ui/tasks/{task_id}/assign", headers=h, data={"csrf": c, "assignee": "worker"})
-    assert tasks.get_task(hub.conn(), task_id)["assignee"] == agent.id
+    assert [m["agent_id"] for m in tasks.get_task(hub.conn(), task_id)["agents"]] == [agent.id]
     hub.client.post(f"/ui/tasks/{task_id}/move", headers=h, data={"csrf": c, "state": "cancelled", "note": "nvm"})
     assert tasks.get_task(hub.conn(), task_id)["state"] == "cancelled"
     bad = hub.client.post(f"/ui/tasks/{task_id}/move", headers=h, data={"csrf": c, "state": "open"})
@@ -248,3 +248,77 @@ def test_static_assets_served(hub):
     r = hub.client.get("/ui/static/htmx-2.0.11.min.js")
     assert r.status_code == 200 and "htmx" in r.text[:200]
     assert hub.client.get("/ui/static/app.js").status_code == 200
+
+
+def test_route_inventory_has_member_routes(hub):
+    routes = ui_routes(hub.client.app)
+    assert ("POST", "/ui/tasks/{task_id}/agents") in routes
+    assert ("POST", "/ui/tasks/{task_id}/agents/{agent_id}/remove") in routes
+    assert ("POST", "/ui/tasks/{task_id}/agents/{agent_id}/update") in routes
+
+
+def test_dashboard_member_routes_require_csrf_and_operator(world):
+    hub, agent, ids = world
+    rev = hub.enroll("rev")
+    base = f"/ui/tasks/{ids['task_id']}/agents"
+    form = {"agent": "rev", "role": "Reviewer", "stage": "reviews"}
+    calls = [(base, form), (f"{base}/{agent.id}/update", {"role": "x", "stage": "works"}),
+             (f"{base}/{agent.id}/remove", {})]
+    for path, data in calls:
+        no_csrf = hub.client.post(path, headers=hub.op_headers(), data=data, follow_redirects=False)
+        assert no_csrf.status_code == 403, path
+        bad = hub.client.post(path, headers=hub.op_headers(), data={**data, "csrf": "nope"}, follow_redirects=False)
+        assert bad.status_code == 403, path
+        no_op = hub.client.post(path, headers=agent.headers, data={**data, "csrf": hub.csrf()}, follow_redirects=False)
+        assert no_op.status_code == 403, path
+    got = tasks.get_task(hub.conn(), ids["task_id"])
+    assert [m["agent_id"] for m in got["agents"]] == [agent.id] and got["agents"][0]["role"] == ""
+    assert rev.id not in [m["agent_id"] for m in got["agents"]]
+
+
+def test_dashboard_adds_updates_removes_members(world):
+    hub, agent, ids = world
+    rev = hub.enroll("rev")
+    h, c = hub.op_headers(), hub.csrf()
+    base = f"/ui/tasks/{ids['task_id']}/agents"
+    r = hub.client.post(base, headers=h, follow_redirects=False,
+                        data={"csrf": c, "agent": "rev", "role": "Reviewer: check the rate limiter",
+                              "stage": "reviews"})
+    assert r.status_code == 303
+    members = {m["agent_id"]: m for m in tasks.get_task(hub.conn(), ids["task_id"])["agents"]}
+    assert members[rev.id]["role"] == "Reviewer: check the rate limiter" and members[rev.id]["stage"] == "reviews"
+    bad = hub.client.post(base, headers=h, data={"csrf": c, "agent": "rev", "role": "x", "stage": "bogus"})
+    assert bad.status_code in (409, 422)
+    long = hub.client.post(base, headers=h, data={"csrf": c, "agent": "rev", "role": "x" * 201, "stage": "works"})
+    assert long.status_code == 422
+    hub.client.post(f"{base}/{rev.id}/update", headers=h, data={"csrf": c, "role": "Tester", "stage": "works"})
+    m = [m for m in tasks.get_task(hub.conn(), ids["task_id"])["agents"] if m["agent_id"] == rev.id][0]
+    assert (m["role"], m["stage"]) == ("Tester", "works")
+    hub.client.post(f"{base}/{rev.id}/remove", headers=h, data={"csrf": c})
+    assert [m["agent_id"] for m in tasks.get_task(hub.conn(), ids["task_id"])["agents"]] == [agent.id]
+    page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=h)
+    assert page.status_code == 200
+
+
+def test_dashboard_adds_reviewer_with_role(world):
+    hub, agent, ids = world
+    rev = hub.enroll("rev")
+    hub.client.post(f"/ui/tasks/{ids['task_id']}/agents", headers=hub.op_headers(),
+                    data={"csrf": hub.csrf(), "agent": "rev", "role": "Reviewer: check the rate limiter",
+                          "stage": "reviews"})
+    agents = tasks.get_task(hub.conn(), ids["task_id"])["agents"]
+    assert any(m["agent_id"] == rev.id and m["role"] == "Reviewer: check the rate limiter" for m in agents)
+
+
+def test_verdict_notes_are_escaped(world):
+    hub, agent, ids = world
+    rev = hub.enroll("rev")
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.add_agent(conn, ids["task_id"], rev.id, role="R", stage="reviews", actor=OPERATOR)
+        conn.execute("UPDATE tasks SET state = 'review' WHERE id = ?", (ids["task_id"],))
+        task_agents.record_verdict(conn, ids["task_id"], store.get_agent(conn, rev.id), verdict="approve",
+                                   notes="<script>alert(1)</script>")
+    page = hub.client.get(f"/ui/tasks/{ids['task_id']}", headers=hub.op_headers()).text
+    assert "&lt;script&gt;" in page and "<script>alert(1)" not in page
+    assert "agent content" in page

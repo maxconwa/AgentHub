@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from agenthub.hub import approvals, db, events, store, tasks
+from agenthub.hub import approvals, db, events, store, task_agents, tasks
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
@@ -101,6 +101,12 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
             return f"task #{p.get('task_id')}: " + " · ".join(snippet(i.get("text")) for i in p.get("items", [])[:3])
         if t == "task.transitioned":
             return f"task #{p.get('task_id')} {p.get('from')} → {p.get('to')} {snippet(p.get('note'))}"
+        if t == "task.assigned":
+            return f"task #{p.get('task_id')} assigned to {who(p.get('agent_id'), names) if p.get('agent_id') else 'nobody'}"
+        if t.startswith("task.agent_"):
+            return f"task #{p.get('task_id')} {t.removeprefix('task.').replace('_', ' ')}: {who(p.get('agent_id'), names)}"
+        if t == "task.verdict":
+            return f"task #{p.get('task_id')} verdict {p.get('verdict')} by {who(p.get('agent_id'), names)}"
         return f"task #{p.get('task_id')} {snippet(p.get('title') or p.get('outcome') or '')}".strip()
     if t.startswith("approval."):
         return f"approval #{p.get('approval_id')} {p.get('kind') or ''} {p.get('status') or ''} {snippet(p.get('body'))}"
@@ -245,13 +251,37 @@ def build_router() -> APIRouter:
         history = [events.row_to_event(r) for r in rows]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active" and t["project"] in a["allowed_projects"]]
         return render(request, operator, "task.html", conn, t=t, history=history, runs=tasks.list_runs(conn, task_id),
-                      usage=tasks.usage(conn, task_id), moves=operator_moves(t["state"]), agents=agents)
+                      usage=tasks.usage(conn, task_id), moves=operator_moves(t["state"]), agents=agents,
+                      terminal=t["state"] in tasks.TERMINAL)
 
     @router.post("/tasks/{task_id}/assign")
     def task_assign(task_id: int, request: Request, operator: PostOp, conn: Conn,
                     assignee: Annotated[str, Form(max_length=64)] = "") -> Response:
         with db.transaction(conn):
             tasks.assign(conn, task_id, assignee or None, actor=operator.actor)
+        return done(request, f"/ui/tasks/{task_id}")
+
+    @router.post("/tasks/{task_id}/agents")
+    def task_agent_add(task_id: int, request: Request, operator: PostOp, conn: Conn,
+                       agent: Annotated[str, Form(min_length=1, max_length=64)],
+                       stage: Annotated[str, Form(max_length=16)],
+                       role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)] = "") -> Response:
+        with db.transaction(conn):
+            task_agents.add_agent(conn, task_id, agent, role=role, stage=stage, actor=operator.actor)
+        return done(request, f"/ui/tasks/{task_id}")
+
+    @router.post("/tasks/{task_id}/agents/{agent_id}/remove")
+    def task_agent_remove(task_id: int, agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:
+        with db.transaction(conn):
+            task_agents.remove_agent(conn, task_id, agent_id, actor=operator.actor)
+        return done(request, f"/ui/tasks/{task_id}")
+
+    @router.post("/tasks/{task_id}/agents/{agent_id}/update")
+    def task_agent_update(task_id: int, agent_id: str, request: Request, operator: PostOp, conn: Conn,
+                          role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)],
+                          stage: Annotated[str, Form(max_length=16)]) -> Response:
+        with db.transaction(conn):
+            task_agents.update_agent(conn, task_id, agent_id, actor=operator.actor, role=role, stage=stage)
         return done(request, f"/ui/tasks/{task_id}")
 
     @router.post("/tasks/{task_id}/move")

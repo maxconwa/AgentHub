@@ -4,7 +4,7 @@
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
 <h1>#{{ t.id }} {{ t.title }} {{ chip(t.state) }}</h1>
-<p class="muted">{{ t.project }} · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }} · assigned to {{ t.assignee_name or 'nobody' }}</p>
+<p class="muted">{{ t.project }} · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
 {% if t.last_note %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}
@@ -27,15 +27,39 @@
     <div class="buttons wrap">{% for m in moves %}<button type="submit" name="state" value="{{ m }}" class="{{ 'approve' if m == 'done' else ('reject' if m == 'cancelled' else '') }}">{{ m.replace('_', ' ') }}</button>{% endfor %}</div>
   </form>
 </section>
-<section class="panel">
-  <h3>Assign</h3>
-  <form method="post" action="/ui/tasks/{{ t.id }}/assign" class="inline">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <select name="assignee"><option value="">Unassigned</option>{% for ag in agents %}<option value="{{ ag.name }}" {{ 'selected' if ag.id == t.assignee else '' }}>{{ ag.name }}</option>{% endfor %}</select>
-    <button type="submit">Assign</button>
-  </form>
-</section>
 {% endif %}
+
+<section class="panel">
+  <h3>Agents</h3>
+  {% if not t.agents %}<p class="muted">Nobody yet.</p>{% endif %}
+  {% for m in t.agents %}
+  <div class="member">
+    <p><strong>{{ m.name }}</strong> · {{ m.stage }}{% if m.finished_at %} · finished {{ ago(m.finished_at) }}{% endif %}{% if m.verdict %} · verdict: {{ m.verdict }}{% endif %}{% if m.paused_until %} · paused until {{ m.paused_until }}{% endif %}</p>
+    {% if m.verdict_notes %}{{ agent_text(m.verdict_notes, m.agent_id, names) }}{% endif %}
+    {% if not terminal %}
+    <form method="post" action="/ui/tasks/{{ t.id }}/agents/{{ m.agent_id }}/update" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input name="role" value="{{ m.role }}" maxlength="200" placeholder="Role">
+      <select name="stage"><option value="works" {{ 'selected' if m.stage == 'works' else '' }}>works</option><option value="reviews" {{ 'selected' if m.stage == 'reviews' else '' }}>reviews</option></select>
+      <button type="submit">Update</button>
+    </form>
+    <form method="post" action="/ui/tasks/{{ t.id }}/agents/{{ m.agent_id }}/remove" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="reject">Remove</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% if not terminal %}
+  <form method="post" action="/ui/tasks/{{ t.id }}/agents" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <select name="agent">{% for ag in agents %}<option value="{{ ag.name }}">{{ ag.name }}</option>{% endfor %}</select>
+    <input name="role" maxlength="200" placeholder="Role (e.g. Reviewer: check the rate limiter)">
+    <select name="stage"><option value="works">works</option><option value="reviews">reviews</option></select>
+    <button type="submit">Add agent</button>
+  </form>
+  {% endif %}
+</section>
 
 {% if runs %}
 <h2>Runs</h2>

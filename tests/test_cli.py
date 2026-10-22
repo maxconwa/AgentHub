@@ -27,3 +27,33 @@ def test_enroll_and_approve_via_cli(tmp_path):
     assert len(code) == 14
     assert runner.invoke(app, ["hub", "project", "list"]).stdout.split()[::1][:1] == ["alpha"]
     assert runner.invoke(app, ["hub", "agents", "approve", "ghost"]).exit_code == 1
+
+
+def test_cli_add_and_remove_agent(tmp_path):
+    from agenthub.cli import _hub_conn
+    from agenthub.hub import db, store, tasks
+    from agenthub.hub.store import Device
+
+    runner = CliRunner()
+    runner.invoke(app, ["hub", "init", "--no-systemd"])
+    code = runner.invoke(app, ["hub", "enroll", "--projects", "alpha"]).stdout.strip().splitlines()[0]
+    conn = _hub_conn()
+    with db.transaction(conn):
+        agent, _ = store.redeem_enrollment(conn, code=code, name="rev", device=Device("n1", "host", "100.64.0.9"))
+        conn.execute("UPDATE agents SET status = 'active' WHERE id = ?", (agent.id,))
+    created = runner.invoke(app, ["hub", "tasks", "create", "alpha", "T"])
+    assert created.exit_code == 0, created.output
+    r = runner.invoke(app, ["hub", "tasks", "add-agent", "1", "rev", "--role", "Reviewer: check x",
+                            "--stage", "reviews"])
+    assert r.exit_code == 0, r.output
+    got = tasks.get_task(conn, 1)
+    assert [(m["name"], m["role"], m["stage"]) for m in got["agents"]] == [("rev", "Reviewer: check x", "reviews")]
+    assert "rev(Reviewer: check x)" in runner.invoke(app, ["hub", "tasks", "list"]).output
+    bad = runner.invoke(app, ["hub", "tasks", "add-agent", "1", "rev", "--role", "r", "--stage", "bogus"])
+    assert bad.exit_code != 0
+    assert runner.invoke(app, ["hub", "tasks", "remove-agent", "1", "rev"]).exit_code == 0
+    assert tasks.get_task(conn, 1)["agents"] == []
+    assert runner.invoke(app, ["hub", "tasks", "remove-agent", "1", "rev"]).exit_code == 1
+    c2 = runner.invoke(app, ["hub", "tasks", "create", "alpha", "U", "--assignee", "rev", "--role", "Builder"])
+    assert c2.exit_code == 0, c2.output
+    assert tasks.get_task(conn, 2)["agents"][0]["role"] == "Builder"

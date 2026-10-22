@@ -38,7 +38,7 @@
       {% for t in items %}
       <li class="card"><a class="card-link" href="/ui/tasks/{{ t.id }}">
         <div class="row"><strong>#{{ t.id }} {{ t.title }}</strong></div>
-        <div class="row muted"><span>{{ t.project }} · {{ t.assignee_name or 'unassigned' }}</span><span>{{ ago(t.updated_at) }}</span></div>
+        <div class="row muted"><span>{{ t.project }} · {% for m in t.agents %}{{ m.name }}{% if not loop.last %}, {% endif %}{% else %}unassigned{% endfor %}</span><span>{{ ago(t.updated_at) }}</span></div>
       </a></li>
       {% endfor %}
     </ul>
