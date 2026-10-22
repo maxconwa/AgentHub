@@ -177,7 +177,9 @@ the project can read it.
 on the board; both just wait in the inbox until the agent next looks. **Prompt**
 sits beside them and wakes the agents now, so it starts Claude sessions that use
 your subscription. If you prompt one agent, its runner starts right away, or as
-soon as its current session ends, before any new task session. If you prompt
+soon as its current session ends, before any new task session. The prompt also
+shows in the agent's private chat, labelled with its number, but it is not
+delivered as mail: a busy agent's current session never acts on it early. If you prompt
 several agents (a task, a project, a machine), they talk it over in a shared
 thread, weigh who is free and what each machine has, and each claims its share
 as a task that is already approved (it came from you), assigned to that agent

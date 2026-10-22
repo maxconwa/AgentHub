@@ -1728,9 +1728,11 @@ def test_panel_shows_the_targets_latest_three_prompts(window):
     hub, a, c, r, t, ap, q = window
     ids = [make_prompt(hub, f"agent:{a.id}", body=f"number {i}")["id"] for i in range(4)]
     html = panel(hub, f"agent:{a.id}").text
-    shown = [int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', html)]
+    section = html.split("<h3>Prompts</h3>")[1].split("</section>")[0]
+    chat = html.split("<h3>Private chat</h3>")[1].split("</section>")[0]
+    shown = [int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', section)]
     assert sorted(set(shown), reverse=True) == ids[:0:-1]
-    section = html.split("<h3>Prompts</h3>")[1]
+    assert {int(x) for x in re.findall(r'href="/ui/prompts/(\d+)"', chat)} == set(ids)  # the copies, labelled
     assert "number 3" in section and "number 1" in section and "number 0" not in section
     assert not re.findall(r'href="/ui/prompts/', panel(hub, "project:proj").text)
 

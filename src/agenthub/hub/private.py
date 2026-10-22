@@ -8,6 +8,10 @@ full-text index never holds the text, and project-scoped event queries
 
 An author is ``human:<login>`` (the operator) or the agent's own id; the API
 derives it from the caller's token, so an agent writes only in its own chat.
+
+A prompt's copy (``prompt_id`` set) shows the prompt in the chat but is never
+delivered to the agent as unread mail: its prompt session acts on it, and a busy
+agent's running session must not pick it up early from the inbox.
 """
 
 from __future__ import annotations
@@ -22,13 +26,16 @@ from agenthub.hub.store import Agent, Forbidden, Invalid, NotFound, get_agent
 MAX_BODY_CHARS = 4000
 
 _SELECT = (
-    "SELECT p.id, p.agent_id, p.author, a.name AS author_name, p.body, p.ts, p.read_at "
+    "SELECT p.id, p.agent_id, p.author, a.name AS author_name, p.body, p.ts, p.read_at, p.prompt_id "
     "FROM private_messages p LEFT JOIN agents a ON a.id = p.author "
 )
 
 
-def send(conn: sqlite3.Connection, agent_id: str, *, author: str, body: str) -> dict[str, Any]:
-    """Add a message to ``agent_id``'s chat, from the operator or from that agent."""
+def send(
+    conn: sqlite3.Connection, agent_id: str, *, author: str, body: str, prompt_id: int | None = None
+) -> dict[str, Any]:
+    """Add a message to ``agent_id``'s chat, from the operator or from that agent; ``prompt_id`` marks the
+    operator's copy of that prompt (shown in the chat, never unread mail)."""
     if not body.strip() or len(body) > MAX_BODY_CHARS:
         raise Invalid(f"a private message must be 1 to {MAX_BODY_CHARS} characters")
     agent = get_agent(conn, agent_id)
@@ -43,18 +50,23 @@ def send(conn: sqlite3.Connection, agent_id: str, *, author: str, body: str) -> 
     else:
         raise Forbidden("an agent may only write in its own private chat")
     ts = now_iso()
-    cur = conn.execute("INSERT INTO private_messages (agent_id, author, body, ts) VALUES (?, ?, ?, ?)",
-                       (agent.id, author, body, ts))
+    if prompt_id is not None and sender != "operator":
+        raise Forbidden("only the operator's messages can carry a prompt")
+    cur = conn.execute("INSERT INTO private_messages (agent_id, author, body, ts, prompt_id) VALUES (?, ?, ?, ?, ?)",
+                       (agent.id, author, body, ts, prompt_id))
     events.emit(conn, type="private.sent", actor=author,
                 payload={"message_id": cur.lastrowid, "agent_id": agent.id, "from": sender})
-    return {"id": cur.lastrowid, "agent_id": agent.id, "author": author, "body": body, "ts": ts}
+    return {"id": cur.lastrowid, "agent_id": agent.id, "author": author, "body": body, "ts": ts,
+            "prompt_id": prompt_id}
 
 
 def unread_for_agent(
     conn: sqlite3.Connection, agent: Agent, *, mark_read: bool, limit: int | None = None
 ) -> list[dict[str, Any]]:
-    """The operator's messages to ``agent`` it hasn't read yet, oldest first (at most ``limit``)."""
-    sql = _SELECT + "WHERE p.agent_id = ? AND p.author LIKE 'human:%' AND p.read_at IS NULL ORDER BY p.id"
+    """The operator's messages to ``agent`` it hasn't read yet, oldest first (at most ``limit``); prompt copies
+    never count."""
+    sql = (_SELECT + "WHERE p.agent_id = ? AND p.author LIKE 'human:%' AND p.read_at IS NULL "
+           "AND p.prompt_id IS NULL ORDER BY p.id")
     params: list[Any] = [agent.id]
     if limit is not None:
         sql += " LIMIT ?"

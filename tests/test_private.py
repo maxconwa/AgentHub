@@ -59,7 +59,7 @@ def test_migration_10_creates_private_messages(hub):
     conn = hub.conn()
     assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 10
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(private_messages)")}
-    assert cols == {"id", "agent_id", "author", "body", "ts", "read_at"}
+    assert cols == {"id", "agent_id", "author", "body", "ts", "read_at", "prompt_id"}  # prompt_id: migration 15
     assert any(r["name"] for r in conn.execute("PRAGMA index_list(private_messages)"))
 
 

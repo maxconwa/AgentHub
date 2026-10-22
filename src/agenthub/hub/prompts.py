@@ -180,8 +180,8 @@ def create(conn: sqlite3.Connection, *, target: str, body: str, actor: str) -> d
             store.post_message(conn, author=actor, project=project, channel=f"prompt-{pid}", body=body)
             thread = f"board:ch-{project}~prompt-{pid}"
         conn.execute("UPDATE prompts SET thread = ? WHERE id = ?", (thread, pid))
-    for a in live:  # the agent's private chat shows the prompt too
-        private.send(conn, a["id"], author=actor, body=_labeled(pid, body, private.MAX_BODY_CHARS))
+    for a in live:  # the agent's private chat shows the prompt too (tagged: never unread mail)
+        private.send(conn, a["id"], author=actor, body=_labeled(pid, body, private.MAX_BODY_CHARS), prompt_id=pid)
     events.emit(conn, type="prompt.created", actor=actor, project=project,
                 payload={"prompt_id": pid, "mode": mode, "status": status, "agents": [a["id"] for a in live],
                          "skipped": [a["id"] for a in offline]})

@@ -73,7 +73,7 @@ def trio(hub):
 
 def test_migration_14_creates_prompt_tables(hub):
     conn = hub.conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 14
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 14
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(prompts)")}
     assert cols == {"id", "target", "body", "mode", "project", "thread", "status", "created_by", "created_at",
                     "finished_at"}
@@ -87,6 +87,51 @@ def test_migration_14_creates_prompt_tables(hub):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO prompts (target, body, mode, status, created_by, created_at) "
                      "VALUES ('agent:x', 'b', 'many', 'pending', 'h', 'x')")
+
+
+def _db_at(path, version):
+    """A database migrated up to ``version`` only (as a deployed hub would have it)."""
+    conn = db.connect(path)
+    for v, script in enumerate(db.MIGRATIONS[:version], start=1):
+        conn.executescript(f"BEGIN;{script}PRAGMA user_version = {v};COMMIT;")
+    return conn
+
+
+def _seed_v13(conn):
+    conn.execute("INSERT INTO agents (id, name, device_name, device_ip, device_node_id, token_hash, status, "
+                 "created_at, connected) VALUES ('ag1', 'alice', 'box', '100.64.0.9', 'n1', 'h', 'active', 'x', 1)")
+    conn.execute("INSERT INTO private_messages (agent_id, author, body, ts) "
+                 "VALUES ('ag1', 'human:op@example.com', 'Prompt #1: typed by hand', '2026-01-01T00:00:00.000000Z')")
+
+
+def test_migrations_from_v0_1_0_schema_13(tmp_path):
+    conn = _db_at(tmp_path / "hub.sqlite3", 13)
+    _seed_v13(conn)
+    assert db.migrate(conn) == len(db.MIGRATIONS)
+    (m,) = conn.execute("SELECT * FROM private_messages").fetchall()
+    assert m["prompt_id"] is None and m["read_at"] is None  # an ordinary message stays unread mail
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_migration_15_tags_prompt_copies_made_at_schema_14(tmp_path):
+    conn = _db_at(tmp_path / "hub.sqlite3", 14)
+    _seed_v13(conn)
+    op = "human:op@example.com"
+    for pid in (1, 12):
+        conn.execute("INSERT INTO prompts (id, target, body, mode, status, created_by, created_at) "
+                     "VALUES (?, 'agent:ag1', 'b', 'single', 'pending', ?, '2026-02-01T00:00:00.000000Z')", (pid, op))
+        conn.execute("INSERT INTO prompt_recipients (prompt_id, agent_id, status, updated_at) "
+                     "VALUES (?, 'ag1', 'pending', 'x')", (pid,))
+    for body in ("Prompt #12: b", "Prompt #1: b", "Prompt #1 is odd"):
+        conn.execute("INSERT INTO private_messages (agent_id, author, body, ts) "
+                     "VALUES ('ag1', ?, ?, '2026-02-01T00:00:00.000001Z')", (op, body))
+    conn.execute("INSERT INTO private_messages (agent_id, author, body, ts) "
+                 "VALUES ('ag1', 'ag1', 'Prompt #1: b', '2026-02-01T00:00:01.000000Z')")
+    assert db.migrate(conn) == len(db.MIGRATIONS)
+    tags = [(r["body"], r["prompt_id"]) for r in conn.execute("SELECT * FROM private_messages ORDER BY id")]
+    # the hand-typed message predates prompt #1; the agent's own message is never a prompt copy
+    assert tags == [("Prompt #1: typed by hand", None), ("Prompt #12: b", 12), ("Prompt #1: b", 1),
+                    ("Prompt #1 is odd", None), ("Prompt #1: b", None)]
 
 
 # --- create ------------------------------------------------------------------------------------------
@@ -224,6 +269,30 @@ def test_private_chat_copy_for_each_live_recipient(trio):
         chat = private.thread(hub.conn(), agent.id)
         assert [(m["author"], m["body"]) for m in chat] == [(OPERATOR, f"Prompt #{p['id']}: {p['body']}")]
     assert private.thread(hub.conn(), c.id) == []
+
+
+def test_private_copy_is_not_unread_mail_for_a_busy_agent(trio):
+    """A busy agent's running task session must not get the prompt early from its inbox (the Stop hook peeks
+    with addressed_only, read_inbox reads); the prompt session itself is where it acts. The chat still shows it."""
+    hub, a, b, c = trio
+    t = mk_task(hub, a)
+    online(hub, a)
+    conn = hub.conn()
+    with db.transaction(conn):
+        tasks.transition(conn, t["id"], "claimed", actor=OPERATOR, role="operator")
+        tasks.transition(conn, t["id"], "in_progress", actor=OPERATOR, role="operator")
+        tasks.start_run(conn, t["id"], store.get_agent(conn, a.id))  # busy: a task session is running
+    with db.transaction(conn):
+        private.send(conn, a.id, author=OPERATOR, body="a plain note")
+    p = create(hub, f"agent:{a.id}")
+    for query in ("?peek=true&addressed_only=true", "?peek=true", ""):
+        got = hub.client.get(f"/api/v1/inbox{query}", headers=a.headers).json()["messages"]
+        assert [m["body"] for m in got if m["kind"] == "private"] == ["a plain note"], query
+        assert SECRET not in json.dumps(got)
+    chat = private.thread(hub.conn(), a.id)
+    assert [m["prompt_id"] for m in chat] == [None, p["id"]]
+    html = hub.client.get(f"/ui/chats/{a.id}", headers=hub.op_headers()).text
+    assert SECRET in html and f'href="/ui/prompts/{p["id"]}"' in html
 
 
 def test_long_private_copy_is_truncated_with_a_pointer(trio):

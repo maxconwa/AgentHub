@@ -360,6 +360,17 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX prompt_recipients_agent ON prompt_recipients(agent_id, status);
     """,
+    # 15: a prompt's copy in the agent's private chat is tagged with its prompt and never delivered as unread
+    # mail (the prompt session acts on it, not a busy task session); copies made at schema 14 are tagged too
+    """
+    ALTER TABLE private_messages ADD COLUMN prompt_id INTEGER REFERENCES prompts(id);
+    UPDATE private_messages SET prompt_id = (
+        SELECT p.id FROM prompts p JOIN prompt_recipients r ON r.prompt_id = p.id
+        WHERE r.agent_id = private_messages.agent_id AND p.created_by = private_messages.author
+        AND private_messages.ts >= p.created_at
+        AND substr(private_messages.body, 1, length('Prompt #' || p.id || ': ')) = 'Prompt #' || p.id || ': '
+    ) WHERE author LIKE 'human:%' AND body LIKE 'Prompt #%';
+    """,
 ]
 
 
