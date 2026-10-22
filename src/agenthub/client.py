@@ -102,6 +102,29 @@ class HubClient:
     async def withdraw_question(self, question_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/questions/{question_id}/withdraw")
 
+    # --- prompts from the operator ----------------------------------------------
+
+    async def pending_prompts(self) -> list[dict[str, Any]]:
+        """Prompts this agent still has to act on (``pending``, or ``running`` to resume after a restart)."""
+        return (await self._request("GET", "/prompts/pending"))["prompts"]
+
+    async def get_prompt(self, prompt_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/prompts/{prompt_id}")
+
+    async def start_prompt(self, prompt_id: int) -> dict[str, Any]:
+        return await self._request("POST", f"/prompts/{prompt_id}/start")
+
+    async def finish_prompt(self, prompt_id: int, ok: bool, note: str = "") -> dict[str, Any]:
+        return await self._request("POST", f"/prompts/{prompt_id}/finish", json={"ok": ok, "note": note})
+
+    async def claim_share(self, prompt_id: int, title: str, body: str = "", project: str | None = None
+                          ) -> dict[str, Any]:
+        payload = {"title": title, "body": body, "project": project}
+        return await self._request("POST", f"/prompts/{prompt_id}/claim", json=payload)
+
+    async def decline_share(self, prompt_id: int, reason: str) -> dict[str, Any]:
+        return await self._request("POST", f"/prompts/{prompt_id}/decline", json={"reason": reason})
+
     # --- board -----------------------------------------------------------------
 
     async def board_list(self, project: str, prefix: str = "") -> list[dict[str, Any]]:

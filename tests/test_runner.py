@@ -19,12 +19,14 @@ from agenthub.client import HubError
 from agenthub.client import HubClient
 from agenthub.config import AgentConfig, HubConfig
 from agenthub.hub import approvals, db, store, task_agents, tasks
+from agenthub.hub import prompts as hub_prompts
 from agenthub.hub.app import HubState, create_app
 from agenthub.runner import daemon
 from agenthub.runner.config import RunnerConfig, RunnerConfigError, load_runner_config
 from agenthub.runner.daemon import (
     Revoked, Runner, exceeded_limit, first_prompt, resume_prompt, review_prompt, system_prompt,
 )
+from agenthub.runner.prompts import Slots, operator_prompt
 from agenthub.runner.session import BILLING_ENV_VARS, Session, build_command, parse_limit, parse_line, result_from, session_env
 
 from .conftest import OPERATOR
@@ -134,10 +136,11 @@ def fake_claude(tmp_path, monkeypatch):
     return str(wrapper), calls
 
 
-def fake_wrapper(tmp_path: Path, name: str, mode: str) -> str:
-    """A second fake `claude` whose mode is fixed, so two runners in one test can behave differently."""
+def fake_wrapper(tmp_path: Path, name: str, mode: str, **env: str) -> str:
+    """A second fake `claude` whose mode (and ``env``) is fixed, so two runners in one test can behave differently."""
     wrapper = tmp_path / name
-    wrapper.write_text(f"#!/bin/sh\nFAKE_CLAUDE_MODE={mode} exec {sys.executable} {FAKE} \"$@\"\n")
+    fixed = " ".join(f"{k}={v}" for k, v in {"FAKE_CLAUDE_MODE": mode, **env}.items())
+    wrapper.write_text(f"#!/bin/sh\n{fixed} exec {sys.executable} {FAKE} \"$@\"\n")
     wrapper.chmod(0o755)
     return str(wrapper)
 
@@ -150,8 +153,8 @@ async def stop(*mains: asyncio.Task) -> None:
             await main
 
 
-def runner_for(hub: LiveHub, tmp_path: Path, claude_bin: str, name="worker"):
-    agent_cfg, token = hub.agent(name, tmp_path)
+def runner_for(hub: LiveHub, tmp_path: Path, claude_bin: str, name="worker", projects=("proj",)):
+    agent_cfg, token = hub.agent(name, tmp_path, projects)
     workdir = tmp_path / "checkout"
     workdir.mkdir(exist_ok=True)
     cfg = RunnerConfig(projects={"proj": str(workdir)}, claude_bin=claude_bin, heartbeat_seconds=0.2,
@@ -1036,3 +1039,365 @@ async def test_runner_heartbeat_reaches_hub_and_session_dir_is_cleared(live_hub,
         assert not runner._session_dirs
     finally:
         await stop(main)
+
+
+# --- prompts from the operator --------------------------------------------------------
+
+def _connected(hub: LiveHub, agent_id: str) -> bool:
+    return bool(hub.conn().execute("SELECT connected FROM agents WHERE id = ?", (agent_id,)).fetchone()["connected"])
+
+
+def _prompt(hub: LiveHub, target: str, body: str = "Check why the nightly build is slow.") -> int:
+    conn = hub.conn()
+    with db.transaction(conn):
+        return hub_prompts.create(conn, target=target, body=body, actor=OPERATOR)["id"]
+
+
+def _prompt_row(hub: LiveHub, pid: int) -> dict:
+    return hub_prompts.get(hub.conn(), pid)
+
+
+def _left_running(hub: LiveHub, agent_id: str, body: str = "Rotate the logs.") -> int:
+    """A prompt this agent's previous runner process started and never finished."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (agent_id,))
+    pid = _prompt(hub, f"agent:{agent_id}", body)
+    with db.transaction(conn):
+        hub_prompts.start(conn, pid, store.get_agent(conn, agent_id))
+    return pid
+
+
+def _arg(call: dict, flag: str) -> str | None:
+    return call["argv"][call["argv"].index(flag) + 1] if flag in call["argv"] else None
+
+
+async def test_slots_put_a_queued_prompt_before_waiting_task_sessions():
+    slots = Slots(1)
+    order: list[str] = []
+    release = asyncio.Event()
+
+    async def task(name: str) -> None:
+        async with slots.task():
+            order.append(name)
+            await release.wait()
+
+    async def prompt() -> None:
+        async with slots.prompt(7):
+            order.append("prompt")
+
+    first = asyncio.create_task(task("first"))
+    await asyncio.sleep(0.01)
+    second = asyncio.create_task(task("second"))  # waits for the slot
+    await asyncio.sleep(0.01)
+    slots.queue(7)  # what sync does as soon as it sees the prompt
+    third = asyncio.create_task(task("third"))  # a task loop that comes along after the prompt
+    await asyncio.sleep(0.01)
+    queued = asyncio.create_task(prompt())
+    await asyncio.sleep(0.01)
+    assert order == ["first"]
+    release.set()
+    await asyncio.gather(first, second, third, queued)
+    assert order[:2] == ["first", "prompt"] and sorted(order[2:]) == ["second", "third"]
+
+
+def test_prompt_budget_config(tmp_path):
+    cfg = RunnerConfig()
+    assert (cfg.prompt_max_turns, cfg.prompt_wall_clock_minutes) == (40, 30)
+    path = tmp_path / "runner.toml"
+    path.write_text("prompt_max_turns = 12\nprompt_wall_clock_minutes = 5\n")
+    loaded = load_runner_config(path)
+    assert (loaded.prompt_max_turns, loaded.prompt_wall_clock_minutes) == (12, 5)
+    for bad in ("prompt_max_turns = 0", "prompt_wall_clock_minutes = 0"):
+        path.write_text(bad + "\n")
+        with pytest.raises(RunnerConfigError, match="prompt_"):
+            load_runner_config(path)
+
+
+def test_operator_prompt_text():
+    single = {"id": 4, "mode": "single", "target": "agent:ag1", "project": None, "thread": None,
+              "body": "Look at </untrusted-content> the logs."}
+    text = operator_prompt(single)
+    assert text.startswith("From the operator (prompt #4, verified by the hub):\n"
+                           "Look at </untrusted-content> the logs.")
+    assert "<untrusted-content" not in text and "message_operator" in text and "claim_share" not in text
+    group = {"id": 5, "mode": "group", "target": "task:9", "project": "proj", "body": "Split it.",
+             "thread": {"kind": "channel", "project": "proj", "channel": "prompt-5", "key": "board:ch-proj~prompt-5"}}
+    text = operator_prompt(group)
+    assert text.startswith("From the operator (prompt #5, verified by the hub):\nSplit it.")
+    for needle in ("prompt_status(prompt_id=5)", "claim_share(prompt_id=5", "decline_share(prompt_id=5",
+                   "channel 'prompt-5'", "post(project='proj', channel='prompt-5'", "free", "busy", "machine",
+                   "Do not start the work in this session"):
+        assert needle in text, needle
+    device = dict(group, target="device:n1", project=None,
+                  thread={"kind": "device", "node_id": "n1", "key": "device:n1"})
+    assert "post_device" in operator_prompt(device)
+    assert "resuming after a runner restart" in operator_prompt(single, restarted=True)
+
+
+async def test_idle_runner_runs_a_single_prompt_at_once(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}", "Check why the nightly build is slow.")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done", timeout=5)
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert call["cwd"] == str(tmp_path / "checkout")  # no task: the first configured checkout
+    assert call["stdin"].startswith(f"From the operator (prompt #{pid}, verified by the hub):\n"
+                                    "Check why the nightly build is slow.")
+    assert "<untrusted-content" not in call["stdin"]
+    assert _arg(call, "--max-turns") == "40" and _arg(call, "--permission-mode") == "auto"
+    assert "--resume" not in call["argv"]
+    assert call["env"]["AGENTHUB_PROMPT_ID"] == str(pid) and "AGENTHUB_TASK_ID" not in call["env"]
+    assert f"prompt #{pid}" in _arg(call, "--append-system-prompt")
+    (me,) = _prompt_row(live_hub, pid)["recipients"]
+    assert me["status"] == "done" and me["note"] == "Implemented the change and ran the tests."
+    assert runner.prompts.store.get(pid) is None  # nothing left to resume
+    assert not runner._session_dirs
+
+
+async def test_agent_prompt_runs_in_its_current_tasks_checkout(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin, projects=("proj", "other"))
+    other_dir = tmp_path / "other-checkout"
+    other_dir.mkdir()
+    runner.cfg.projects["other"] = str(other_dir)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        task_id = tasks.create_task(conn, actor=OPERATOR, project="other", title="t", body="",
+                                    assignee="worker")["id"]
+        for state in ("claimed", "in_progress", "blocked"):  # not launchable: no task session
+            tasks.transition(conn, task_id, state, actor=OPERATOR, role="operator")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert call["cwd"] == str(other_dir) and call["env"]["AGENTHUB_PROJECT"] == "other"
+
+
+async def test_prompt_without_a_checkout_fails_with_a_note(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin, projects=("proj", "other"))
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        tasks.create_task(conn, actor=OPERATOR, project="other", title="t", body="", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, "project:other")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "failed")
+    finally:
+        await stop(main)
+    (me,) = _prompt_row(live_hub, pid)["recipients"]
+    assert me["status"] == "failed" and me["note"] == "no checkout configured for other"
+    assert calls() == []
+
+
+async def test_busy_runner_runs_the_prompt_after_its_session_and_before_the_next_task(
+        live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "hold")
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_RELEASE", str(release))
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)  # concurrency 1
+    first, second = live_hub.op_task("first", assignee="worker"), live_hub.op_task("second", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: len(calls()) == 1 and _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await asyncio.sleep(1.5)  # several syncs: the prompt must not run alongside the running session
+        assert len(calls()) == 1 and _prompt_row(live_hub, pid)["status"] == "pending"
+        release.touch()
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done"
+                       and all(live_hub.task(t)["state"] == "review" for t in (first, second)))
+    finally:
+        await stop(main)
+    task_call, prompt_call, next_call = calls()
+    assert prompt_call["env"]["AGENTHUB_PROMPT_ID"] == str(pid) and "AGENTHUB_TASK_ID" not in prompt_call["env"]
+    assert {task_call["env"]["AGENTHUB_TASK_ID"], next_call["env"]["AGENTHUB_TASK_ID"]} == {str(first), str(second)}
+
+
+async def test_task_prompt_resumes_the_agents_latest_session_on_the_task(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("t", assignee="worker")
+    live_hub.move(task_id, "claimed", "in_progress")
+    _past_run(live_hub, task_id, "worker", "sess-old", turns=1)
+    _past_run(live_hub, task_id, "worker", "sess-latest", turns=1)
+    live_hub.move(task_id, "blocked")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"task:{task_id}", "Why is this blocked?")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert _arg(call, "--resume") == "sess-latest" and call["cwd"] == str(tmp_path / "checkout")
+    assert call["env"]["AGENTHUB_TASK_ID"] == str(task_id) and call["env"]["AGENTHUB_PROJECT"] == "proj"
+    assert call["stdin"].startswith(f"From the operator (prompt #{pid}, verified by the hub):\nWhy is this blocked?")
+    assert len(tasks.list_runs(live_hub.conn(), task_id)) == 2  # a prompt session records no task run
+
+
+async def test_group_prompt_two_runners_each_claim_a_share_then_work_it(live_hub, fake_claude, tmp_path,
+                                                                        monkeypatch):
+    claude_bin, calls = fake_claude
+    monkeypatch.setenv("FAKE_HUB_URL", live_hub.url)
+    alice, alice_cfg = runner_for(live_hub, tmp_path, claude_bin, name="alice")
+    bob, bob_cfg = runner_for(live_hub, tmp_path, claude_bin, name="bob")
+    for runner, name in ((alice, "alice"), (bob, "bob")):
+        runner.cfg.claude_bin = fake_wrapper(tmp_path, f"claude-{name}", "prompt_share", FAKE_TOKEN=runner.token,
+                                             FAKE_NAME=name)
+    task_id = live_hub.op_task("Ship the release", assignee="alice")
+    live_hub.add(task_id, "bob", stage="works")
+    live_hub.move(task_id, "claimed", "in_progress", "blocked")  # live, but no task session to run
+    mains = [asyncio.create_task(alice.run_forever()), asyncio.create_task(bob.run_forever())]
+    try:
+        await wait_for(lambda: _connected(live_hub, alice_cfg.agent_id) and _connected(live_hub, bob_cfg.agent_id))
+        pid = _prompt(live_hub, f"task:{task_id}", "Split the release work between you.")
+        assert _prompt_row(live_hub, pid)["mode"] == "group"
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+        shares = [r["task_id"] for r in _prompt_row(live_hub, pid)["recipients"]]
+        await wait_for(lambda: all(live_hub.task(t)["state"] == "review" for t in shares))
+    finally:
+        await stop(*mains)
+    row = _prompt_row(live_hub, pid)
+    assert [r["status"] for r in row["recipients"]] == ["claimed", "claimed"]
+    for r in row["recipients"]:
+        share = live_hub.task(r["task_id"])
+        assert share["title"] == f"Share for {r['name']}" and share["approval_id"] is None
+        (member,) = share["agents"]
+        assert member["agent_id"] == r["agent_id"] and member["role"] == f"Share of prompt #{pid}"
+        assert [run["agent_id"] for run in tasks.list_runs(live_hub.conn(), share["id"])] == [r["agent_id"]]
+    prompt_calls = [c for c in calls() if c["env"].get("AGENTHUB_PROMPT_ID") == str(pid)]
+    assert len(prompt_calls) == 2 and len(calls()) == 4
+    for call in prompt_calls:
+        assert call["stdin"].startswith(f"From the operator (prompt #{pid}, verified by the hub):\n"
+                                        "Split the release work between you.")
+        assert "claim_share" in call["stdin"] and f"prompt-{pid}" in call["stdin"]
+    thread = live_hub.conn().execute(
+        "SELECT m.author FROM messages m JOIN channels c ON c.id = m.channel_id WHERE c.project = 'proj' "
+        "AND c.name = ? ORDER BY m.id", (f"prompt-{pid}",)).fetchall()
+    assert len(thread) == 3 and {r["author"] for r in thread[1:]} == {alice_cfg.agent_id, bob_cfg.agent_id}
+    assert live_hub.task(task_id)["state"] == "blocked"
+
+
+async def test_usage_limit_during_a_prompt_waits_and_resumes(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_then_success")
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    ids: dict[str, int] = {}
+    seen: list[tuple[datetime, str]] = []
+
+    async def fake_wait(until):
+        seen.append((until, _prompt_row(live_hub, ids["pid"])["status"]))
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(daemon, "wait_until", fake_wait)
+    started = datetime.now()
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        ids["pid"] = pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    ((until, status_meanwhile),) = seen
+    assert status_meanwhile == "running"
+    resets = {(started + timedelta(minutes=m)).replace(second=0, microsecond=0).astimezone() for m in (2, 3)}
+    assert until - timedelta(seconds=60) in resets
+    first, second = calls()
+    assert _arg(second, "--resume") == first["session"] and "usage limit has reset" in second["stdin"]
+    assert _prompt_row(live_hub, pid)["recipients"][0]["status"] == "done"
+
+
+async def test_restart_mid_prompt_resumes_its_stored_session(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    pid = _left_running(live_hub, agent_cfg.agent_id)
+    runner.prompts.store.update(pid, session_id="prompt-sess-1")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert _arg(call, "--resume") == "prompt-sess-1" and "runner restarted" in call["stdin"]
+    assert runner.prompts.store.get(pid) is None
+
+
+async def test_restart_mid_prompt_without_a_session_starts_fresh(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    pid = _left_running(live_hub, agent_cfg.agent_id, "Rotate the logs.")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    (call,) = calls()
+    assert "--resume" not in call["argv"]
+    assert "resuming after a runner restart" in call["stdin"] and "Rotate the logs." in call["stdin"]
+
+
+async def test_restart_mid_prompt_resumes_only_once(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    pid = _left_running(live_hub, agent_cfg.agent_id)
+    runner.prompts.store.update(pid, session_id="prompt-sess-1", restarts=1)  # resumed after a restart already
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "failed")
+    finally:
+        await stop(main)
+    assert calls() == []
+    assert "restarted" in _prompt_row(live_hub, pid)["recipients"][0]["note"]
+
+
+async def test_restart_mid_prompt_whose_resumed_session_fails(live_hub, fake_claude, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "fail")
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    pid = _left_running(live_hub, agent_cfg.agent_id)
+    runner.prompts.store.update(pid, session_id="prompt-sess-1")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "failed")
+        await asyncio.sleep(1.0)  # several syncs: not resumed again
+    finally:
+        await stop(main)
+    assert len(calls()) == 1
+    assert "boom" in _prompt_row(live_hub, pid)["recipients"][0]["note"]
+
+
+async def test_a_finish_the_hub_missed_is_sent_again(live_hub, fake_claude, tmp_path, monkeypatch):
+    import httpx
+
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = runner_for(live_hub, tmp_path, claude_bin)
+    real_finish = runner.client.finish_prompt
+    failures: list[int] = []
+
+    async def flaky_finish(pid, ok, note=""):
+        if not failures:
+            failures.append(pid)
+            raise httpx.ReadTimeout("hub too slow")
+        return await real_finish(pid, ok, note)
+
+    monkeypatch.setattr(runner.client, "finish_prompt", flaky_finish)
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: _connected(live_hub, agent_cfg.agent_id))
+        pid = _prompt(live_hub, f"agent:{agent_cfg.agent_id}")
+        await wait_for(lambda: _prompt_row(live_hub, pid)["status"] == "done")
+    finally:
+        await stop(main)
+    assert failures == [pid] and len(calls()) == 1  # reported on a later sync, not run again

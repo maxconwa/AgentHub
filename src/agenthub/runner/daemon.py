@@ -29,6 +29,8 @@
   nor blocks. A pause left by a previous runner process is waited out too.
 * Streams progress (assistant text snippets and tool calls) to the hub as
   ``task.progress`` events.
+* Runs the operator's prompts (``runner/prompts.py``): a pending prompt takes the next free session slot,
+  before any new task session; a running session is never interrupted.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import AgentConfig
 from agenthub.runner.config import RunnerConfig
+from agenthub.runner.prompts import PromptRunner, Slots
 from agenthub.runner.session import Session, SessionResult, build_command
 
 log = logging.getLogger("agenthub.runner")
@@ -59,6 +62,7 @@ CLOSE_REVOKED = 4401
 BUDGET_POLL_SECONDS = 5
 TASK_EVENTS = {"task.created", "task.transitioned", "task.assigned", "task.budget_extended",
                "task.agent_added", "task.agent_updated"}
+PROMPT_EVENTS = {"prompt.created", "prompt.updated"}
 LAUNCHABLE = {"works": ("open", "claimed", "in_progress"), "reviews": ("review",)}
 RUN_STATE = {"works": "in_progress", "reviews": "review"}
 # A reviewer run that ended like this is this review round's run; the reviewer is not relaunched for it.
@@ -72,6 +76,13 @@ LIMIT_MARGIN_SECONDS = 60
 async def wait_until(until: datetime) -> None:
     """Sleep until ``until`` (aware). Cancelling the waiting task cancels the sleep."""
     await asyncio.sleep(max((until - datetime.now(UTC)).total_seconds(), 0))
+
+
+def limit_until(resets_at: datetime | None) -> datetime:
+    """When to go on after the usage limit: a minute past its reset, or ``LIMIT_FALLBACK_SECONDS`` from now."""
+    if resets_at is not None:
+        return resets_at + timedelta(seconds=LIMIT_MARGIN_SECONDS)
+    return datetime.now(UTC) + timedelta(seconds=LIMIT_FALLBACK_SECONDS)
 
 
 class Revoked(Exception):
@@ -187,7 +198,7 @@ class _Work:
 class Runner:
     def __init__(self, agent: AgentConfig, cfg: RunnerConfig, client: HubClient, *, token: str) -> None:
         self.agent, self.cfg, self.client, self.token = agent, cfg, client, token
-        self.slots = asyncio.Semaphore(cfg.concurrency)
+        self.slots = Slots(cfg.concurrency)
         self.work: dict[int, _Work] = {}
         self.warned_projects: set[str] = set()
         self._wake = asyncio.Event()
@@ -199,6 +210,7 @@ class Runner:
         self._waited_out: dict[int, datetime] = {}
         # Working directories of the sessions running now, oldest first (dicts keep insertion order).
         self._session_dirs: dict[Session, str] = {}
+        self.prompts = PromptRunner(self)
 
     # --- main loop ---------------------------------------------------------------
 
@@ -258,7 +270,7 @@ class Runner:
             self._wake.set()
         elif msg.get("type") == "event":
             event = msg["event"]
-            if event["type"] in TASK_EVENTS:
+            if event["type"] in TASK_EVENTS or event["type"] in PROMPT_EVENTS:
                 self._wake.set()
             elif event["type"] == "approval.decided":
                 waiter = self._approval_events.get(event["data"].get("approval_id"))
@@ -278,7 +290,13 @@ class Runner:
     # --- picking up work ---------------------------------------------------------
 
     async def sync(self) -> None:
-        """Start work on tasks we are a member of and not running here (the launch check filters further)."""
+        """Start work on this agent's pending prompts, then on tasks we are a member of and not running here (the
+        launch check filters further). Prompts come first so that they hold the next slot before any task loop
+        starts."""
+        try:
+            await self.prompts.sync()
+        except (HubError, httpx.HTTPError) as exc:
+            log.warning("could not fetch prompts: %s", exc)
         me = await self.client.me()
         for project in me["allowed_projects"]:
             for state in ("open", "claimed", "in_progress", "review"):
@@ -450,7 +468,7 @@ class Runner:
                             system_prompt=system_prompt(self.agent.name, task, me),
                             resume_session=resume_session, extra_args=self.cfg.extra_args,
                             permission_mode=self.cfg.permission_mode)
-        async with self.slots:
+        async with self.slots.task():
             run = await self.client.start_run(task["id"])
             buffer: list[dict[str, str]] = []
 
@@ -512,10 +530,7 @@ class Runner:
 
     async def _pause_for_limit(self, task_id: int, resets_at: datetime | None) -> None:
         """The subscription usage limit was hit: pause until it resets, without touching the task's state."""
-        if resets_at is not None:
-            until = resets_at + timedelta(seconds=LIMIT_MARGIN_SECONDS)
-        else:
-            until = datetime.now(UTC) + timedelta(seconds=LIMIT_FALLBACK_SECONDS)
+        until = limit_until(resets_at)
         local = until.astimezone()
         when = f"{local:%H:%M}" if local.date() == datetime.now().astimezone().date() else f"{local:%a %H:%M}"
         # Hub or transport errors here must not block the task (e.g. removed meanwhile: the next check drops it).
@@ -524,6 +539,12 @@ class Runner:
             task_id, [{"kind": "limit", "text": f"paused for the usage limit until {when}"}]))
         log.info("task %s: usage limit reached; paused until %s", task_id, local.isoformat(timespec="minutes"))
         await self._wait_out_pause(task_id, until)
+
+    async def wait_for_limit_reset(self, resets_at: datetime | None, *, what: str) -> None:
+        """Wait out the usage limit for a session that is not a task's (``what``: e.g. a prompt's)."""
+        until = limit_until(resets_at)
+        log.info("%s: usage limit reached; waiting until %s", what, until.astimezone().isoformat(timespec="minutes"))
+        await wait_until(until)
 
     async def _wait_out_pause(self, task_id: int, until: datetime) -> None:
         await wait_until(until)
@@ -583,6 +604,7 @@ class Runner:
 
     async def shutdown(self) -> None:
         self._stopping = True
+        await self.prompts.shutdown()
         for work in list(self.work.values()):
             if work.session:
                 await work.session.stop()

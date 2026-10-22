@@ -18,3 +18,5 @@ example-project = "/home/agent/src/example-project"
 # permission_wait_seconds = 600   # how long a live permission request waits for you
 # progress_flush_seconds = 5
 # sync_seconds = 60
+# prompt_max_turns = 40           # budget of one session on an operator's prompt
+# prompt_wall_clock_minutes = 30
