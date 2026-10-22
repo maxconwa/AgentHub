@@ -502,6 +502,7 @@ def test_pause_endpoint_sets_paused_until(hub):
     assert [m for m in resp.json()["agents"] if m["agent_id"] == a.id][0]["paused_until"] is None
     assert post(hub, a, f"{t['id']}/pause", until="not a time").status_code == 422
     assert post(hub, a, f"{t['id']}/pause", until="2030-01-01T00:00:00").status_code == 422  # no zone
+    assert post(hub, a, f"{t['id']}/pause", until="9999-12-31T23:59:59-05:00").status_code == 422  # overflows UTC
     assert post(hub, a, f"{t['id']}/pause", until="z" * 100).status_code == 422
     assert post(hub, x, f"{t['id']}/pause", until=until).status_code == 403
 

@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import uvicorn
 
+from agenthub.client import HubError
 from agenthub.client import HubClient
 from agenthub.config import AgentConfig, HubConfig
 from agenthub.hub import approvals, db, store, task_agents, tasks
@@ -437,6 +438,33 @@ async def test_reviewer_without_verdict_says_so(live_hub, fake_claude, tmp_path)
     assert live_hub.member(task_id, rev_cfg.agent_id)["verdict"] is None
     assert live_hub.task(task_id)["state"] == "review"
     assert len(calls()) == 1  # no relaunch after a run that recorded no verdict
+
+
+async def test_reviewer_whose_end_run_fails_is_not_relaunched(live_hub, fake_claude, tmp_path, monkeypatch):
+    claude_bin, calls = fake_claude
+    reviewer, rev_cfg = runner_for(live_hub, tmp_path, claude_bin, name="rev")
+    live_hub.agent("impl", tmp_path)
+    task_id = live_hub.op_task("t", assignee="impl")
+    live_hub.add(task_id, "rev", stage="reviews")
+    live_hub.move(task_id, "claimed", "in_progress", "review")
+
+    real_end_run = reviewer.client.end_run
+    failed = []
+
+    async def failing_end_run(*args, **kwargs):
+        if not failed:  # the run's own end fails; closing it as orphaned later works
+            failed.append(1)
+            raise HubError(409, "gone")
+        return await real_end_run(*args, **kwargs)
+
+    monkeypatch.setattr(reviewer.client, "end_run", failing_end_run)
+    main = asyncio.create_task(reviewer.run_forever())
+    try:
+        await wait_for(lambda: len(calls()) == 1)
+        await asyncio.sleep(2.0)
+    finally:
+        await stop(main)
+    assert len(calls()) == 1
 
 
 async def test_reviewer_runs_again_in_the_next_review_round(live_hub, fake_claude, tmp_path):

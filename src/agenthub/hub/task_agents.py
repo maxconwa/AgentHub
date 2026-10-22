@@ -144,6 +144,19 @@ def update_agent(
         (current["role"] if role is None else role, current["stage"] if stage is None else stage,
          task_id, agent_id),
     )
+    if stage is not None and stage != current["stage"]:
+        if current["stage"] == "works":
+            conn.execute(
+                "UPDATE task_agents SET finished_at = NULL, finish_note = '' WHERE task_id = ? AND agent_id = ?",
+                (task_id, agent_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE task_agents SET verdict = NULL, verdict_notes = '' WHERE task_id = ? AND agent_id = ?",
+                (task_id, agent_id),
+            )
+        _emit(conn, "updated", task, agent_id, actor)
+        return maybe_advance(conn, task_id, actor=actor)
     return _emit(conn, "updated", task, agent_id, actor)
 
 
@@ -221,7 +234,10 @@ def pause(
             raise Invalid("until must be an RFC 3339 timestamp") from None
         if parsed.tzinfo is None:
             raise Invalid("until must include a time zone offset")
-        stored = now_iso(parsed)
+        try:
+            stored = now_iso(parsed)
+        except OverflowError:
+            raise Invalid("until is out of range") from None
     conn.execute(
         "UPDATE task_agents SET paused_until = ? WHERE task_id = ? AND agent_id = ?",
         (stored, task_id, agent.id),

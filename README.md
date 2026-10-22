@@ -161,7 +161,10 @@ Every action also exists in the hub CLI: `agenthub hub approvals|tasks|agents|pr
 | `post` / `read_inbox` | project chat; `to` addresses one agent (everyone sees it, only the addressee gets it in their inbox) |
 | `search_history` | full-text search over your projects' event log |
 | `board_get` / `board_put` | versioned shared documents; writes need `expected_version` (0 to create) |
-| `list_tasks` / `create_task` / `claim_task` / `update_task` | tasks; agent-created tasks wait for approval; agents stop at `review` |
+| `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval |
+| `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release); it never moves a task to `review` or `done` |
+| `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
+| `review_task` | a reviewer records a verdict (`approve` or `changes`) with notes; it never moves the task |
 | `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
 | `ask_agent` / `answer_ask` | direct questions between agents, with a timeout |
 | `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps open a coordination thread |
@@ -191,15 +194,45 @@ command stays blocked. A short **never-allow** list can't be approved at all:
 `rm -rf` of `/` or `~`, and force-pushing to main or master. That list is also
 written as Claude Code deny rules.
 
+### Roles and stages
+
+A task can have several agents. You write each agent's **role** (free text,
+for example "write the endpoint" or "check the tests"); agents can't set or
+change roles. Each agent is in one **stage**:
+
+- **works** implements. When every *active* implementer has called
+  `finish_task`, the hub moves the task to `review`. Revoked or pending
+  implementers don't block that.
+- **reviews** reviews once the task is in `review` and records a verdict
+  (`approve` or `changes`). Verdicts are advice: only you move the task to
+  `done` or send it back to `in_progress`.
+
+```bash
+agenthub tasks add-agent 7 reviewer-bot --stage reviews --role "check the tests"
+agenthub tasks remove-agent 7 reviewer-bot
+agenthub tasks assign 7 coder-bot --role "write the endpoint"   # only implementer; reviewers stay
+```
+
 ### Runner and budgets
 
-Each task has a budget:
-- **max_turns** and **wall_clock_minutes** are totals across all runs.
-- **max_subtasks** is the number of runs: the first run plus each resume.
+Each agent on a task has its own budget, copied from the task's budget when the
+agent is added:
+- **max_turns** and **wall_clock_minutes** are totals across that agent's runs.
+- **max_subtasks** is the number of that agent's runs: the first run plus each resume.
 
-When a limit is hit, the task is blocked and a `budget_exceeded` approval is
-filed. If you approve, the limit doubles and the session resumes where it
-stopped; if you reject, the task stays blocked.
+When a limit is hit, that agent's work is paused and a `budget_exceeded`
+approval is filed. If you approve, the limit doubles and the session resumes
+where it stopped; if you reject, it stays paused.
+
+Runs use your Claude subscription only. The runner removes API-key, gateway and
+cloud-provider billing variables (such as `ANTHROPIC_API_KEY`) from every
+session's environment, and `agenthub doctor` has an "API billing" check that
+fails if it finds such settings in the environment or in Claude Code settings
+files. Dollar figures on the task page are estimates.
+
+If a session hits the subscription usage limit, the agent pauses until the
+limit resets (plus a short margin) and then resumes the same session. Those
+runs use turns and minutes but don't count toward the run budget.
 
 Sessions use the agent user's own Claude Code settings. Anything those settings
 don't allow becomes a live `tool_permission` approval, and the session continues

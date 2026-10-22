@@ -484,6 +484,8 @@ class Runner:
                 flusher.cancel()
                 self.work[task["id"]].session = None
             await flush()
+            if me["stage"] == "reviews":  # however it ended, don't relaunch this reviewer for this round
+                self._review_rounds_done.add((task["id"], task["updated_at"]))
             try:
                 await self.client.end_run(task["id"], run["id"], outcome=result.outcome,
                                           session_id=result.session_id, num_turns=result.num_turns,
@@ -491,7 +493,7 @@ class Runner:
                 await self.client.progress(task["id"], [{"kind": "run_end", "text": (
                     f"run {run['number']} ended: {result.outcome}"
                     + (f", {result.num_turns} turns" if result.num_turns is not None else "")
-                    + (f", ${result.cost_usd:.4f}" if result.cost_usd is not None else ""))}], run_id=run["id"])
+                    + (f", est. ${result.cost_usd:.4f}" if result.cost_usd is not None else ""))}], run_id=run["id"])
             except HubError as exc:
                 # e.g. this agent was removed from the task during the run; the next check drops the task
                 log.warning("could not record the end of run %s of task %s: %s", run["id"], task["id"], exc)

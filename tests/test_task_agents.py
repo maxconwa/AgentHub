@@ -395,3 +395,54 @@ def test_operator_unclaim_keeps_reviewers(hub):
     got = tasks.get_task(hub.conn(), t["id"])
     assert got["state"] == "open"
     assert [m["stage"] for m in got["agents"]] == ["reviews"]
+
+
+def test_stage_change_can_complete_the_implementers_part(hub):
+    t = running(hub, "a", "b")
+    fin(hub, t, "a")
+    _tx(hub, task_agents.update_agent, t["id"], "b", actor=OPERATOR, stage="reviews")
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_stage_change_clears_the_old_stages_fields(hub):
+    t = running(hub, "a", "b", "c")
+    fin(hub, t, "a")
+    _tx(hub, task_agents.update_agent, t["id"], "a", actor=OPERATOR, stage="reviews")
+    a = [m for m in tasks.get_task(hub.conn(), t["id"])["agents"] if m["name"] == "a"][0]
+    assert a["finished_at"] is None and a["finish_note"] == ""
+    _tx(hub, tasks.transition, t["id"], "review", actor=OPERATOR, role="operator")
+    verdict(hub, t, "a", "approve", "ok")
+    _tx(hub, task_agents.update_agent, t["id"], "a", actor=OPERATOR, stage="works")
+    a = [m for m in tasks.get_task(hub.conn(), t["id"])["agents"] if m["name"] == "a"][0]
+    assert a["verdict"] is None and a["verdict_notes"] == ""
+
+
+def test_operator_unblock_advances_when_remaining_implementers_finished(hub):
+    t = running(hub, "a", "b")
+    fin(hub, t, "a")
+    _tx(hub, tasks.transition, t["id"], "blocked", actor=OPERATOR, role="operator")
+    _tx(hub, task_agents.remove_agent, t["id"], "b", actor=OPERATOR)
+    assert _state(hub, t["id"]) == "blocked"
+    _tx(hub, tasks.transition, t["id"], "in_progress", actor=OPERATOR, role="operator")
+    assert _state(hub, t["id"]) == "review"
+
+
+def test_release_with_only_revoked_implementers_left_reopens(hub):
+    t = running(hub, "a", "b", reviews=("r",))
+    b = _agent(hub, "b")
+    hub.set_status(type("C", (), {"id": b.id})(), "revoked")
+    a = _agent(hub, "a")
+    _tx(hub, tasks.transition, t["id"], "open", actor=a.id, role="agent", agent=a)
+    assert _state(hub, t["id"]) == "open"
+
+
+def test_claim_allowed_when_only_reviewers_remain(hub):
+    t = running(hub, "a", reviews=("r",))
+    a = _agent(hub, "a")
+    _tx(hub, tasks.transition, t["id"], "open", actor=a.id, role="agent", agent=a)
+    hub.enroll("c")
+    c = _agent(hub, "c")
+    _tx(hub, tasks.transition, t["id"], "claimed", actor=c.id, role="agent", agent=c)
+    got = tasks.get_task(hub.conn(), t["id"])
+    assert got["state"] == "claimed"
+    assert sorted((m["name"], m["stage"]) for m in got["agents"]) == [("c", "works"), ("r", "reviews")]

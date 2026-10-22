@@ -202,7 +202,7 @@ def transition(
     if role == "agent":
         if agent is None:
             raise Invalid("agent role requires the acting agent")
-        if new_state == "claimed" and not task["agents"]:
+        if new_state == "claimed" and not any(m["stage"] == "works" for m in task["agents"]):
             task_agents.add_agent(conn, task_id, agent.id, role="", stage="works", actor=actor)
         else:
             _require_member(task, agent, "works")
@@ -210,8 +210,11 @@ def transition(
     if released:
         assert agent is not None
         task_agents.remove_agent(conn, task_id, agent.id, actor=actor, advance=False)
-        if any(m["stage"] == "works" and m["agent_id"] != agent.id for m in task["agents"]):
-            # other implementers remain: only the membership changed (this may complete their part)
+        if any(
+            m["stage"] == "works" and m["status"] == "active" and m["agent_id"] != agent.id
+            for m in task["agents"]
+        ):
+            # other active implementers remain: only the membership changed (this may complete their part)
             return task_agents.maybe_advance(conn, task_id, actor=actor)
     elif new_state == "open" and current in ("claimed", "in_progress", "blocked"):
         for m in task["agents"]:  # operator unclaim: implementers leave, reviewers stay
@@ -236,6 +239,9 @@ def transition(
         payload={"task_id": task_id, "from": current, "to": new_state, "note": note,
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
+    if new_state == "in_progress" and current != "review":
+        # an unblock may find every remaining implementer already finished
+        return task_agents.maybe_advance(conn, task_id, actor=actor)
     return fresh
 
 
