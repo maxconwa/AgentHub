@@ -1867,3 +1867,32 @@ def test_agent_page_and_panel_show_the_reported_model(busy):
         conn.execute("UPDATE agents SET model = 'claude-opus-5-5' WHERE id = ?", (a.id,))
     assert "claude-opus-5-5" in get(hub, f"/ui/agents/{a.id}").text
     assert "claude-opus-5-5" in panel(hub, f"agent:{a.id}").text
+
+
+# --- logo ---------------------------------------------------------------------------
+
+
+def test_every_page_shows_the_fishbowl_logo_and_tab_icon(hub):
+    html = hub.client.get("/ui/dashboard", headers=hub.op_headers()).text
+    assert '<link rel="icon" type="image/svg+xml" href="/ui/static/fishbowl.svg">' in html
+    assert '<link rel="apple-touch-icon" href="/ui/static/fishbowl-192.png">' in html
+    assert '<img class="brand-icon" src="/ui/static/fishbowl.svg"' in html and 'alt="agenthub"' in html
+    for path, kind in (("/ui/static/fishbowl.svg", "image/svg+xml"), ("/ui/static/fishbowl-32.png", "image/png"),
+                       ("/ui/static/fishbowl-192.png", "image/png")):
+        r = hub.client.get(path, headers=hub.op_headers())
+        assert r.status_code == 200 and r.headers["content-type"].startswith(kind), path
+
+
+def test_logo_files_match_their_generator():
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("fishbowl", root / "scripts" / "fishbowl.py")
+    fishbowl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fishbowl)
+    art = fishbowl.draw()
+    static = root / "src" / "agenthub" / "hub" / "static"
+    assert (static / "fishbowl.svg").read_text() == fishbowl.svg(art)
+    assert (static / "fishbowl-32.png").read_bytes() == fishbowl.png(art, 1)
+    assert "<script" not in fishbowl.svg(art)

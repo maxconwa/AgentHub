@@ -38,7 +38,8 @@ code, .pre, .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 
 
 header.top { position: sticky; top: 0; z-index: 10; background: var(--surface); border-bottom: 1px solid var(--line);
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 8px 16px; }
-.brand { font-weight: 700; color: var(--text); text-decoration: none; }
+.brand { font-weight: 700; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; flex: none; }
+.brand-icon { display: block; width: 36px; height: 36px; image-rendering: pixelated; }
 nav { display: flex; flex-wrap: wrap; gap: 2px; max-width: 100%; }
 nav a { padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--muted); white-space: nowrap; }
 nav a.active { color: var(--text); background: var(--chip); font-weight: 600; }
