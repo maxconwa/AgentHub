@@ -761,6 +761,18 @@ def test_permission_mode_is_validated(tmp_path):
             load_runner_config(path)
 
 
+@pytest.mark.parametrize("arg", ["--permission-mode", "--permission-mode=bypassPermissions",
+                                 "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+                                 "--permission-prompt-tool", "--permission-prompt-tool=mcp__x__y"])
+def test_extra_args_cannot_change_permissions(tmp_path, arg):
+    path = tmp_path / "runner.toml"
+    path.write_text(f'extra_args = ["--model", "x", "{arg}", "bypassPermissions"]\n')
+    with pytest.raises(RunnerConfigError, match="extra_args"):
+        load_runner_config(path)
+    path.write_text('extra_args = ["--model", "x"]\n')
+    assert load_runner_config(path).extra_args == ["--model", "x"]
+
+
 def test_parse_limit():
     now = datetime(2026, 10, 21, 14, 0)  # a Wednesday, local time
     assert parse_limit("You've hit your session limit · resets 3:45pm", now) == (True, datetime(2026, 10, 21, 15, 45))

@@ -126,6 +126,7 @@ def check_api_billing(cwd: Path, project_dirs: list[Path] | tuple[Path, ...] = (
     return Check("API billing", OK, "no API key, gateway or cloud provider settings found")
 
 
+# Only this file is checked: no managed-settings.d drop-ins, no macOS path.
 MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 
 

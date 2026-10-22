@@ -16,6 +16,10 @@ class RunnerConfigError(Exception):
 # `bypassPermissions` is deliberately absent: agenthub never runs sessions with permission checks off.
 PERMISSION_MODES = ("acceptEdits", "auto", "manual", "dontAsk", "plan")
 
+# extra_args may not set or loosen the permission mode; use `permission_mode` instead.
+FORBIDDEN_EXTRA_ARGS = ("--permission-mode", "--dangerously-skip-permissions",
+                        "--allow-dangerously-skip-permissions", "--permission-prompt-tool")
+
 
 @dataclass
 class RunnerConfig:
@@ -58,6 +62,10 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
     if cfg.permission_mode not in PERMISSION_MODES:
         raise RunnerConfigError(f"permission_mode must be one of {', '.join(PERMISSION_MODES)} "
                                 f"(got {cfg.permission_mode!r}; bypassPermissions is not allowed)")
+    for arg in cfg.extra_args:
+        if isinstance(arg, str) and arg.startswith(FORBIDDEN_EXTRA_ARGS):
+            raise RunnerConfigError(f"extra_args may not contain {arg!r}: set permission_mode instead "
+                                    "(permission-bypass and permission-prompt flags are not allowed)")
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):
         raise RunnerConfigError("[projects] must map project names to directory paths")
     return cfg
