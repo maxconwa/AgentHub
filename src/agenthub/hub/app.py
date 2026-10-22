@@ -27,6 +27,9 @@ from agenthub.hub.limits import BodySizeLimit
 from agenthub.hub.ratelimit import RateLimiter
 from agenthub.hub.tailscale import TailscaleWhois, Whois
 
+# KaTeX's fonts under /ui/static: not every system's mime table knows woff2.
+mimetypes.add_type("font/woff2", ".woff2")
+
 MAX_MESSAGE_CHARS = 16_000
 MAX_BOARD_VALUE_CHARS = 32_000
 MAX_COMMAND_CHARS = 8_000
@@ -250,7 +253,6 @@ def create_app(state: HubState) -> FastAPI:
     from agenthub.hub import dashboard
 
     app.include_router(dashboard.build_router())
-    mimetypes.add_type("font/woff2", ".woff2")  # KaTeX's fonts; not every system's mime table knows it
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)

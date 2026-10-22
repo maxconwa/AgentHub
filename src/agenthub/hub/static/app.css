@@ -361,6 +361,9 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .mreadonly { padding: 0 12px max(12px, env(safe-area-inset-bottom, 0px)); margin: 8px 0 0; }
 
 /* Markdown (markdown.render) and math (KaTeX, typeset by app.js) */
+/* Rendered text paints only inside its own box: KaTeX can place output anywhere (\kern, \smash, \rlap),
+   which must not land on the operator's buttons or widen the page. */
+.md, .agent-text { overflow: hidden; contain: paint; }
 .md { overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
@@ -380,7 +383,7 @@ a.icon-btn { display: inline-grid; place-items: center; text-decoration: none; c
 .md-rest { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
 .md .math.inline { display: inline; margin: 0; }  /* not the forms' .inline row */
 .math.display { display: block; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
-.math .katex-error { color: var(--bad); }  /* KaTeX's own inline colour is blocked by the CSP */
+.math.katex-error { color: var(--bad); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
 .math .katex { overflow-wrap: normal; }
 .math .katex-display { margin: 0.3em 0; }
 .decision-note { margin: 4px 0 8px; padding-left: 10px; border-left: 3px solid var(--line); }

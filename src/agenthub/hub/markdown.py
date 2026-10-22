@@ -2,7 +2,8 @@
 
 CommonMark plus tables and strikethrough, with raw HTML off (every ``<`` in the source is shown as text).
 Links are kept only for ``http:``, ``https:`` and ``mailto:``; any other link (``javascript:``, ``data:``,
-relative) stays plain text, and every kept link opens in a new tab without a referrer. Images become links,
+relative) stays plain text, and every kept link opens in a new tab without a referrer, with its real
+destination as its title. Images become links,
 so agent text never makes the browser fetch anything. ``$…$`` and ``$$…$$`` become ``.math`` elements holding
 the TeX as escaped text, which static/app.js typesets with the vendored KaTeX (``trust: false``).
 
@@ -33,7 +34,10 @@ class _SafeMarkdown(MarkdownIt):
 
 
 def _link_open(self, tokens, idx, options, env) -> str:
-    tokens[idx].attrs.update(LINK_ATTRS)
+    """The title is the real destination (link text can claim any URL); the author's own title is dropped."""
+    token = tokens[idx]
+    href = str(token.attrGet("href") or "")
+    token.attrs = {"href": href, "title": href, **LINK_ATTRS}
     return self.renderToken(tokens, idx, options, env)
 
 
@@ -43,7 +47,7 @@ def _image(self, tokens, idx, options, env) -> str:
     src = str(token.attrGet("src") or "")
     text = self.renderInlineAsText(token.children or [], options, env) or src
     attrs = "".join(f' {k}="{v}"' for k, v in LINK_ATTRS.items())
-    return f'<a href="{escapeHtml(src)}"{attrs}>{escapeHtml(text)}</a>'
+    return f'<a href="{escapeHtml(src)}" title="{escapeHtml(src)}"{attrs}>{escapeHtml(text)}</a>'
 
 
 def _cell_open(self, tokens, idx, options, env) -> str:

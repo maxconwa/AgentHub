@@ -69,18 +69,22 @@ def test_safe_links_get_rel_and_target():
                        ("<http://example.com>", "http://example.com"),
                        ("[me](mailto:op@example.com)", "mailto:op@example.com")]:
         html = markdown.render(text)
-        assert f'<a href="{href}" target="_blank" rel="noopener noreferrer nofollow">' in html, html
+        assert f'<a href="{href}" title="{href}" target="_blank" rel="noopener noreferrer nofollow">' in html, html
 
 
-def test_link_title_attribute_is_escaped():
-    html = markdown.render('[x](https://e.com "a\\" onclick=\\"b")')
-    assert "onclick=\"" not in html and 'rel="noopener noreferrer nofollow"' in html
+def test_link_title_shows_the_real_destination():
+    """Link text can claim anything; hovering shows where it really goes (the author's own title is dropped)."""
+    html = markdown.render('[https://bank.example](https://evil.example/?a="b"&c "a\\" onclick=\\"b")')
+    assert ('<a href="https://evil.example/?a=%22b%22&amp;c" title="https://evil.example/?a=%22b%22&amp;c" '
+            'target="_blank" rel="noopener noreferrer nofollow">https://bank.example</a>') in html, html
+    assert "onclick" not in html
 
 
 def test_images_render_as_links():
     html = markdown.render('![a <b> chart](https://example.com/c.png "t")')
     assert "<img" not in html
-    assert ('<a href="https://example.com/c.png" target="_blank" rel="noopener noreferrer nofollow">'
+    assert ('<a href="https://example.com/c.png" title="https://example.com/c.png" target="_blank" '
+            'rel="noopener noreferrer nofollow">'
             "a &lt;b&gt; chart</a>") in html
 
 
@@ -247,6 +251,21 @@ def test_katex_files_served_with_content_types(hub):
 
 def test_app_js_renders_math_with_safe_options(hub):
     js = hub.client.get("/ui/static/app.js").text
-    for opt in ("throwOnError: false", "trust: false", 'strict: "ignore"', "maxExpand: 1000"):
+    for opt in ("throwOnError: true", "trust: false", 'strict: "ignore"', "maxExpand: 1000", "maxSize: 10"):
         assert opt in js
     assert "katex.render(" in js and "renderToString" not in js and "htmx.onLoad" in js
+    # Invalid TeX: our own error display (no KaTeX renderError, whose inline style the CSP blocks).
+    assert 'classList.add("katex-error")' in js and "el.textContent = tex" in js
+
+
+def css_rule(css, selector):
+    m = re.search(r"^" + re.escape(selector) + r"\s*\{([^}]*)\}", css, re.M)
+    return m.group(1) if m else ""
+
+
+def test_rendered_markdown_is_clipped_to_its_box(hub):
+    """KaTeX can position output anywhere (\\kern, \\smash, \\rlap): nothing paints outside the text's box."""
+    css = hub.client.get("/ui/static/app.css").text
+    rule = css_rule(css, ".md, .agent-text")
+    assert "overflow: hidden" in rule and "contain: paint" in rule
+    assert "overflow-x: auto" in css_rule(css, ".math.display")  # wide display math scrolls inside its own box

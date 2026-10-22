@@ -7,6 +7,8 @@
   // with the vendored KaTeX, on load and in everything HTMX swaps in (live regions, the panel, the chat
   // window). katex.render builds DOM nodes and sets their styles through the CSSOM, which the CSP
   // (style-src 'self') allows; KaTeX's HTML-string output carries inline style="" attributes it would block.
+  // Invalid TeX throws and is shown as its source here, since KaTeX's own error display sets an inline
+  // style. app.css clips .md and .agent-text, so \kern, \smash or \rlap can't paint outside them.
   function typeset(root) {
     if (!window.katex || !root || !root.querySelectorAll) return;
     root.querySelectorAll(".math:not([data-typeset])").forEach(function (el) {
@@ -15,10 +17,12 @@
       try {
         katex.render(tex, el, {
           displayMode: el.classList.contains("display"),
-          throwOnError: false, trust: false, strict: "ignore", maxExpand: 1000,
+          throwOnError: true, trust: false, strict: "ignore", maxExpand: 1000, maxSize: 10,
         });
       } catch (e) {
-        el.textContent = tex;  // left as the TeX source
+        el.textContent = tex;
+        el.classList.add("katex-error");
+        el.title = e && e.message ? String(e.message) : "Invalid TeX";
       }
     });
   }
