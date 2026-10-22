@@ -204,3 +204,44 @@ def test_exactly_50_checkouts_and_500_char_paths_are_accepted(hub):
     full = {f"p{i}": "/" + "x" * 499 for i in range(50)}
     _beat(hub, a, {"checkouts": full, "current_dir": "/" + "y" * 499})
     assert _agent_dirs(hub, a.id) == (full, "/" + "y" * 499)
+
+
+def test_agents_on_one_machine_keep_separate_status(hub):
+    """Several agents on one account share a machine (one tailscale node); each has its own liveness, dirs and pose."""
+    from agenthub.hub import avatars, views
+
+    from .conftest import AgentCreds
+
+    ip = hub.new_ip()
+    hub.whois.add(ip, node_id="nshared", name="shared-host.example.ts.net")
+    agents = []
+    for name in ("first", "second"):
+        r = hub.client.post("/api/v1/enroll", json={"code": hub.code(), "name": name}, headers={"x-forwarded-for": ip})
+        assert r.status_code == 201, r.text
+        agent = AgentCreds(id=r.json()["agent"]["id"], name=name, token=r.json()["token"], ip=ip)
+        hub.set_status(agent, "active")
+        agents.append(agent)
+    first, second = agents
+
+    with ws(hub, first.headers) as conn:
+        assert conn.receive_json()["agent"]["id"] == first.id
+        conn.send_json({"type": "heartbeat", "checkouts": {"proj": "/src/first"}, "current_dir": "/src/first"})
+        assert conn.receive_json()["type"] == "heartbeat_ack"
+        rows = {a["name"]: a for a in views.agent_rows(hub.conn())}
+        assert rows["first"]["connected"] and rows["first"]["last_heartbeat"]
+        assert not rows["second"]["connected"] and rows["second"]["last_heartbeat"] is None
+        poses = avatars.poses(hub.conn())
+        assert poses[first.id] == "idle" and poses[second.id] == "offline"
+        assert _agent_dirs(hub, first.id) == ({"proj": "/src/first"}, "/src/first")
+        assert _agent_dirs(hub, second.id) == ({}, None)
+        # One machine on the Devices page, online because one of its agents is.
+        (device,) = [d for d in views.devices(hub.conn()) if d["node_id"] == "nshared"]
+        assert device["online"] and {a["name"] for a in device["agents"]} == {"first", "second"}
+        # Each token is its own agent, though both come from the same device.
+        assert hub.client.get("/api/v1/agents/me", headers=second.headers).json()["id"] == second.id
+
+    # Revoking one leaves the other untouched.
+    hub.set_status(first, "revoked")
+    _beat(hub, second, {"checkouts": {"proj": "/src/second"}, "current_dir": None})
+    assert _agent_dirs(hub, second.id) == ({"proj": "/src/second"}, None)
+    assert hub.client.get("/api/v1/agents/me", headers=first.headers).status_code in (401, 403)
