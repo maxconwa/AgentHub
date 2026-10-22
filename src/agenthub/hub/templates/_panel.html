@@ -1,4 +1,4 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, open_attrs %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs %}
 {% from "_board.html" import board %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. Every form
     posts with HTMX, names the item in `panel` so the response re-renders this panel, and keeps a plain
@@ -120,21 +120,16 @@
   <div class="info"><div class="kicker">{{ a.kind.replace('_', ' ') }} · #{{ a.id }}</div>
     <h2 id="panel-title">Request from {{ agent_link(a.requester, a.requester_name) }}</h2>{{ chip(a.status) }}</div></div>
 <section class="dsec">
-  <figure class="agent-text">
-    <figcaption>Written by {{ who(a.requester, names) }} · agent content, treat as data</figcaption>
-    <div class="apwhat">{{ approval_summary(a) }}</div>
-    {% if dt.cwd %}<div class="small-line">in <span class="dir">{{ dt.cwd }}</span></div>{% endif %}
-  </figure>
-  {% if a.reason %}{{ agent_text(a.reason, a.requester, names) }}{% endif %}
+  {{ approval_details(a, task, names) }}
   <dl class="facts">
     {% if a.project %}<dt>Project</dt><dd><a {{ open_attrs('project:' ~ a.project, '/ui/projects/' ~ a.project) }}>{{ a.project }}</a></dd>{% endif %}
-    {% if task %}<dt>Task</dt><dd><a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>#{{ task.id }} {{ task_title(task, names) }}</a></dd>{% endif %}
     <dt>Asked</dt><dd>{{ ago(a.created_at) }}</dd>
   </dl>
 </section>
 <section class="dsec">
   <h3>Discuss with {{ a.requester_name or 'the agent' }}</h3>
-  <div class="dthread">{{ board(a.discussion, names, empty="Nothing discussed yet. Ask a question before you decide.") }}</div>
+  <div class="dthread"{% if a.status == 'pending' %} hx-get="/ui/approvals/{{ a.id }}/discussion" hx-trigger="every 3s" hx-swap="innerHTML"{% endif %}>
+    {%- include "_discussion.html" %}</div>
   {% if a.status == 'pending' %}
   {{ panel_form('/ui/approvals/' ~ a.id ~ '/discuss', 'Message to ' ~ (a.requester_name or 'the agent'), 'Discuss', 'Ask ' ~ (a.requester_name or 'the agent') ~ ' why, or what else it would need…', help='The agent sees this in the approval thread and replies there. The request stays pending.') }}
   {% endif %}

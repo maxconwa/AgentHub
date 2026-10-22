@@ -260,6 +260,7 @@ li.card[data-panel]:hover { border-color: var(--muted); }
 .dsec h4 { font-size: 0.9rem; margin-top: 12px; color: var(--muted); }
 .drawer .facts { grid-template-columns: 6.2rem minmax(0, 1fr); gap: 6px 10px; margin: 8px 0 0; }
 .drawer .facts dt { font-size: 0.85rem; }
+.drawer .facts > div { display: contents; }
 .ptask + .ptask { margin-top: 6px; }
 .mlist, .tlinks, .aplist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
 .tlinks li { overflow-wrap: anywhere; }

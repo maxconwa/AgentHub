@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from agenthub.hub import db, private, store, task_agents, tasks, views
+from agenthub.hub import approvals, db, private, store, task_agents, tasks, views
 
 from .conftest import OP_LOGIN, OPERATOR
 
@@ -1105,3 +1105,76 @@ def test_empty_hub_pages_still_render_with_panel_shell(hub):
               "/ui/chats", "/ui/board"):
         r = get(hub, p)
         assert r.status_code == 200 and '<aside id="panel"' in r.text, p
+
+
+# --- Slide-in panel, fix round 1 ------------------------------------------------------------------
+
+
+def test_tool_permission_panel_shows_the_tool_input(side):
+    hub, a, c, r, t, ap, q = side
+    conn = hub.conn()
+    with db.transaction(conn):
+        tp = approvals.request_tool_permission(conn, store.get_agent(conn, a.id), task_id=t["id"], tool_name="Write",
+                                               tool_input={"file_path": "/w/x.py", "content": "print('hi from Write')"})
+    for html in (panel(hub, f"approval:{tp['id']}").text, get(hub, f"/ui/approvals/{tp['id']}").text):
+        assert "print(\\u0027hi from Write\\u0027)" in html and "/w/x.py" in html
+        assert "Raw details" in html and "agent content, treat as data" in html
+        assert f'data-panel="task:{t["id"]}"' in html and "make this exact call once" in html
+
+
+def test_task_create_panel_shows_the_body(side):
+    hub, a, *_ = side
+    conn = hub.conn()
+    with db.transaction(conn):
+        task, tc = approvals.agent_create_task(conn, store.get_agent(conn, a.id), project="proj",
+                                               title="New thing", body=f"Body of the task {EVIL}")
+    for html in (panel(hub, f"approval:{tc['id']}").text, get(hub, f"/ui/approvals/{tc['id']}").text):
+        assert "Body of the task &lt;script&gt;" in html and f'data-panel="task:{task["id"]}"' in html
+        assert "<script>alert" not in html
+
+
+def test_budget_and_enrollment_panels_show_their_details(side):
+    hub, a, c, r, t, ap, q = side
+    b = hub.client.post("/api/v1/approvals", headers=a.headers, json={
+        "kind": "budget_exceeded", "reason": "more", "details": {"task_id": t["id"], "limit": "max_turns"}}).json()
+    html = panel(hub, f"approval:{b['id']}").text
+    assert "max turns" in html and "if approved" in html and "Used so far" in html and "runs" in html
+    p = hub.enroll("newbie", approve=False)
+    en = approvals.pending_enrollment(hub.conn(), p.id)
+    html = panel(hub, f"approval:{en['id']}").text
+    assert "newbie-host.example.ts.net" in html and "100.64.0." in html and "proj" in html
+
+
+def test_panel_rerender_after_commit_falls_back_to_redirect(side):
+    hub, a, *_ = side
+    resp = post_panel(hub, "/ui/projects/proj/notes", "task:9999", body="kept once")
+    assert resp.status_code == 204 and resp.headers["hx-redirect"] == "/ui/dashboard"
+    bodies = [m["body"] for m in store.recent_messages(hub.conn(), project="proj", channel="general")]
+    assert bodies.count("kept once") == 1
+
+
+def test_approval_panel_discussion_polls_without_touching_the_form(side):
+    hub, a, c, r, t, ap, q = side
+    html = panel(hub, f"approval:{ap['id']}").text
+    poller = re.search(r'<div class="dthread"[^>]*hx-get="([^"]+)"[^>]*>', html)
+    assert poller and poller.group(1) == f"/ui/approvals/{ap['id']}/discussion"
+    assert 'hx-trigger="every 3s"' in poller.group(0) and 'hx-swap="innerHTML"' in poller.group(0)
+    assert 'id="thread"' not in html and "<form" not in html.split(poller.group(0))[1].split("</div>\n")[0]
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    assert len(ids) == len(set(ids))
+    frag = get(hub, f"/ui/approvals/{ap['id']}/discussion")
+    assert frag.status_code == 200 and "reply &lt;script&gt;" in frag.text and "agent content, treat as data" in frag.text
+    assert "<html" not in frag.text and "<form" not in frag.text
+    hub.client.post(f"/ui/approvals/{ap['id']}/decide", headers=hub.op_headers(),
+                    data={"csrf": hub.csrf(), "decision": "reject"})
+    assert get(hub, f"/ui/approvals/{ap['id']}/discussion").status_code == 286  # htmx stops polling
+    assert 'hx-trigger="every 3s"' not in panel(hub, f"approval:{ap['id']}").text
+    assert get(hub, "/ui/approvals/9999/discussion").status_code == 404
+
+
+def test_panel_is_a_labelled_modal_dialog(side):
+    after = get(side[0], "/ui/dashboard").text.split("</main>")[1]
+    aside = re.search(r'<aside id="panel"[^>]*>', after).group(0)
+    assert 'role="dialog"' in aside and 'aria-modal="true"' in aside and 'aria-labelledby="panel-title"' in aside
+    for item in ("project:proj", "device:nworker"):
+        assert 'id="panel-title"' in panel(side[0], item).text

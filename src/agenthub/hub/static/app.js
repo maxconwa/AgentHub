@@ -33,6 +33,8 @@
       : openerItem && document.querySelector('main a[data-panel="' + CSS.escape(openerItem) + '"]');
     if (back) back.focus();
     opener = openerItem = null;
+    // Empty it once it has slid out, so nothing inside (an approval thread) keeps polling.
+    setTimeout(function () { if (!panelOpen()) panel.replaceChildren(); }, 400);
   }
 
   if (panel && scrim) {
@@ -58,8 +60,21 @@
       if (evt.key === "Escape" && panelOpen()) { evt.preventDefault(); closePanel(); }
     });
 
+    // A polled thread inside the panel keeps the reader's place unless they were at the newest message.
+    document.addEventListener("htmx:beforeSwap", function (evt) {
+      var th = evt.detail.target;
+      if (th !== panel && panel.contains(th) && th.classList.contains("dthread")) {
+        th.dataset.atEnd = String(th.scrollHeight - th.scrollTop - th.clientHeight < 8);
+      }
+    });
+
     document.addEventListener("htmx:afterSwap", function (evt) {
-      if (evt.detail.target !== panel) return;
+      var th = evt.detail.target;
+      if (th !== panel && panel.contains(th) && th.classList.contains("dthread")) {
+        if (th.dataset.atEnd === "true") th.scrollTop = th.scrollHeight;
+        return;
+      }
+      if (th !== panel) return;
       var posted = evt.detail.requestConfig && evt.detail.requestConfig.verb === "post";
       panel.removeAttribute("inert");
       panel.classList.add("open");

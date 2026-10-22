@@ -1,0 +1,4 @@
+{% from "_board.html" import board %}
+{#- An approval's discussion inside the slide-in panel: the polled region's content (no form in it). -#}
+{{ board(a.discussion, names, empty="Nothing discussed yet. Ask a question before you decide.") }}
+{% if a.awaiting_reply %}<p class="small-line">Waiting for the agent to reply…</p>{% endif %}

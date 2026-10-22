@@ -217,9 +217,16 @@ def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection,
 
 def finish(request: Request, operator: Operator, conn: sqlite3.Connection, panel: str, next: str,
            default: str) -> Response:
-    """After a form post: re-render the panel it came from (HTMX), else redirect (PRG)."""
+    """After a form post: re-render the panel it came from (HTMX), else redirect (PRG).
+
+    The post has already committed, so a panel that can't be rendered (its item is gone) falls back
+    to the redirect rather than an error that would invite posting again.
+    """
     if panel and request.headers.get("hx-request"):
-        return render_panel(request, operator, conn, panel, next)
+        try:
+            return render_panel(request, operator, conn, panel, next)
+        except store.NotFound:
+            pass
     return done(request, safe_next(next) or default)
 
 
@@ -440,6 +447,15 @@ def build_router() -> APIRouter:
     @router.get("/approvals/{approval_id}/thread", response_class=HTMLResponse)
     def approval_thread(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         return render(request, operator, "_thread.html", conn, a=approvals.get(conn, approval_id))
+
+    @router.get("/approvals/{approval_id}/discussion", response_class=HTMLResponse)
+    def approval_discussion(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        """The slide-in panel's discussion thread (it polls this); 286 tells htmx to stop once decided."""
+        a = approvals.get(conn, approval_id)
+        resp = render(request, operator, "_discussion.html", conn, a=a)
+        if a["status"] != "pending":
+            resp.status_code = 286
+        return resp
 
     @router.post("/approvals/{approval_id}/discuss")
     def approval_discuss(approval_id: int, request: Request, operator: PostOp, conn: Conn,

@@ -43,3 +43,38 @@ href="{{ href }}" data-panel="{{ item }}"
 <div class="msg-row"><span class="msg-cap">Task</span>{{ message_button('task:' ~ t.id, 'Message the agents on task #' ~ t.id, next) }}<span class="msg-cap">Project</span>{{ message_button('project:' ~ t.project, 'Message the agents on project ' ~ t.project, next) }}</div>
 {% else %}<div class="small-line">No current task</div>{% endfor %}
 {%- endmacro %}
+
+{# What an approval asks for, by kind: shared by the approval page and its slide-in panel so both show the same
+   facts before a decision. Everything the agent supplied sits inside agent-text figures. #}
+{% macro approval_details(a, task, names) -%}
+{%- set d = a.details -%}
+{%- set by = 'Written by ' ~ who(a.requester, names) ~ ' · agent content, treat as data' -%}
+<figure class="agent-text">
+  <figcaption>{{ by }}</figcaption>
+  <div class="summary big">{{ approval_summary(a) }}</div>
+  {% if a.kind == 'command' %}<div class="small-line">in <code class="dir">{{ d.cwd }}</code></div>
+  {% elif a.kind == 'tool_permission' %}<div class="small-line">Tool input</div><div class="pre">{{ d.input | tojson(indent=2) }}</div>{% endif %}
+</figure>
+{% if task and a.kind == 'task_create' %}{{ agent_text(task.title ~ "\n\n" ~ task.body, task.created_by, names) }}{% endif %}
+{% if a.reason %}{{ agent_text(a.reason, a.requester, names) }}{% endif %}
+<dl class="facts">
+  {% if a.kind in ('tool_permission', 'budget_exceeded', 'task_create') %}
+  <div><dt>Task</dt><dd>{% if task %}<a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>#{{ task.id }} {{ task_title(task, names) }}</a>{% else %}#{{ d.task_id }}{% endif %}</dd></div>
+  {% endif %}
+  {% if a.kind == 'command' %}
+  <div><dt>Effect</dt><dd>If approved, this exact command may run once, from this directory, within an hour.</dd></div>
+  {% elif a.kind == 'tool_permission' %}
+  <div><dt>Effect</dt><dd>The paused headless session may make this exact call once.</dd></div>
+  {% elif a.kind == 'budget_exceeded' %}
+  <div><dt>Limit</dt><dd>{{ d.limit.replace('_', ' ') }}: {{ d.current }} → <strong>{{ d.extend_to }}</strong> if approved</dd></div>
+  <div><dt>Used so far</dt><dd>{{ d.used.runs }} runs · {{ d.used.turns }} turns · {{ d.used.wall_clock_minutes }} min</dd></div>
+  {% elif a.kind == 'task_create' %}
+  <div><dt>Effect</dt><dd>If approved, the task opens{% if d.assignee %} for {{ who(d.assignee, names) }}{% endif %}.</dd></div>
+  {% elif a.kind == 'agent_enrollment' %}
+  <div><dt>Device</dt><dd>{{ d.device.name }} ({{ d.device.ip }})</dd></div>
+  <div><dt>Projects</dt><dd>{{ d.projects | join(', ') or 'none' }}</dd></div>
+  {% endif %}
+</dl>
+<details><summary>Raw details</summary>
+  <figure class="agent-text"><figcaption>{{ by }}</figcaption><div class="pre">{{ d | tojson(indent=2) }}</div></figure></details>
+{%- endmacro %}
