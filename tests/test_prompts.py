@@ -130,10 +130,13 @@ def test_migration_15_tags_prompt_copies_made_at_schema_14(tmp_path):
     conn.execute("INSERT INTO private_messages (agent_id, author, body, ts) "
                  "VALUES ('ag1', 'ag1', 'Prompt #1: b', '2026-02-01T00:00:01.000000Z')")
     assert db.migrate(conn) == len(db.MIGRATIONS)
-    tags = [(r["body"], r["prompt_id"]) for r in conn.execute("SELECT * FROM private_messages ORDER BY id")]
-    # the hand-typed message predates prompt #1; the agent's own message is never a prompt copy
-    assert tags == [("Prompt #1: typed by hand", None), ("Prompt #12: b", 12), ("Prompt #1: b", 1),
-                    ("Prompt #1 is odd", None), ("Prompt #1: b", None)]
+    tags = [(r["body"], r["prompt_id"], r["read_at"] is not None)
+            for r in conn.execute("SELECT * FROM private_messages ORDER BY id")]
+    # the hand-typed message predates prompt #1; the agent's own message is never a prompt copy; copies are read
+    assert tags == [("Prompt #1: typed by hand", None, False), ("Prompt #12: b", 12, True),
+                    ("Prompt #1: b", 1, True), ("Prompt #1 is odd", None, False), ("Prompt #1: b", None, False)]
+    assert conn.execute("SELECT read_at FROM private_messages WHERE prompt_id = 12").fetchone()[0] == (
+        "2026-02-01T00:00:00.000001Z")  # its own ts
 
 
 def test_migration_17_flags_the_hubs_notes_made_at_schema_14(tmp_path):
@@ -329,6 +332,11 @@ def test_private_copy_is_not_unread_mail_for_a_busy_agent(trio):
         assert SECRET not in json.dumps(got)
     chat = private.thread(hub.conn(), a.id)
     assert [m["prompt_id"] for m in chat] == [None, p["id"]]
+    assert chat[1]["read_at"] == chat[1]["ts"]  # stored read: a rolled-back v0.1.0 hub won't deliver it either
+    v010_unread = hub.conn().execute(  # v0.1.0's private.unread_for_agent, which knows no prompt_id
+        "SELECT body FROM private_messages WHERE agent_id = ? AND author LIKE 'human:%' AND read_at IS NULL",
+        (a.id,)).fetchall()
+    assert [r["body"] for r in v010_unread] == []  # the plain note was read by the inbox call above
     html = hub.client.get(f"/ui/chats/{a.id}", headers=hub.op_headers()).text
     assert SECRET in html and f'href="/ui/prompts/{p["id"]}"' in html
 

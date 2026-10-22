@@ -361,7 +361,8 @@ MIGRATIONS: list[str] = [
     CREATE INDEX prompt_recipients_agent ON prompt_recipients(agent_id, status);
     """,
     # 15: a prompt's copy in the agent's private chat is tagged with its prompt and never delivered as unread
-    # mail (the prompt session acts on it, not a busy task session); copies made at schema 14 are tagged too
+    # mail (the prompt session acts on it, not a busy task session); it is stored read too, so a hub rolled back
+    # to v0.1.0 doesn't deliver it either. Copies made at schema 14 are tagged and marked read.
     """
     ALTER TABLE private_messages ADD COLUMN prompt_id INTEGER REFERENCES prompts(id);
     UPDATE private_messages SET prompt_id = (
@@ -370,6 +371,7 @@ MIGRATIONS: list[str] = [
         AND private_messages.ts >= p.created_at
         AND substr(private_messages.body, 1, length('Prompt #' || p.id || ': ')) = 'Prompt #' || p.id || ': '
     ) WHERE author LIKE 'human:%' AND body LIKE 'Prompt #%';
+    UPDATE private_messages SET read_at = COALESCE(read_at, ts) WHERE prompt_id IS NOT NULL;
     """,
     # 16: whether the agent's runner runs prompts (its heartbeat says "prompts": 1; a v0.1.0 runner's doesn't)
     """

@@ -9,9 +9,9 @@ full-text index never holds the text, and project-scoped event queries
 An author is ``human:<login>`` (the operator) or the agent's own id; the API
 derives it from the caller's token, so an agent writes only in its own chat.
 
-A prompt's copy (``prompt_id`` set) shows the prompt in the chat but is never
-delivered to the agent as unread mail: its prompt session acts on it, and a busy
-agent's running session must not pick it up early from the inbox.
+A prompt's copy (``prompt_id`` set, stored already read) shows the prompt in the
+chat but is never delivered to the agent as unread mail: its prompt session acts
+on it, and a busy agent's running session must not pick it up early from the inbox.
 """
 
 from __future__ import annotations
@@ -52,8 +52,10 @@ def send(
     ts = now_iso()
     if prompt_id is not None and sender != "operator":
         raise Forbidden("only the operator's messages can carry a prompt")
-    cur = conn.execute("INSERT INTO private_messages (agent_id, author, body, ts, prompt_id) VALUES (?, ?, ?, ?, ?)",
-                       (agent.id, author, body, ts, prompt_id))
+    # A prompt copy is stored read as well, so a hub rolled back to v0.1.0 (which knows no prompt_id) doesn't
+    # deliver it as mail either.
+    cur = conn.execute("INSERT INTO private_messages (agent_id, author, body, ts, prompt_id, read_at) "
+                       "VALUES (?, ?, ?, ?, ?, ?)", (agent.id, author, body, ts, prompt_id, ts if prompt_id else None))
     events.emit(conn, type="private.sent", actor=author,
                 payload={"message_id": cur.lastrowid, "agent_id": agent.id, "from": sender})
     return {"id": cur.lastrowid, "agent_id": agent.id, "author": author, "body": body, "ts": ts,

@@ -65,6 +65,9 @@ instead of running them.
 
 **Rolling back to v0.1.0:** a v0.1.0 hub rejects unknown keys in `hub.toml`,
 so remove `prompt_discussion_minutes` from it first, or the hub won't start.
+The database needs nothing: the new migrations only add, and the copies of
+prompts in agents' private chats are stored as read, so a v0.1.0 hub won't
+deliver them as mail.
 
 ## Setup
 
