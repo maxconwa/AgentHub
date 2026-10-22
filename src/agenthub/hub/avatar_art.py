@@ -25,7 +25,7 @@ VERSIONS: frozenset[int] = frozenset({1})
 
 POSES: tuple[str, ...] = (
     "idle", "working", "reviewing", "needs_you", "waiting", "talking",
-    "part_done", "recharging", "error", "offline", "janitor",
+    "part_done", "recharging", "error", "failed", "offline", "janitor",
 )
 POSE_LABELS: dict[str, str] = {
     "idle": "idle",
@@ -37,6 +37,7 @@ POSE_LABELS: dict[str, str] = {
     "part_done": "part done",
     "recharging": "recharging",
     "error": "something went wrong",
+    "failed": "failed",
     "offline": "offline",
     "janitor": "janitor at work",
 }
@@ -371,6 +372,8 @@ def _face(c: Canvas, eyes: str, mouth: str) -> None:
         _rect(c, 22, 25, 4, 1, "mouth")
     if mouth == "wavy":
         _pts(c, [(21, 25), (22, 26), (23, 25), (24, 26), (25, 25), (26, 26)], "mouth")
+    if mouth == "frown":
+        _pts(c, [(22, 26), (23, 25), (24, 25), (25, 26)], "mouth")
 
 
 def _depth_for(st: str, x: int) -> int:
@@ -480,6 +483,24 @@ def _make_char(lk: Look, **o: object) -> Canvas:
     return c
 
 
+def _slumped_char(lk: Look, dy: int, **o: object) -> Canvas:
+    """The figure with its head sunk ``dy`` px into its shoulders. Its own path, so the
+    other poses stay byte-identical to the approved sheet."""
+    back = _canvas()
+    _hair_back(back, lk.style)
+    _recolor(back, "hair", "hairS", lambda x, y: x >= 32 and y >= 9)  # what _hair_front does to it in place
+    front = _canvas()
+    _head(front)
+    _face(front, str(o.get("eyes") or "open"), str(o.get("mouth") or "smile"))
+    _hair_front(front, lk.style)
+    _accessory(front, lk.acc)
+    c = _canvas()
+    _blit(c, back, 0, dy)
+    _body(c, lk.top, o)
+    _blit(c, front, 0, dy)
+    return c
+
+
 # --- props --------------------------------------------------------------------------
 
 
@@ -531,7 +552,7 @@ def _filled(draw: Callable[[Canvas], None]) -> Canvas:
     return c
 
 
-# --- the eleven poses ---------------------------------------------------------------
+# --- the poses ---------------------------------------------------------------
 
 
 def _idle(lk: Look) -> list[Layer]:
@@ -683,6 +704,23 @@ def _error(lk: Look) -> list[Layer]:
             Layer(rain, "a-rain", "char", False)]
 
 
+def _failed(lk: Look) -> list[Layer]:
+    ch = _slumped_char(lk, 2, body="sit", l="down", r="down", eyes="x", mouth="frown")
+    sign = _canvas()  # a red warning triangle with a white "!", top left
+    for i in range(10):
+        _rect(sign, 7 - i // 2, 1 + i, 2 + i // 2 * 2, 1, "red")
+    _rect(sign, 7, 4, 2, 4, "paper")
+    _rect(sign, 7, 9, 2, 1, "paper")
+    puff1 = _canvas()  # smoke off the head, top right
+    _ell(puff1, 37, 9, 2.5, 1.8, "greyD")
+    _pts(puff1, [(36, 8), (37, 8)], "grey")
+    puff2 = _canvas()
+    _ell(puff2, 40, 4.5, 1.8, 1.5, "grey")
+    _set(puff2, 40, 5, "greyD")
+    return [Layer(_filled(_floor_band), "", "scene", False), Layer(ch), Layer(sign, "a-warn"),
+            Layer(puff1, "a-smoke1", "char", False), Layer(puff2, "a-smoke2", "char", False)]
+
+
 def _offline(lk: Look) -> list[Layer]:
     ch = _make_char(lk, body="sit", l="lap", r="lap", eyes="closed", mouth="tiny")
     plug = _canvas()
@@ -715,7 +753,7 @@ def _janitor(lk: Look) -> list[Layer]:
 _DRAW: dict[str, Callable[[Look], list[Layer]]] = {
     "idle": _idle, "working": _working, "reviewing": _reviewing, "needs_you": _needs_you, "waiting": _waiting,
     "talking": _talking, "part_done": _part_done, "recharging": _recharging, "error": _error,
-    "offline": _offline, "janitor": _janitor,
+    "failed": _failed, "offline": _offline, "janitor": _janitor,
 }
 _GREY = frozenset({"offline"})
 
@@ -765,6 +803,9 @@ _CLASSES: dict[str, tuple[str, str]] = {
     "a-rain": ("animation:krn .9s steps(3) infinite", "krn"),
     "a-sweep": ("transform-origin:28px 34px;animation:ksp .7s steps(2) infinite alternate", "ksp"),
     "a-puff": ("animation:kbl .7s steps(1) infinite", "kbl"),
+    "a-warn": ("animation:kbl 1s steps(1) infinite", "kbl"),
+    "a-smoke1": ("animation:kz 2s steps(4) infinite", "kz"),
+    "a-smoke2": ("animation:kz 2s steps(4) infinite;animation-delay:-1s", "kz"),
 }
 
 
