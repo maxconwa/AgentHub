@@ -412,6 +412,12 @@ def create_app(state: HubState) -> FastAPI:
             return device_board.post(conn, caller.agent.device_node_id, author=caller.agent.id, body=body.body,
                                      to=body.to, device=caller.device.name)
 
+    @app.get(f"{api}/device/messages")
+    def recent_device_messages(caller: Caller, conn: Conn,
+                               limit: Annotated[int, Query(ge=1, le=200)] = 20) -> dict[str, Any]:
+        """Recent notes on the caller's own machine's board (read-only; never another machine's)."""
+        return {"messages": device_board.recent_for_agent(conn, caller.agent, limit)}
+
     # --- questions to the operator -------------------------------------------
 
     @app.post(f"{api}/projects/{{project}}/questions", status_code=201)

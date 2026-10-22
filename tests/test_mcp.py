@@ -186,3 +186,88 @@ async def test_role_text_is_labeled_operator(mcp_pair, dev_hub):
     assert "roles set by the operator" in outside and "roles set by the operator" not in inside
     assert "(Implementer, works)" in outside and "Implementer" not in inside
     assert "Build it" in inside
+
+
+# --- prompts ---------------------------------------------------------------------------------
+
+def _group_prompt(dev_hub, target="project:proj"):
+    """A group prompt to alice and bob (both online, on one live task in `proj`)."""
+    from agenthub.hub import db, prompts, store, task_agents, tasks
+    conn = dev_hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "proj", actor="human:op")
+        t = tasks.create_task(conn, actor="human:op", project="proj", title="Ship <b>it</b>")
+        for name in ("alice", "bob"):
+            aid = conn.execute("SELECT id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+            task_agents.add_agent(conn, t["id"], aid, role="", stage="works", actor="human:op")
+            conn.execute("UPDATE agents SET connected = 1 WHERE id = ?", (aid,))
+        return prompts.create(conn, target=f"task:{t['id']}" if target == "task" else target,
+                              body="Split the OPERATOR-WORDS work.", actor="human:op")
+
+
+def _untrusted_parts(out):
+    inside, outside, rest = [], "", out
+    while "<untrusted-content" in rest:
+        pre, _, rest = rest.partition("<untrusted-content")
+        block, _, rest = rest.partition("</untrusted-content>")
+        outside += pre
+        inside.append(block)
+    return outside + rest, "\n".join(inside)
+
+
+async def test_prompt_status_separates_operator_text_from_agent_text(mcp_pair, dev_hub):
+    p = _group_prompt(dev_hub, "task")
+    async with Client(mcp_pair[1]) as b:
+        await b.call_tool("post", {"project": "proj", "channel": f"prompt-{p['id']}", "body": "AGENT-WORDS hi"})
+    async with Client(mcp_pair[0]) as a:
+        out = text(await a.call_tool("prompt_status", {"prompt_id": p["id"]}))
+    outside, inside = _untrusted_parts(out)
+    assert f"From the operator (prompt #{p['id']}, verified by the hub):\nSplit the OPERATOR-WORDS work." in outside
+    assert outside.count("OPERATOR-WORDS") == 1  # the thread's copy of it is inside a block, labeled by author
+    assert "mode: group" in outside and "alice" in outside and "bob" in outside
+    assert "Ship" in inside and "Ship" not in outside  # co-recipients' task titles are agent-written
+    assert "AGENT-WORDS" in inside and "AGENT-WORDS" not in outside
+
+
+async def test_prompt_status_shows_the_device_thread(mcp_pair, dev_hub):
+    from agenthub.hub import db, prompts
+    _group_prompt(dev_hub)  # makes the agents
+    conn = dev_hub.conn()
+    node = conn.execute("SELECT device_node_id FROM agents WHERE name = 'alice'").fetchone()[0]
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET device_node_id = ?, device_name = 'box' WHERE name = 'bob'", (node,))
+        p = prompts.create(conn, target=f"device:{node}", body="Device-level OPERATOR-WORDS.", actor="human:op")
+    async with Client(mcp_pair[0]) as a:
+        await a.call_tool("post_device", {"body": "DEVICE-AGENT-WORDS"})
+        out = text(await a.call_tool("prompt_status", {"prompt_id": p["id"]}))
+    outside, inside = _untrusted_parts(out)
+    assert "DEVICE-AGENT-WORDS" in inside and "DEVICE-AGENT-WORDS" not in outside
+
+
+async def test_claim_share_and_decline_share(mcp_pair, dev_hub):
+    p = _group_prompt(dev_hub, "task")
+    async with Client(mcp_pair[0]) as a, Client(mcp_pair[1]) as b:
+        r = text(await a.call_tool("claim_share", {"prompt_id": p["id"], "title": "The parser",
+                                                   "description": "Only the parser."}))
+        assert r.startswith("Claimed: task #") and "The parser" in r and r.endswith("You'll pick it up next.")
+        again = await a.call_tool("claim_share", {"prompt_id": p["id"], "title": "more", "description": "x"})
+        assert again.is_error and "409" in text(again)
+        d = text(await b.call_tool("decline_share", {"prompt_id": p["id"], "reason": "I am busy"}))
+        assert "Declined" in d and f"#{p['id']}" in d
+        assert (await b.call_tool("decline_share", {"prompt_id": p["id"], "reason": "again"})).is_error
+
+
+async def test_prompt_tools_refuse_non_recipients(mcp_pair, dev_hub):
+    p = _group_prompt(dev_hub, "task")
+    carol = dev_hub.enroll("carol")
+    cc = HubClient("http://hub", carol.token, transport=httpx.ASGITransport(app=dev_hub.client.app))
+    async with Client(build_server(lambda: cc)) as c:
+        for tool, args in (("prompt_status", {}), ("claim_share", {"title": "t", "description": "d"}),
+                           ("decline_share", {"reason": "r"})):
+            r = await c.call_tool(tool, {"prompt_id": p["id"], **args})
+            assert r.is_error and "404" in text(r)
+
+
+async def test_instructions_mention_prompts(mcp_pair):
+    init = mcp_pair[0].instructions
+    assert "claim_share" in init and "decline_share" in init and "prompt_status" in init

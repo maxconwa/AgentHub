@@ -90,6 +90,17 @@ class HubClient:
         """Write on the board of this agent's own machine."""
         return await self._request("POST", "/device/messages", json={"body": body, "to": to})
 
+    async def device_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """The newest notes on this agent's own machine's board (read-only, inbox cursor untouched)."""
+        return (await self._request("GET", "/device/messages", params={"limit": limit}))["messages"]
+
+    async def recent_messages(self, project: str, channel: str | None = None, limit: int = 20
+                              ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if channel:
+            params["channel"] = channel
+        return (await self._request("GET", f"/projects/{quote(project)}/messages", params=params))["messages"]
+
     # --- questions to the operator -------------------------------------------
 
     async def ask_operator(self, project: str, question: str, task_id: int | None = None) -> dict[str, Any]:

@@ -74,6 +74,15 @@ def recent(conn: sqlite3.Connection, node_id: str, limit: int = 50) -> list[dict
     return [dict(r) for r in reversed(rows)]
 
 
+def recent_for_agent(conn: sqlite3.Connection, agent: Agent, limit: int = 20) -> list[dict[str, Any]]:
+    """The newest ``limit`` notes on ``agent``'s own machine that it may see (not addressed to another
+    agent), oldest first. Read-only: its inbox cursor is untouched."""
+    rows = conn.execute(
+        _SELECT + "WHERE d.node_id = ? AND (d.to_agent IS NULL OR d.to_agent = ? OR d.author = ?) "
+        "ORDER BY d.id DESC LIMIT ?", (agent.device_node_id, agent.id, agent.id, limit)).fetchall()
+    return [dict(r) | {"addressed_to_me": r["to_agent"] == agent.id} for r in reversed(rows)]
+
+
 def unread_for_agent(
     conn: sqlite3.Connection, agent: Agent, *, mark_read: bool, limit: int | None = None,
     addressed_only: bool = False,

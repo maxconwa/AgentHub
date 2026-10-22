@@ -116,7 +116,22 @@ def test_agent_post_reaches_the_other_agent_on_its_device_only(box):
         assert found["results"] == []
     board = hub.client.get("/api/v1/projects/proj/messages", headers=carol.headers).json()["messages"]
     assert "platypus6620" not in json.dumps(board)
-    assert hub.client.get("/api/v1/device/messages", headers=carol.headers).status_code == 405  # no read route
+    own = hub.client.get("/api/v1/device/messages", headers=carol.headers)  # reads only her own board
+    assert own.status_code == 200 and "platypus6620" not in own.text
+
+
+def test_device_board_history_is_the_callers_own_and_hides_notes_for_others(box):
+    hub, alice, bob, carol = box
+    post(hub, alice, "for everyone")
+    post(hub, alice, "for bob only", to="bob")
+    post(hub, carol, "elsewhere")
+    got = hub.client.get("/api/v1/device/messages", headers=bob.headers).json()["messages"]
+    assert [m["body"] for m in got] == ["for everyone", "for bob only"]
+    got = hub.client.get("/api/v1/device/messages", params={"limit": 1}, headers=alice.headers).json()["messages"]
+    assert [m["body"] for m in got] == ["for bob only"]  # alice wrote it, so she sees it
+    mine = [m["body"] for m in hub.client.get("/api/v1/device/messages", headers=carol.headers).json()["messages"]]
+    assert mine == ["elsewhere"]
+    assert hub.client.get("/api/v1/device/messages").status_code in (401, 403)
 
 
 def test_an_agent_posts_only_to_its_own_device(box):

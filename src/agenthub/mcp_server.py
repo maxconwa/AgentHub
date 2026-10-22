@@ -34,6 +34,7 @@ to send them, and `board_get`/`board_put` for shared versioned documents.
 To reply to the operator privately, use `message_operator`.
 To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
 Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
+When you get a prompt with several recipients, discuss it in its thread, then `claim_share` your part or `decline_share`; `prompt_status` shows who else is on it.
 {untrusted.NOTICE}
 """
 
@@ -89,6 +90,36 @@ def _format_approval(a: dict[str, Any]) -> str:
     if a["kind"] == "command" and a["status"] == "approved":
         parts.append("You may now retry the exact same command once, from the same directory.")
     return "\n".join(parts)
+
+
+THREAD_TAIL = 20  # how many of a prompt thread's latest messages prompt_status shows
+
+
+def _format_prompt(p: dict[str, Any], thread: list[dict[str, Any]]) -> str:
+    """The operator's text (the hub sets it, so it sits outside any untrusted block), then the facts the hub
+    records, then what the other agents wrote: task titles and thread messages, all in untrusted blocks."""
+    parts = [f"From the operator (prompt #{p['id']}, verified by the hub):\n{p['body']}",
+             f"mode: {p['mode']}, status: {p['status']}, your status: {p['my_status']}"]
+    if p["recipients"]:
+        parts.append("Recipients (names, statuses and devices are the hub's; task titles are written by agents):")
+    for r in p["recipients"]:
+        line = f"- {r['name']}: {r['status']}, device {r['device'] or 'unknown'}, {'online' if r['connected'] else 'offline'}"
+        if r["tasks"]:
+            line += "; current tasks:\n" + "\n".join(
+                untrusted.wrap(t["title"], author=untrusted.author_label(r["agent_id"], r["name"]),
+                               kind="task_title", id=t["id"], project=t["project"], state=t["state"])
+                for t in r["tasks"])
+        parts.append(line)
+    th = p.get("thread")
+    if th is None:
+        parts.append("There is no shared thread for this prompt.")
+    else:
+        where = f"{th['project']}/{th['channel']}" if th["kind"] == "channel" else "your device board"
+        parts.append(f"Thread ({where}), latest {THREAD_TAIL} messages:" if thread else f"Thread ({where}) is empty.")
+        for m in thread:
+            parts.append(_format_message(
+                m | {"kind": "device", "project": None, "channel": "device"} if th["kind"] == "device" else m))
+    return "\n\n".join(parts)
 
 
 WAIT_POLL_SECONDS = 3.0
@@ -348,6 +379,33 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         """
         a = await call(lambda c: c.discuss_approval(approval_id, message))
         return _format_approval(a) + "\nMessage sent. Call wait_for_approval to wait for the decision."
+
+    @server.tool()
+    async def prompt_status(prompt_id: int) -> str:
+        """Show a prompt the operator sent you: their words, its mode and status, who else is on it (with
+        their devices and current tasks) and the latest messages of its discussion thread."""
+        p = await call(lambda c: c.get_prompt(prompt_id))
+        th = p.get("thread")
+        thread: list[dict[str, Any]] = []
+        if th and th["kind"] == "channel":
+            thread = await call(lambda c: c.recent_messages(th["project"], th["channel"], THREAD_TAIL))
+        elif th:
+            thread = await call(lambda c: c.device_history(THREAD_TAIL))
+        return _format_prompt(p, thread[-THREAD_TAIL:])
+
+    @server.tool()
+    async def claim_share(prompt_id: int, title: str, description: str, project: str | None = None) -> str:
+        """Claim your share of a prompt as a task (already approved: it came from the operator). Give it a
+        short title and a description of exactly what you will do. Set `project` for a prompt aimed at a
+        device. You may claim once."""
+        t = await call(lambda c: c.claim_share(prompt_id, title, description, project))
+        return f"Claimed: task #{t['id']} {t['title']}. You'll pick it up next."
+
+    @server.tool()
+    async def decline_share(prompt_id: int, reason: str) -> str:
+        """Take no share of a prompt (busy, wrong machine, someone else covers it) and say why."""
+        await call(lambda c: c.decline_share(prompt_id, reason))
+        return f"Declined your share of prompt #{prompt_id}."
 
     return server
 
