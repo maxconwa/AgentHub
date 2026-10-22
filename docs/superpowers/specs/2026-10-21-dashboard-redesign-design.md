@@ -364,9 +364,9 @@ is the janitor's job, below.
 9. **Pose art gets your sign-off first.** The approved 48×48 sheet only has a
    standing pose. The plan's first step is to draw the five poses at 48×48 on
    the Design canvas for the operator to approve, before the Python renderer
-   is built. Each pose is a small scene (backdrop plus character) on detail
-   pages and large cards. In lists, at 64 px or smaller, only the character is
-   shown on a tinted circle so it stays readable.
+   is built. Each pose is a small scene (props plus character, with no colored
+   background) on detail pages and large cards. In lists, at 64 px or smaller,
+   only the character is shown so it stays readable.
 10. **Device metrics:** the runner reports CPU %, memory %, and per-GPU
     utilization and memory, every heartbeat (15 s). CPU and memory come from
     `/proc` or `psutil`; GPU from `nvidia-smi` when it exists, otherwise
