@@ -78,6 +78,13 @@ menus). The approvals red badge stays on its link.
 
 All pages update live, the way the feed does now.
 
+Every page works in the browser on a **phone, an iPad, or a computer**, from
+any of the operator's own devices on the tailnet (operator, 2026-10-21). The
+layout adapts at phone, tablet and desktop widths, and works with touch,
+mouse and keyboard. The sign-in rule is unchanged: the device must be
+untagged, logged in to Tailscale as an operator login, and have no agent
+enrolled on it.
+
 ### Several agents per task, with roles you write
 
 - A task can have **several agents at once**, for example an implementer and
