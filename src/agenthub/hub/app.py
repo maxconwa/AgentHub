@@ -662,7 +662,6 @@ def create_app(state: HubState) -> FastAPI:
         return (json.dumps(checkouts, separators=(",", ":")), current) if valid else None
 
     async def _agent_socket_loop(websocket: WebSocket, conn: sqlite3.Connection, agent_id: str) -> None:
-        stored_dirs: tuple[str, str | None] | None = None  # what this socket last wrote
         while True:
             try:
                 message = await websocket.receive_json()
@@ -679,12 +678,13 @@ def create_app(state: HubState) -> FastAPI:
             if agent is None or agent.status != "active":
                 await websocket.close(code=CLOSE_REVOKED, reason="agent is no longer active")
                 return
-            # One write per heartbeat; the directories ride along only when they changed.
+            # One write per heartbeat; the directories ride along only when they differ from what is stored.
             dirs = _reported_dirs(message)
-            if dirs is not None and dirs != stored_dirs:
+            if dirs is not None and not conn.execute(
+                    "SELECT 1 FROM agents WHERE id = ? AND checkouts IS ? AND current_dir IS ?",
+                    (agent_id, *dirs)).fetchone():
                 conn.execute("UPDATE agents SET last_heartbeat = ?, checkouts = ?, current_dir = ? WHERE id = ?",
                              (db.now_iso(), *dirs, agent_id))
-                stored_dirs = dirs
             else:
                 conn.execute("UPDATE agents SET last_heartbeat = ? WHERE id = ?", (db.now_iso(), agent_id))
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
