@@ -20,6 +20,7 @@
     <div><dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}{% if device_ip %} · {{ device_ip }}{% endif %}</dd></div>
     <div><dt>Agent id</dt><dd>{{ ag.id }}</dd></div>
     <div><dt>Model <span class="small-line">reported by the agent</span></dt><dd>{{ ag.model or 'Not reported yet' }}</dd></div>
+    <div><dt>Effort <span class="small-line">reported by the agent</span></dt><dd>{{ ag.effort or 'Not reported yet' }}</dd></div>
     <div><dt>Directory <span class="small-line">reported by the agent</span></dt><dd class="dir">{{ ag.current_dir or 'None reported' }}</dd></div>
   </dl>
   <h4>Checkouts <span class="muted small">(reported by the agent)</span></h4>

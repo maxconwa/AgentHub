@@ -41,6 +41,7 @@ MAX_BOARD_VALUE_CHARS = 32_000
 MAX_COMMAND_CHARS = 8_000
 # A model name a runner may report: Claude Code's ids and aliases (claude-opus-5-5, sonnet, opus[1m], ...).
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/\[\]-]{0,99}")
+EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 log = logging.getLogger("agenthub.hub")
 
@@ -799,6 +800,11 @@ def create_app(state: HubState) -> FastAPI:
         model = message.get("model")
         return model if isinstance(model, str) and MODEL_RE.fullmatch(model) else None
 
+    def _reported_effort(message: dict[str, Any]) -> str | None:
+        """The reasoning effort the runner reports (e.g. "high"), or None if absent or not a known level."""
+        effort = message.get("effort")
+        return effort if isinstance(effort, str) and effort in EFFORT_LEVELS else None
+
     async def _agent_socket_loop(websocket: WebSocket, conn: sqlite3.Connection, agent_id: str) -> None:
         while True:
             try:
@@ -819,10 +825,12 @@ def create_app(state: HubState) -> FastAPI:
             # One write per heartbeat; the directories ride along only when they differ from what is stored.
             # A runner that runs prompts says "prompts": 1 on every heartbeat; an older runner's heartbeat lacks it
             # (and otherwise works as before), so its agent isn't woken by prompts.
-            # The model, likewise, only when the runner reports one that differs (an older runner reports none).
+            # The model and effort, likewise, only when the runner reports one that differs (an older runner
+            # reports neither).
             prompt_support = 1 if message.get("prompts") == 1 else 0
-            dirs, model = _reported_dirs(message), _reported_model(message)
-            stored = conn.execute("SELECT checkouts, current_dir, model FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            dirs, model, effort = _reported_dirs(message), _reported_model(message), _reported_effort(message)
+            stored = conn.execute("SELECT checkouts, current_dir, model, effort FROM agents WHERE id = ?",
+                                  (agent_id,)).fetchone()
             sets, args = ["last_heartbeat = ?", "prompt_support = ?"], [db.now_iso(), prompt_support]
             if dirs is not None and (stored["checkouts"], stored["current_dir"]) != dirs:
                 sets.append("checkouts = ?, current_dir = ?")
@@ -830,6 +838,9 @@ def create_app(state: HubState) -> FastAPI:
             if model is not None and stored["model"] != model:
                 sets.append("model = ?")
                 args.append(model)
+            if effort is not None and stored["effort"] != effort:
+                sets.append("effort = ?")
+                args.append(effort)
             conn.execute(f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", (*args, agent_id))
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 

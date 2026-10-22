@@ -425,6 +425,10 @@ MIGRATIONS: list[str] = [
     CREATE INDEX reports_project ON reports(project, created_at);
     CREATE INDEX reports_task ON reports(task_id);
     """,
+    # 21: the reasoning effort the agent's runner reports (low/medium/high/xhigh/max), shown next to the model
+    """
+    ALTER TABLE agents ADD COLUMN effort TEXT;
+    """,
 ]
 
 
