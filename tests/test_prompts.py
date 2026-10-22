@@ -353,13 +353,69 @@ def test_claim_creates_one_approved_task_for_the_agent(group):
     task = r.json()
     assert (task["title"], task["body"], task["state"], task["project"]) == (
         "Write the parser", "Only the parser.", "open", "proj")
-    assert task["created_by"] == OPERATOR and task["approval_id"] is None
-    assert [(m["agent_id"], m["role"], m["stage"], m["budget"]) for m in task["agents"]] == [
-        (a.id, f"Share of prompt #{p['id']}", "works", tasks.DEFAULT_BUDGET)]
+    # the title and body are the agent's words, so the task is the agent's; no approval row (the prompt was the
+    # operator's)
+    assert task["created_by"] == a.id and task["approval_id"] is None and task["approval_status"] is None
+    assert [(m["agent_id"], m["role"], m["stage"], m["budget"], m["added_by"]) for m in task["agents"]] == [
+        (a.id, f"Share of prompt #{p['id']}", "works", tasks.DEFAULT_BUDGET, a.id)]
     assert hub.conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before + 1
+    created = hub.conn().execute("SELECT actor, payload FROM events WHERE type = 'task.created' "
+                                 "ORDER BY id DESC LIMIT 1").fetchone()
+    assert created["actor"] == a.id and json.loads(created["payload"])["prompt_id"] == p["id"]
     rec = {r["agent_id"]: r for r in prompts.get(hub.conn(), p["id"])["recipients"]}
     assert rec[a.id]["status"] == "claimed" and rec[a.id]["task_id"] == task["id"]
     assert rec[a.id]["task_title"] == "Write the parser"
+
+
+def test_share_task_is_launchable_by_the_runner(group):
+    import asyncio
+    from types import SimpleNamespace
+
+    from agenthub.runner.daemon import Runner
+
+    hub, a, b, c, p = group
+    tid = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "mine"}).json()["id"]
+
+    async def get_task(task_id):
+        return hub.client.get(f"/api/v1/tasks/{task_id}", headers=a.headers).json()
+
+    stub = SimpleNamespace(client=SimpleNamespace(get_task=get_task), agent=SimpleNamespace(agent_id=a.id))
+    task, me = asyncio.run(Runner._verified_task(stub, tid))
+    assert task["state"] == "open" and me["role"] == f"Share of prompt #{p['id']}"
+
+
+def test_dashboard_shows_the_share_task_by_the_agent(group):
+    hub, a, b, c, p = group
+    tid = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "Parser share"}).json()["id"]
+    page = hub.client.get(f"/ui/tasks/{tid}", headers=hub.op_headers()).text
+    assert "created by alice" in page
+    project = hub.client.get("/ui/projects/proj", headers=hub.op_headers()).text
+    assert 'Parser share</span> <span class="by-label">by alice</span>' in project
+
+
+def test_claim_after_decline_is_refused(group):
+    hub, a, b, c, p = group
+    assert api(hub, a, "POST", f"/{p['id']}/decline", json={"reason": "busy"}).status_code == 200
+    before = hub.conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "after all"}).status_code == 409
+    assert hub.conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("kind", ["task", "project"])
+def test_claim_by_an_agent_no_longer_in_the_project_creates_nothing(hub, kind):
+    a, b = hub.enroll("alice"), hub.enroll("bob")
+    t = mk_task(hub, a, b)
+    online(hub, a, b)
+    p = create(hub, f"task:{t['id']}" if kind == "task" else "project:proj")
+    conn = hub.conn()
+    with db.transaction(conn):
+        store.ensure_project(conn, "other", actor=OPERATOR)
+        store.set_agent_projects(conn, a.id, ["other"], actor=OPERATOR)
+    before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    r = api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "mine"})
+    assert 400 <= r.status_code < 500
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+    assert {x["agent_id"]: x["status"] for x in prompts.get(conn, p["id"])["recipients"]}[a.id] == "pending"
 
 
 def test_second_claim_by_the_same_agent_is_refused(group):
@@ -478,6 +534,39 @@ def test_expiry_leaves_single_prompts_alone_but_fails_revoked_recipients(trio):
     assert prompts.get(conn, pa["id"])["status"] == "pending"
     got = prompts.get(conn, pb["id"])
     assert got["status"] == "failed" and got["recipients"][0]["status"] == "failed"
+
+
+def test_single_prompt_to_an_agent_that_went_offline_times_out(trio):
+    hub, a, b, c = trio
+    online(hub, a, b)
+    stuck = create(hub, f"agent:{a.id}")
+    started = create(hub, f"agent:{b.id}")
+    api(hub, b, "POST", f"/{started['id']}/start")
+    online(hub, a, b, connected=False)
+    online(hub, c)
+    live = create(hub, f"agent:{c.id}")
+    conn = hub.conn()
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=29), minutes=30) == []
+    with db.transaction(conn):
+        assert prompts.expire(conn, datetime.now(UTC) + timedelta(minutes=31), minutes=30) == [stuck["id"]]
+    got = prompts.get(conn, stuck["id"])
+    assert got["status"] == "failed" and got["finished_at"] and got["recipients"][0]["status"] == "timed_out"
+    assert prompts.get(conn, started["id"])["status"] == "running"  # a running session is never cut off here
+    assert prompts.get(conn, live["id"])["status"] == "pending"  # connected: its runner will pick it up
+    ev = prompt_events(hub, stuck["id"])[-1]
+    assert ev["payload"]["status"] == "failed" and ev["payload"]["timed_out"] == [a.id]
+    msg = build_notification(ev, {a.id: "alice"}, CFG)
+    assert msg["title"] == f"Prompt #{stuck['id']}: alice timed out"
+    assert event_summary(ev, {a.id: "alice"}) == f"prompt #{stuck['id']} failed: alice timed out"
+
+
+def test_target_with_nobody_to_prompt(trio):
+    hub, a, b, c = trio
+    p = create(hub, "project:proj")  # no live tasks: no recipients at all
+    assert p["status"] == "failed" and p["recipients"] == []
+    msg = build_notification(prompt_events(hub, p["id"])[0], {}, CFG)
+    assert msg["title"] == f"Prompt #{p['id']}: nobody to prompt"
 
 
 def test_hub_loop_runs_expiry(tmp_path):

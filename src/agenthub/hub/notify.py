@@ -100,7 +100,7 @@ def _prompt_notification(etype: str, p: dict[str, Any], names: dict[str, str], b
         if p.get("skipped"):
             parts.append(f"{listed(p['skipped'])} offline, skipped")
         if p.get("status") == "failed":
-            parts.append("nobody was online")
+            parts.append("nobody was online" if p.get("skipped") else "nobody to prompt")
     failed = list(p.get("failed") or ())
     if p.get("recipient_status") == "failed" and p.get("agent_id"):
         failed.append(p["agent_id"])

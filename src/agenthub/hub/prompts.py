@@ -129,7 +129,7 @@ def _settle(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
                                                   "AND status != 'skipped'", (pid,))]
     if any(s in OPEN for s in statuses):
         return p
-    status = "failed" if p["mode"] == "single" and statuses and statuses[0] == "failed" else "done"
+    status = "failed" if p["mode"] == "single" and statuses and statuses[0] in ("failed", "timed_out") else "done"
     conn.execute("UPDATE prompts SET status = ?, finished_at = ? WHERE id = ?", (status, now_iso(), pid))
     return _row(conn, pid)
 
@@ -244,8 +244,9 @@ def _decidable(conn: sqlite3.Connection, pid: int, agent: Agent) -> dict[str, An
 def claim(
     conn: sqlite3.Connection, pid: int, agent: Agent, *, title: str, body: str = "", project: str | None = None,
 ) -> dict[str, Any]:
-    """``agent`` takes a share of a group prompt: a new task, already approved (it came from the operator), created
-    by the operator who made the prompt, with ``agent`` working on it in role ``Share of prompt #N``."""
+    """``agent`` takes a share of a group prompt: a new task, already approved (``open`` with no approval row, as the
+    prompt came from the operator), written and created by ``agent`` (its title and body are agent text), with
+    ``agent`` working on it in role ``Share of prompt #N``."""
     p = _decidable(conn, pid, agent)
     title = title.strip()
     if not title or len(title) > tasks.MAX_TITLE_CHARS:
@@ -253,9 +254,10 @@ def claim(
     if len(body) > tasks.MAX_BODY_CHARS:
         raise Invalid(f"description must be at most {tasks.MAX_BODY_CHARS} characters")
     where = _share_project(conn, p, agent, project)
-    task = tasks.create_task(conn, actor=p["created_by"], project=where, title=title, body=body, state="open")
+    task = tasks.create_task(conn, actor=agent.id, project=where, title=title, body=body, state="open",
+                             prompt_id=pid)
     task = task_agents.add_agent(conn, task["id"], agent.id, role=f"Share of prompt #{pid}", stage="works",
-                                 actor=p["created_by"])
+                                 actor=agent.id)
     _set_recipient(conn, pid, agent.id, "claimed", task_id=task["id"])
     _emit(conn, _settle(conn, pid), actor=agent.id, agent_id=agent.id, recipient_status="claimed",
           task_id=task["id"])
@@ -271,28 +273,36 @@ def decline(conn: sqlite3.Connection, pid: int, agent: Agent, *, reason: str) ->
 
 
 def expire(conn: sqlite3.Connection, now: datetime, *, minutes: int = DEFAULT_DISCUSSION_MINUTES) -> list[int]:
-    """Time out group discussions older than ``minutes``: their undecided recipients become ``timed_out``.
-    Open recipients that were revoked fail, in any prompt, so nothing waits on them. Returns the prompts changed."""
+    """Settle prompts nobody will act on, so nothing waits forever. Returns the prompts changed.
+
+    Older than ``minutes``: a group discussion's undecided recipients, and a single prompt's recipient that never
+    started and is disconnected, become ``timed_out`` (the single prompt fails). In any open prompt, recipients
+    that were revoked fail."""
     cutoff = now_iso(now - timedelta(minutes=minutes))
     changed: list[int] = []
     stale = conn.execute(
         "SELECT DISTINCT p.id FROM prompts p JOIN prompt_recipients r ON r.prompt_id = p.id "
         "JOIN agents a ON a.id = r.agent_id WHERE p.status NOT IN ('done', 'failed') "
-        "AND r.status IN ('pending', 'running') AND ((p.mode = 'group' AND p.created_at < ?) OR a.status = 'revoked') "
-        "ORDER BY p.id", (cutoff,)).fetchall()
+        "AND r.status IN ('pending', 'running') AND (a.status = 'revoked' OR (p.created_at < ? AND "
+        "(p.mode = 'group' OR (r.status = 'pending' AND a.connected = 0)))) ORDER BY p.id", (cutoff,)).fetchall()
     for (pid,) in stale:
         p = _row(conn, pid)
         open_rows = conn.execute(
-            "SELECT r.agent_id, a.status FROM prompt_recipients r JOIN agents a ON a.id = r.agent_id "
-            "WHERE r.prompt_id = ? AND r.status IN ('pending', 'running') ORDER BY r.agent_id", (pid,)).fetchall()
+            "SELECT r.agent_id, r.status, a.status AS agent_status, a.connected FROM prompt_recipients r "
+            "JOIN agents a ON a.id = r.agent_id WHERE r.prompt_id = ? AND r.status IN ('pending', 'running') "
+            "ORDER BY r.agent_id", (pid,)).fetchall()
         timed_out, failed = [], []
-        for agent_id, agent_status in open_rows:
-            if agent_status == "revoked":
-                _set_recipient(conn, pid, agent_id, "failed", note="agent revoked")
-                failed.append(agent_id)
-            elif p["mode"] == "group" and p["created_at"] < cutoff:
-                _set_recipient(conn, pid, agent_id, "timed_out", note="discussion timed out")
-                timed_out.append(agent_id)
+        old = p["created_at"] < cutoff
+        for r in open_rows:
+            if r["agent_status"] == "revoked":
+                _set_recipient(conn, pid, r["agent_id"], "failed", note="agent revoked")
+                failed.append(r["agent_id"])
+            elif old and p["mode"] == "group":
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="discussion timed out")
+                timed_out.append(r["agent_id"])
+            elif old and r["status"] == "pending" and not r["connected"]:
+                _set_recipient(conn, pid, r["agent_id"], "timed_out", note="offline; never started")
+                timed_out.append(r["agent_id"])
         if timed_out or failed:
             _emit(conn, _settle(conn, pid), actor=SYSTEM, timed_out=timed_out, failed=failed)
             changed.append(pid)

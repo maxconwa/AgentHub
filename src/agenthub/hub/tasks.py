@@ -156,9 +156,10 @@ def create_task(
     budget_defaults: dict[str, Any] | None = None,
     state: str = "open",
     device: str | None = None,
+    prompt_id: int | None = None,
 ) -> dict[str, Any]:
-    """Insert a task. Callers choose the initial state (``open`` for operators,
-    ``awaiting_approval`` for agents via :func:`approvals.agent_create_task`)."""
+    """Insert a task. Callers choose the initial state (``open`` for operators and for an agent's share of an
+    operator's prompt, ``prompt_id``; ``awaiting_approval`` for agents via :func:`approvals.agent_create_task`)."""
     if state not in ("proposed", "awaiting_approval", "open"):
         raise Invalid(f"tasks cannot be created in state {state!r}")
     if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone():
@@ -171,10 +172,10 @@ def create_task(
          json.dumps(normalize_budget(budget, budget_defaults)), ts, ts),
     )
     task_id = cur.lastrowid
-    events.emit(
-        conn, type="task.created", actor=actor, project=project, device=device,
-        payload={"task_id": task_id, "title": title, "body": body, "state": state, "agents": []},
-    )
+    payload: dict[str, Any] = {"task_id": task_id, "title": title, "body": body, "state": state, "agents": []}
+    if prompt_id is not None:
+        payload["prompt_id"] = prompt_id
+    events.emit(conn, type="task.created", actor=actor, project=project, device=device, payload=payload)
     if assignee is not None:
         from agenthub.hub import task_agents
 
