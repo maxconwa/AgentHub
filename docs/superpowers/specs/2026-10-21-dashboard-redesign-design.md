@@ -10,7 +10,7 @@ working on which tasks, for which projects, on which devices, and in what
 state**. The current dashboard (Phase 4) is organized around approvals and a
 raw event feed, and it can't answer that question without digging.
 
-The redesign makes that question the first page you land on. It gives every project, task
+The redesign answers that question on the Dashboard, the first page you land on. It gives every project, task
 and agent its own page with a description and conversation. It lets the
 operator talk to agents from wherever they are looking. And it gives agents a
 face: a pixel chibi whose pose shows its state.
@@ -44,10 +44,15 @@ agenthub is built through Phase 5. Relevant pieces:
 
 ### Pages across the top
 
-The dashboard has **seven separate pages**, linked from a bar across the top
+The dashboard has **eight separate pages**, linked from a bar across the top
 (operator decision 2026-10-21: separate pages, not one page with tabs or
 menus). The approvals red badge stays on its link.
 
+0. **Dashboard** (the primary page, where `/ui` lands). At a glance: the
+   **approvals** waiting on the operator (newest first, each with its agent's
+   avatar, opening its approval page) and **every agent** with its avatar,
+   status, current task and device (opening its agent page). Each section
+   links to its full page.
 1. **Projects.** Each project being worked on has a collapsible list of its
    tasks. Under each task: its agent(s), each with its **role on that task**,
    **device**, and **status**. The hierarchy is
@@ -67,7 +72,7 @@ menus). The approvals red badge stays on its link.
    other, and project and task message boards. Each chat opens full-page.
    The agent page still shows that agent's chats, with the operator dialogue
    pinned.
-7. **Artifacts.** Every report and page agents have made (see *Artifacts*),
+7. **Reports.** Every report and page agents have made (see *Reports*),
    filterable by project, task, and agent, newest first. It opens each one
    in its sandboxed viewer.
 
@@ -257,10 +262,10 @@ What Claude Code exposes (docs read 2026-10-21, CLI 2.1.306):
   - whether the OTLP exporter appends `/v1/metrics`;
   - the `SessionEnd` input schema.
 
-### Artifacts (reports and pages)
+### Reports (reports and pages)
 
-The **Artifacts** page lists these; "artifact" is the dashboard's name for a
-report or page.
+The **Reports** page lists everything agents make here, pages included
+(operator naming, 2026-10-21).
 
 
 - Agents can freely create **reports and pages**: **full interactive pages**
