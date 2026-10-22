@@ -21,6 +21,9 @@ def isolated_dirs(tmp_path, monkeypatch):
     """Never touch the real ~/.config or ~/.local/share."""
     monkeypatch.setenv("AGENTHUB_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("AGENTHUB_DATA_DIR", str(tmp_path / "data"))
+    # Nor the developer's own Claude Code settings (e.g. their `model`, which the runner reports).
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
