@@ -183,7 +183,7 @@ class Delivery:
 
     id: int
     message_id: int
-    kind: str  # agent (the operator's chat with this agent) | dm (with another agent) | task | project
+    kind: str  # agent (the operator's chat with this agent) | dm (with another agent) | task | project | device
     ref: str
     project: str | None
     task_id: int | None
@@ -194,6 +194,7 @@ class Delivery:
     chain_id: str | None = None  # the wake chain it belongs to: echoed back with the session's results
     wake: bool = True  # False: this agent's wakes are paused; it goes into a running session, or waits
     peer: str | None = None  # a dm chat's other agent (its name)
+    device: str | None = None  # a device chat's machine (its name): the operator wrote to every agent on it
 
     @classmethod
     def from_hub(cls, row: dict[str, Any]) -> Delivery:
@@ -206,12 +207,14 @@ class Delivery:
         peer = chat.get("with")
         peer = peer.get("name") or peer.get("agent_id") if isinstance(peer, dict) else peer
         chain = row.get("chain_id")
+        device = chat.get("device")
+        device = device.get("name") or device.get("node_id") if isinstance(device, dict) else None
         return cls(id=int(row["id"]), message_id=int(row.get("message_id") or 0), kind=kind,
                    ref=str(chat.get("ref") or ""), project=chat.get("project"), task_id=task_id,
                    author=str(row.get("author") or ""), author_name=row.get("author_name"),
                    body=str(row.get("body") or ""), verified=row.get("verified") is True,
                    chain_id=str(chain)[:MAX_CHAIN] if chain else None, wake=row.get("wake") is not False,
-                   peer=str(peer) if peer else None)
+                   peer=str(peer) if peer else None, device=str(device) if device else None)
 
     @property
     def from_operator(self) -> bool:
@@ -232,8 +235,13 @@ class Delivery:
         return "chat"
 
     @property
+    def answered_in(self) -> str:
+        """The kind of chat a session's answer to it shows in: a device message's in the agent's own chat."""
+        return "agent" if self.kind == "device" else self.kind
+
+    @property
     def spec(self) -> str:
-        """How a session names its chat for chat_post."""
+        """How a session names its chat for chat_post (a device message is answered in the agent's own chat)."""
         if self.kind == "task":
             return f"task:{self.task_id or self.ref}"
         if self.kind == "project":
@@ -291,10 +299,11 @@ class SessionOutput:
         self.took([tag])
         if tag.kind == "dm":  # answered with chat_post; the dm chat isn't streamed to
             return
-        key = (tag.kind, "me" if tag.kind == "agent" else tag.ref)
-        if key == self.home_key or (tag.kind == "agent" and self.home_key[0] == "agent"):
+        kind = tag.answered_in  # a device message: the agent's own chat, where it answers the operator
+        key = (kind, "me" if kind == "agent" else tag.ref)
+        if key == self.home_key or (kind == "agent" and self.home_key[0] == "agent"):
             return
-        if tag.kind == "agent":  # answer the operator where they asked, for the rest of this turn
+        if kind == "agent":  # answer the operator where they asked, for the rest of this turn
             self._text_to = self.stream("agent", "me")
         self.stream(*key).status("working")  # the message's chat sees that it reached a running session
 
@@ -322,6 +331,8 @@ class SessionOutput:
 def where(d: Delivery) -> str:
     if d.kind == "agent":
         return "your chat with the operator"
+    if d.kind == "device":
+        return f"the chat of your device {d.device or d.ref}, to every agent on it"
     if d.kind == "dm":
         return f"your direct chat with agent {d.peer or d.ref}"
     if d.kind == "task":
@@ -354,6 +365,10 @@ def delivery_text(d: Delivery, *, session_task: int | None = None, mid_turn: boo
         if session_task is None and session_project is None:
             return text + "Answer here: what you write in this session shows in that chat."
         return text + "What you write for the rest of this turn shows in that chat." + carry_on
+    if d.kind == "device":  # each agent on the machine answers in its own chat with the operator
+        if session_task is None and session_project is None:
+            return text + "Answer here: what you write in this session shows in your chat with the operator."
+        return text + "What you write for the rest of this turn shows in your chat with the operator." + carry_on
     if d.kind == "dm":
         return text + f"Answer in that chat with chat_post(chat='{d.spec}', body=...)." + carry_on
     if d.kind == "task":
@@ -805,7 +820,8 @@ class ChatRunner:
     async def _say_queued(self, d: Delivery) -> None:
         if d.kind == "dm":
             return  # not a chat this runner streams to; the hub's claim already shows it
-        stream = ChatStream(self.runner.client, d.kind, "me" if d.kind == "agent" else d.ref,
+        kind = d.answered_in
+        stream = ChatStream(self.runner.client, kind, "me" if kind == "agent" else d.ref,
                             flush_seconds=self.runner.cfg.chat_flush_seconds)
         stream.status("queued", message_id=d.message_id,
                       detail="the session ended before it took this in; it goes into the next one")

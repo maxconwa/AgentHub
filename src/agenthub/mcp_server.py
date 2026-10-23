@@ -57,6 +57,8 @@ calls `take_task` (a task for you, already approved) or `sit_out` with a reason.
 Use `board_get`/`board_put` for shared versioned documents.
 To ask the operator a question only they can answer, use `ask_operator`; the answer arrives as their message.
 Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
+The operator can write to every agent on your machine at once (chat 'device', which you can read with
+`chat_history`): answer the operator in your own chat ('me').
 To show the operator a report (a Claude page you made, or a self-contained HTML page), use `publish_report`.
 {untrusted.NOTICE}
 {untrusted.HUMAN_ONLY}
@@ -75,6 +77,9 @@ def _operator_heading(m: dict[str, Any]) -> str:
     chat = m.get("chat")
     if m.get("kind") == "private" or chat in (None, "me"):
         return OPERATOR_HEADING
+    if str(chat).startswith("device:"):
+        return (f"From the operator (to every agent on your device, in chat device, message #{m['id']}, verified by "
+                "the hub; answer in chat 'me'):")
     heading = f"From the operator (in chat {chat}, message #{m['id']}, verified by the hub):"
     if str(chat).startswith("project:"):
         heading += (f"\n(A request to the agents of this project: agree on a split in chat {chat}, then call "
@@ -197,9 +202,11 @@ def _chat_spec(chat: str) -> tuple[str, str]:
     chat = chat.strip()
     if chat in ("me", "operator", "agent", ""):
         return "agent", "me"
+    if chat == "device":  # your machine's: the operator's messages to every agent on it
+        return "device", "me"
     kind, sep, ref = chat.partition(":")
-    if not sep or kind not in ("task", "project", "agent", "dm") or not ref:
-        raise ToolError(f"name a chat as 'me', 'task:<id>', 'project:<name>' or 'dm:<agent>', not {chat!r}")
+    if not sep or kind not in ("task", "project", "agent", "dm", "device") or not ref:
+        raise ToolError(f"name a chat as 'me', 'task:<id>', 'project:<name>', 'dm:<agent>' or 'device', not {chat!r}")
     return kind, ref
 
 
@@ -318,9 +325,10 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def chat_history(chat: str, limit: int = 30) -> str:
-        """Read the latest messages of a chat you are in ('me', 'task:<id>' or 'project:<name>'), oldest first:
-        the operator's messages, what agents wrote, their tool runs and status lines, approval and question cards,
-        and who took a task or sat out the operator's request."""
+        """Read the latest messages of a chat you are in ('me', 'task:<id>', 'project:<name>', 'dm:<agent>' or
+        'device', the operator's messages to every agent on your machine), oldest first: the operator's messages,
+        what agents wrote, their tool runs and status lines, approval and question cards, and who took a task or sat
+        out the operator's request."""
         kind, ref = _chat_spec(chat)
         r = await call(lambda c: c.chat_history(kind, ref, limit=max(1, min(limit, 200))))
         names = {m["agent_id"]: m["name"] for m in r["chat"]["members"]}
