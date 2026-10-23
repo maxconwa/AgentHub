@@ -78,7 +78,8 @@ def stop_env(dev_hub):
 
 
 def send(hub, sender, body, to=None):
-    hub.client.post("/api/v1/projects/proj/messages", json={"body": body, "to": to}, headers=sender.headers)
+    r = hub.client.post("/api/v1/chats/project/proj/messages", json={"body": body, "to": to}, headers=sender.headers)
+    assert r.status_code == 201, r.text
 
 
 def test_stop_allowed_with_empty_inbox(stop_env):

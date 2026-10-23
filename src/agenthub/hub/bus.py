@@ -12,7 +12,7 @@ Chats (0.3.8): the operator's sockets get each new or changed chat message in
 full (``{"type": "chat", "op": "new"|"update", ...}``) instead of an Activity
 row; agents get id-only ``chat.deliver`` (their own deliveries) and
 ``chat.message`` events (words and decisions in their task and project chats,
-never tool lines, statuses or another agent's own chat).
+never tool lines, statuses, a session's live text or another agent's own chat).
 
 Revocation: an ``agent.revoked`` event closes that agent's sockets with code
 4401. HTTP requests are already refused immediately because every request
@@ -86,7 +86,8 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
     if etype == "chat.deliver":  # the operator's message, to the one agent it is delivered to
         return {p["agent_id"]}
     if etype == "chat.message":  # words and decisions in a group chat, to its other agents
-        if p.get("chat_kind") not in ("task", "project") or p.get("kind") not in chats.MAIL_KINDS:
+        if p.get("chat_kind") not in ("task", "project") or p.get("kind") not in chats.MAIL_KINDS \
+                or p.get("source"):  # a session's live narration is for the operator to watch
             return set()
         if event["actor"].startswith("human:"):  # the operator's text reaches them as chat.deliver
             return set()

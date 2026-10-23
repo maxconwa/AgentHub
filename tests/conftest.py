@@ -125,3 +125,22 @@ def hub(tmp_path) -> Hub:
 @pytest.fixture
 def dev_hub(tmp_path) -> Hub:
     return make_hub(tmp_path, insecure_dev=True)
+
+
+def legacy_post(hub: Hub, agent: AgentCreds, body: str, *, channel: str = "general", to: str | None = None,
+                project: str = "proj") -> dict:
+    """A channel message as 0.3.7 wrote it (agents post in chats since 0.3.8; the old pages still read these)."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        target = store.find_agent(conn, to).id if to else None
+        return store.post_message(conn, author=store.get_agent(conn, agent.id), project=project, channel=channel,
+                                  body=body, to=target)
+
+
+def legacy_private(hub: Hub, agent: AgentCreds, body: str) -> dict:
+    """An agent's private message to the operator as 0.3.7 wrote it (``message_operator`` writes in its chat now)."""
+    from agenthub.hub import private
+
+    conn = hub.conn()
+    with db.transaction(conn):
+        return private.send(conn, agent.id, author=agent.id, body=body)

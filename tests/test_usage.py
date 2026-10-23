@@ -1,14 +1,15 @@
-"""Usage page: prompt sessions reported by runners, the aggregation over a window, the page and its nav entry."""
+"""Usage page: chat sessions reported by runners (prompt sessions until 0.3.7), the aggregation over a window, the
+page and its nav entry."""
 
 import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agenthub.hub import db, prompts, store, usage
+from agenthub.hub import chats, db, prompts, store, usage
 
 from .conftest import OPERATOR
-from .test_prompts import api, create, mk_task, online
+from .test_prompts import create, mk_task, online
 
 
 def get(hub, path, **headers):
@@ -16,12 +17,27 @@ def get(hub, path, **headers):
 
 
 def started(hub, agent, pid):
-    assert api(hub, agent, "POST", f"/{pid}/start").status_code == 200
+    """A 0.3.7 runner started its session on the prompt (the API for it is retired)."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        prompts.start(conn, pid, store.get_agent(conn, agent.id))
 
 
 def report(hub, agent, pid, **fields):
+    """A 0.3.7 runner reported a prompt session (prompt_runs stay on the Usage page)."""
     body = {"outcome": "success", "seconds": 90, "num_turns": 3, "cost_usd": 0.25} | fields
-    return api(hub, agent, "POST", f"/{pid}/runs", json=body)
+    conn = hub.conn()
+    with db.transaction(conn):
+        return prompts.record_run(conn, pid, store.get_agent(conn, agent.id), **body)
+
+
+def chat_report(hub, agent, chat, **fields):
+    body = {"outcome": "success", "seconds": 90, "num_turns": 3, "cost_usd": 0.25} | fields
+    return hub.client.post(f"/api/v1/chats/{chat}/runs", json=body, headers=agent.headers)
+
+
+def chat_runs(hub):
+    return [dict(r) for r in hub.conn().execute("SELECT * FROM chat_runs ORDER BY id")]
 
 
 def task_run(hub, task_id, agent_id, *, start, minutes=10, outcome="success", turns=5, cost=0.5):
@@ -43,92 +59,49 @@ def prompt_runs(hub, pid=None):
 
 # --- the endpoint -------------------------------------------------------------------------------------------------
 
-def test_a_recipient_reports_each_prompt_session(hub):
+def test_a_runner_reports_each_chat_session(hub):
     a = hub.enroll("alice")
-    online(hub, a)
     t = mk_task(hub, a)
-    pid = create(hub, f"task:{t['id']}")["id"]
-    started(hub, a, pid)
     before = datetime.now(UTC)
-    r = report(hub, a, pid, outcome="usage_limit", seconds=600, num_turns=1, cost_usd=0, session_id="s1")
+    r = chat_report(hub, a, f"task/{t['id']}", outcome="usage_limit", seconds=600, num_turns=1, cost_usd=0,
+                    session_id="s1")
     assert r.status_code == 201, r.text
-    assert report(hub, a, pid, session_id="s1").status_code == 201
-    first, second = prompt_runs(hub, pid)
-    assert (first["agent_id"], first["outcome"], first["num_turns"], first["session_id"], first["project"]) == (
-        a.id, "usage_limit", 1, "s1", "proj")
-    # The hub's clock places the session: it ended now, `seconds` after it started.
+    assert chat_report(hub, a, "agent/me", session_id="s2", project="proj", task_id=t["id"]).status_code == 201
+    first, second = chat_runs(hub)
+    assert (first["agent_id"], first["outcome"], first["num_turns"], first["session_id"], first["project"],
+            first["task_id"]) == (a.id, "usage_limit", 1, "s1", "proj", t["id"])
     took = datetime.fromisoformat(first["ended_at"]) - datetime.fromisoformat(first["started_at"])
     assert took == timedelta(seconds=600) and datetime.fromisoformat(first["ended_at"]) >= before
-    assert (second["outcome"], second["num_turns"], second["cost_usd"]) == ("success", 3, 0.25)
+    assert (second["project"], second["task_id"], second["cost_usd"]) == ("proj", t["id"], 0.25)
 
 
-def test_a_settled_recipient_still_reports_its_session(hub):
-    """A group recipient claims its share inside the session; the session's usage arrives after that."""
-    a, b = hub.enroll("alice"), hub.enroll("bob")
-    online(hub, a, b)
-    pid = create(hub, "project:proj")["id"]
-    started(hub, a, pid)
-    assert api(hub, a, "POST", f"/{pid}/decline", json={"reason": "busy"}).status_code == 200
-    assert report(hub, a, pid).status_code == 201
-
-
-def test_only_a_recipient_that_started_may_report(hub):
-    a, b, c = hub.enroll("alice"), hub.enroll("bob"), hub.enroll("carol")
-    online(hub, a, b)
-    pid = create(hub, f"agent:{a.id}")["id"]
-    assert report(hub, c, pid).status_code == 404  # not a recipient
-    assert report(hub, a, pid).status_code == 409  # never started
-    assert report(hub, a, 999).status_code == 404
-    assert prompt_runs(hub) == []
-
-
-def test_report_is_validated(hub):
-    a = hub.enroll("alice")
-    online(hub, a)
-    pid = create(hub, f"agent:{a.id}")["id"]
-    started(hub, a, pid)
-    for bad in ({"seconds": -1}, {"seconds": prompts.MAX_RUN_SECONDS + 1}, {"num_turns": -1}, {"cost_usd": -0.5},
-                {"outcome": ""}, {"outcome": "x" * 65}):
-        assert report(hub, a, pid, **bad).status_code == 422, bad
-    assert hub.client.post(f"/api/v1/prompts/{pid}/runs", json={"outcome": "success", "seconds": 1}).status_code == 401
-
-
-def test_agent_prompt_counts_in_the_reported_project_only_if_the_agent_may_see_it(hub):
+def test_chat_session_reports_are_scoped_and_validated(hub):
     a = hub.enroll("alice", projects=("proj", "other"))
-    online(hub, a)
+    b = hub.enroll("bob")
+    t = mk_task(hub, b)
     conn = hub.conn()
     with db.transaction(conn):
-        for name in ("proj", "other", "secret"):
+        for name in ("other", "secret"):
             store.ensure_project(conn, name, actor=OPERATOR)
-    pid = create(hub, f"agent:{a.id}")["id"]
-    started(hub, a, pid)
+    assert chat_report(hub, a, f"task/{t['id']}").status_code == 404  # not on the task
+    assert chat_report(hub, a, f"agent/{b.id}").status_code == 404
     for project in ("other", "secret", "nope", None):
-        assert report(hub, a, pid, project=project).status_code == 201
-    assert [r["project"] for r in prompt_runs(hub, pid)] == ["other", None, None, None]
+        assert chat_report(hub, a, "agent/me", project=project, task_id=t["id"]).status_code == 201
+    assert [(r["project"], r["task_id"]) for r in chat_runs(hub)] == [("other", None)] + [(None, None)] * 3
+    assert chat_report(hub, a, "project/other", project="proj").status_code == 201
+    assert chat_runs(hub)[-1]["project"] == "other"
+    for bad in ({"seconds": -1}, {"seconds": chats.MAX_RUN_SECONDS + 1}, {"num_turns": -1}, {"cost_usd": -0.5},
+                {"outcome": ""}, {"outcome": "x" * 65}):
+        assert chat_report(hub, a, "agent/me", **bad).status_code == 422, bad
+    assert hub.client.post("/api/v1/chats/agent/me/runs", json={"outcome": "success", "seconds": 1}).status_code == 401
 
 
-def test_a_task_prompt_counts_in_its_own_project_whatever_the_runner_says(hub):
-    a = hub.enroll("alice", projects=("proj", "other"))
-    online(hub, a)
-    t = mk_task(hub, a)
-    conn = hub.conn()
-    with db.transaction(conn):
-        store.ensure_project(conn, "other", actor=OPERATOR)
-    pid = create(hub, f"task:{t['id']}")["id"]
-    started(hub, a, pid)
-    assert report(hub, a, pid, project="other").status_code == 201
-    assert prompt_runs(hub, pid)[0]["project"] == "proj"
-
-
-def test_reports_per_recipient_are_not_capped(hub):
-    # 0.3.6.1: a prompt waits out the usage limit as often as it's hit, so it may run any number of sessions
+def test_prompt_session_reports_are_retired(hub):
     a = hub.enroll("alice")
     online(hub, a)
     pid = create(hub, f"agent:{a.id}")["id"]
-    started(hub, a, pid)
-    for _ in range(25):
-        assert report(hub, a, pid).status_code == 201
-    assert len(prompt_runs(hub, pid)) == 25
+    r = hub.client.post(f"/api/v1/prompts/{pid}/runs", json={"outcome": "success", "seconds": 1}, headers=a.headers)
+    assert r.status_code == 410
 
 
 def test_migration_adds_prompt_runs_to_an_existing_hub(tmp_path):
@@ -162,6 +135,16 @@ def mixed(hub):
     started(hub, b, p2)
     report(hub, b, p2, seconds=60, num_turns=1, cost_usd=None, project="side")
     return hub, a, b, t1, t2, p1, p2
+
+
+def test_chat_sessions_count_as_chat(mixed):
+    hub, a, b, t1, t2, p1, p2 = mixed
+    assert chat_report(hub, a, f"task/{t1['id']}", seconds=60, num_turns=4, cost_usd=0.4).status_code == 201
+    u = usage.summary(hub.conn())
+    assert (u["totals"]["chat"]["runs"], u["totals"]["chat"]["turns"]) == (1, 4)
+    assert u["totals"]["all"]["runs"] == 6 and u["totals"]["all"]["turns"] == 20
+    (line,) = u["by_task"]
+    assert line["chat"]["runs"] == 1 and u["recent"][0]["kind"] == "chat"
 
 
 def test_totals_over_the_default_window(mixed):
@@ -220,14 +203,14 @@ def test_per_day_strip(mixed):
     assert days[0]["day"] == (now - timedelta(days=6)).date().isoformat()
     assert sum(d["all"]["runs"] for d in days) == 5  # bob's 10-day-old run is before the strip
     assert max(d["height"]["task"] + d["height"]["prompt"] for d in days) == pytest.approx(100)
-    assert all(d["height"] == {"task": 0, "prompt": 0} for d in days if not d["all"]["runs"])
+    assert all(d["height"] == {"task": 0, "prompt": 0, "chat": 0} for d in days if not d["all"]["runs"])
     assert len(usage.summary(hub.conn(), "30d")["days"]) == 30
 
 
 def test_empty_hub(hub):
     u = usage.summary(hub.conn(), "all")
     assert u["totals"]["all"]["runs"] == 0 and u["recent"] == [] and u["by_task"] == []
-    assert all(d["height"] == {"task": 0, "prompt": 0} for d in u["days"])
+    assert all(d["height"] == {"task": 0, "prompt": 0, "chat": 0} for d in u["days"])
 
 
 # --- the page -----------------------------------------------------------------------------------------------------

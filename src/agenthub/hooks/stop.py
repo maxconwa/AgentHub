@@ -1,6 +1,7 @@
 """Stop hook: keep the agent working while messages addressed to it are unread.
 
-That includes the operator's private messages, which are always addressed to it.
+That includes the operator's messages not yet given to a session (in its own chat or its task and project
+chats), which are always addressed to it.
 
 I/O follows code.claude.com/docs/en/hooks (fetched 2026-10-21, Claude Code
 2.1.306): stdin includes ``session_id`` and ``stop_hook_active`` (true when
@@ -70,12 +71,14 @@ def summarize(messages: list[dict[str, Any]], questions: list[dict[str, Any]] | 
     # text: agent-written text is untrusted and is delivered labeled through
     # read_inbox / wait_for_approval.
     parts = ["[agenthub]"]
-    private = [m for m in messages if m.get("kind") == "private"]
-    messages = [m for m in messages if m.get("kind") != "private"]
+    # The operator's messages: in the agent's own chat ("private") and in its task and project chats ("operator").
+    private = [m for m in messages if m.get("kind") in ("private", "operator")]
+    messages = [m for m in messages if m.get("kind") not in ("private", "operator")]
     if private:
         plural = "s" if len(private) != 1 else ""
-        parts.append(f"You have {len(private)} unread private message{plural} from the operator. "
-                     "Call the agenthub `read_inbox` tool to read them, and reply with `message_operator` if needed.")
+        parts.append(f"You have {len(private)} unread message{plural} from the operator. "
+                     "Call the agenthub `read_inbox` tool to read them, and reply with `message_operator` (or "
+                     "`chat_post` in the chat it came from) if needed.")
     if messages:
         authors = Counter(m.get("author_name") or m.get("author") for m in messages)
         who = ", ".join(f"{name} ({n})" if n > 1 else str(name) for name, n in authors.most_common())

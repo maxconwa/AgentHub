@@ -21,7 +21,7 @@ def test_oversized_chunked_body_rejected(hub):
         for _ in range(100):
             yield b"x" * 1024
 
-    resp = hub.client.post("/api/v1/projects/proj/messages", content=chunks(),
+    resp = hub.client.post("/api/v1/chats/project/proj/messages", content=chunks(),
                            headers={**a.headers, "content-type": "application/json"})
     assert resp.status_code == 413
 

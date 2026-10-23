@@ -504,9 +504,11 @@ def _prompting(conn: sqlite3.Connection, target: str, limit: int = PANEL_PROMPTS
 
 def answer_delivery(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, Any]:
     """How the operator's answer to question ``q`` reached its agent (:func:`questions.answer_delivery`):
-    ``{prompt, private}``, ``prompt`` being the :func:`prompt` that carried it, or None."""
+    ``{chat_message_id, prompt, private}``: since 0.3.8 the operator's message in the agent's chat that carries it;
+    before, ``prompt`` (the :func:`prompt` that carried it, or None) or a private message."""
     found = questions.answer_delivery(conn, q)
-    return {"prompt": prompt(conn, found["prompt_id"]) if found["prompt_id"] is not None else None,
+    return {"chat_message_id": found["chat_message_id"],
+            "prompt": prompt(conn, found["prompt_id"]) if found["prompt_id"] is not None else None,
             "private": found["private"]}
 
 

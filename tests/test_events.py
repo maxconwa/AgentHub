@@ -16,25 +16,26 @@ def test_events_are_append_only(hub):
 
 def test_every_mutation_emits_an_event(hub):
     a = hub.enroll("a")
-    hub.client.post("/api/v1/projects/proj/messages", json={"body": "hi", "channel": "c1"}, headers=a.headers)
+    hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "hi"}, headers=a.headers)
     hub.client.put("/api/v1/projects/proj/board/k", json={"value": "v", "expected_version": 0}, headers=a.headers)
     types = {r["type"] for r in hub.conn().execute("SELECT type FROM events")}
-    assert {"channel.created", "message.posted", "board.updated", "agent.enrolled", "agent.approved"} <= types
+    assert {"chat.message", "board.updated", "agent.enrolled", "agent.approved"} <= types
 
 
 def test_search_finds_messages_and_board(hub):
     a = hub.enroll("a")
-    hub.client.post("/api/v1/projects/proj/messages", json={"body": "the flux capacitor"}, headers=a.headers)
+    hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "the flux capacitor"}, headers=a.headers)
     hub.client.put("/api/v1/projects/proj/board/design", json={"value": "capacitor notes", "expected_version": 0},
                    headers=a.headers)
     results = hub.client.get("/api/v1/search", params={"q": "capacitor"}, headers=a.headers).json()["results"]
-    assert {r["type"] for r in results} == {"message.posted", "board.updated"}
+    assert {r["type"] for r in results} == {"chat.message", "board.updated"}
+    assert any(r["payload"].get("body") == "the flux capacitor" for r in results)
 
 
 def test_search_scoped_to_allowed_projects(hub):
     a = hub.enroll("a", projects=("proj", "secret"))
     b = hub.enroll("b", projects=("proj",))
-    hub.client.post("/api/v1/projects/secret/messages", json={"body": "zebra"}, headers=a.headers)
+    hub.client.post("/api/v1/chats/project/secret/messages", json={"body": "zebra"}, headers=a.headers)
     assert hub.client.get("/api/v1/search", params={"q": "zebra"}, headers=b.headers).json()["results"] == []
     assert len(hub.client.get("/api/v1/search", params={"q": "zebra"}, headers=a.headers).json()["results"]) == 1
 

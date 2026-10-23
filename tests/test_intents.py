@@ -48,7 +48,7 @@ def test_overlap_opens_coordination_thread_and_board_doc(hub):
 
     for agent in (a, b):
         inbox = hub.client.get("/api/v1/inbox", headers=agent.headers).json()["messages"]
-        kick = [m for m in inbox if m["channel"] == f"coordination-{cid}"]
+        kick = [m for m in inbox if m["chat"] == "project:proj" and f"[coordination #{cid}]" in m["body"]]
         assert len(kick) == 1 and kick[0]["addressed_to_me"] and kick[0]["author"] == "system:hub"
         assert "alice" in kick[0]["body"] and "bob" in kick[0]["body"]
         assert "refactor API" not in kick[0]["body"]  # agent free text is not echoed by the hub

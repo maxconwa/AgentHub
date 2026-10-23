@@ -57,15 +57,16 @@ def test_migration_22_adds_chat_tables_and_nothing_else_changes(hub):
     assert "chat_support" in {r["name"] for r in conn.execute("PRAGMA table_info(agents)")}
 
 
-def test_an_old_hub_runs_on_a_migrated_database(tmp_path):
-    """0.3.7's migrate() stops at its own 21 migrations and leaves a newer database alone."""
+def test_an_old_hub_runs_on_a_migrated_database(tmp_path, monkeypatch):
+    """0.3.7's migrate() (unchanged since) with its own 21 migrations leaves a newer database alone."""
     path = tmp_path / "hub.sqlite3"
     db.init_db(path).close()
-    conn = db.connect(path)
-    old = db.MIGRATIONS[:21]
-    current = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert current >= len(old)  # what 0.3.7's migrate() checks first: nothing to do
-    conn.execute("SELECT * FROM private_messages, prompts, prompt_recipients, messages, channels LIMIT 1")
+    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:21])
+    conn = db.init_db(path)  # what a rolled-back 0.3.7 hub does at start
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+    with db.transaction(conn):  # and 0.3.7 still writes its own tables
+        store.ensure_project(conn, "proj", actor=OPERATOR)
+        store.post_message(conn, author=OPERATOR, project="proj", channel="general", body="from 0.3.7")
 
 
 # --- chats and routing ---------------------------------------------------------------------------------------
@@ -252,7 +253,7 @@ def test_stream_caps_lines_and_skips_what_it_does_not_know(trio):
                                     {"type": "status", "state": "dancing"}, "junk", {"type": "text", "text": " "},
                                     {"type": "status", "state": "usage_limit", "until": "2026-10-23T05:00:00Z",
                                      "detail": "x" * 900, "future_field": 1}])
-    assert r.json()["ignored"] == 5
+    assert r.json()["ignored"] == 4  # an agent may say "queued" too (a claim that landed as its session ended)
     last = chats.messages(hub.conn(), "agent", a.id)[-1]
     assert last["meta"]["state"] == "usage_limit" and last["meta"]["until"] == "2026-10-23T05:00:00Z"
     assert len(last["meta"]["detail"]) == chats.MAX_DETAIL_CHARS
@@ -312,8 +313,9 @@ def test_inbox_delivers_operator_messages_and_mail_from_group_chats(trio):
     api(hub, b, "POST", "/chats/project/proj/messages", json={"body": "general chatter"})
     stream(hub, b, f"task/{t['id']}", [{"type": "tool", "line": "Bash: ls"}, {"type": "text", "text": "live"}])
     peek = api(hub, a, "GET", "/inbox", params={"peek": True}).json()
-    assert [m["kind"] for m in peek["messages"]] == ["private", "operator", "chat", "chat", "chat"]
-    assert [m["body"] for m in peek["messages"]][-3:] == ["b's note", "general chatter", "live"]
+    # b's session narration ("live") is for the operator to watch: not mail
+    assert [m["kind"] for m in peek["messages"]] == ["private", "operator", "chat", "chat"]
+    assert [m["body"] for m in peek["messages"]][-2:] == ["b's note", "general chatter"]
     assert peek["messages"][2]["addressed_to_me"] is True and peek["messages"][1]["chat"] == f"task:{t['id']}"
     stop = api(hub, a, "GET", "/inbox", params={"addressed_only": True}).json()
     assert [m["body"] for m in stop["messages"]] == ["for you only", "for the task", "b's note"]
@@ -322,7 +324,7 @@ def test_inbox_delivers_operator_messages_and_mail_from_group_chats(trio):
     assert two["more"] is True and [m["kind"] for m in two["messages"]] == ["private", "operator"]
     assert deliveries(hub, a) == []  # read through the inbox: the runner's claim now gets 409
     rest = api(hub, a, "GET", "/inbox").json()
-    assert [m["body"] for m in rest["messages"]] == ["b's note", "general chatter", "live"] and not rest["more"]
+    assert [m["body"] for m in rest["messages"]] == ["b's note", "general chatter"] and not rest["more"]
     assert api(hub, a, "GET", "/inbox").json()["messages"] == []
     msg = chats.messages(hub.conn(), "agent", a.id)[1]
     assert msg["deliveries"][0]["mode"] == "inbox"
@@ -426,15 +428,20 @@ def test_enrollment_card_and_question_card_and_answer(trio):
 # --- events and push --------------------------------------------------------------------------------------------
 
 
-def test_chat_events_carry_ids_only(trio):
+def test_chat_events_carry_ids_only_and_only_group_chats_are_searchable(trio):
     hub, a, b, _ = trio
-    op_send(hub, "project", "proj")
-    api(hub, a, "POST", "/chats/project/proj/messages", json={"body": f"agent {SECRET}"})
-    stream(hub, a, "agent/me", [{"type": "text", "text": SECRET}, {"type": "tool", "line": SECRET}])
+    op_send(hub, "agent", a.id, body="private OPWORD")
+    api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "deploying the WIDGET service"})
+    api(hub, a, "POST", "/private", json={"body": "just for you PRIVWORD"})
+    stream(hub, a, "agent/me", [{"type": "text", "text": "STREAMWORD"}, {"type": "tool", "line": "TOOLWORD"}])
     rows = q(hub, "SELECT type, payload FROM events WHERE type LIKE 'chat.%'")
     assert {r["type"] for r in rows} == {"chat.message", "chat.deliver"}
-    assert all(SECRET not in r["payload"] for r in rows)
-    assert q(hub, "SELECT COUNT(*) FROM events_fts WHERE events_fts MATCH ?", SECRET.split("-")[0])[0][0] == 0
+    assert not any(w in r["payload"] for r in rows for w in ("OPWORD", "WIDGET", "PRIVWORD", "STREAMWORD", "TOOLWORD"))
+    for word in ("OPWORD", "PRIVWORD", "STREAMWORD", "TOOLWORD"):
+        assert q(hub, "SELECT COUNT(*) FROM events_fts WHERE events_fts MATCH ?", word)[0][0] == 0
+    found = api(hub, b, "GET", "/search", params={"q": "widget"}).json()["results"]
+    assert [e["payload"]["body"] for e in found] == ["deploying the WIDGET service"]
+    assert api(hub, b, "GET", "/search", params={"q": "PRIVWORD"}).json()["results"] == []
 
 
 class Sock:
@@ -513,3 +520,196 @@ def test_asks_go_through_the_project_chat(trio):
     api(hub, b, "POST", f"/asks/{ask_id}/answer", json={"answer": "yes"})
     mail = api(hub, a, "GET", "/inbox").json()["messages"]
     assert mail[-1]["body"] == f"[answer to ask #{ask_id}] yes" and mail[-1]["addressed_to_me"] is True
+
+
+# --- backfill from 0.3.7 ------------------------------------------------------------------------------------------
+
+
+def _legacy_dump(conn):
+    tables = ("private_messages", "prompts", "prompt_recipients", "messages", "channels", "approvals", "questions",
+              "tasks", "task_agents", "board")
+    return {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in tables}
+
+
+def test_backfill_copies_0_3_7_history_once_and_changes_nothing(trio):
+    from agenthub.hub import private, prompts
+
+    hub, a, b, _ = trio
+    t = mk_task(hub, a)
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1")
+        private.send(conn, a.id, author=OPERATOR, body="old hello")
+        private.send(conn, a.id, author=a.id, body="old reply")
+        single = prompts.create(conn, target=f"task:{t['id']}", body="fix the bug", actor=OPERATOR)
+        group = prompts.create(conn, target="project:proj", body="split the release", actor=OPERATOR)
+        prompts.claim(conn, group["id"], store.get_agent(conn, a.id), title="hub part")
+        prompts.decline(conn, group["id"], store.get_agent(conn, b.id), reason="busy")
+        store.post_message(conn, author=store.get_agent(conn, b.id), project="proj", channel=f"prompt-{group['id']}",
+                           body="I'll do the UI")
+        store.post_message(conn, author=store.get_agent(conn, b.id), project="proj", channel=f"task-{t['id']}",
+                           body="task note")
+        store.post_message(conn, author=store.get_agent(conn, b.id), project="proj", channel="general",
+                           body="psst", to=a.id)
+        conn.execute("INSERT INTO approvals (kind, project, requester, details, status, created_at) VALUES "
+                     "('tool_permission', 'proj', ?, ?, 'pending', '2026-10-01T00:00:00.000000Z')",
+                     (a.id, json.dumps({"task_id": t["id"], "tool_name": "Bash"})))
+        conn.execute("DELETE FROM chat_messages")  # what a 0.3.7 database has: no chats yet
+    before = _legacy_dump(conn)
+    events_before = conn.execute("SELECT MAX(id) FROM events").fetchone()[0]
+    with db.transaction(conn):
+        added = chats.backfill(conn)
+    assert added > 0
+    with db.transaction(conn):
+        assert chats.backfill(conn) == 0  # keyed on legacy: a second start adds nothing
+    assert _legacy_dump(conn) == before
+    assert conn.execute("SELECT MAX(id) FROM events").fetchone()[0] == events_before
+
+    mine = chats.messages(conn, "agent", a.id)
+    bodies = [(m["author"], m["kind"], m["body"]) for m in mine]
+    assert (OPERATOR, "text", "old hello") in bodies and (a.id, "text", "old reply") in bodies
+    assert (OPERATOR, "text", "fix the bug") in bodies and (OPERATOR, "text", "split the release") in bodies
+    assert not any(m["body"].startswith("Prompt #") for m in mine)  # the prompt row stands for its copy
+    task_rows = chats.messages(conn, "task", str(t["id"]))
+    assert [(m["kind"], m["body"]) for m in task_rows if m["kind"] == "text"] == [("text", "task note")]
+    assert any(m["kind"] == "approval" for m in task_rows)
+    proj = chats.messages(conn, "project", "proj")
+    kinds = [(m["kind"], m["author"]) for m in proj]
+    assert ("took_task", a.id) in kinds and ("sit_out", b.id) in kinds
+    assert any(m["body"] == "split the release" and m["author"] == OPERATOR for m in proj)
+    assert any(m["body"] == "I'll do the UI" and m["meta"]["legacy"]["channel"] == f"prompt-{group['id']}"
+               for m in proj)
+    psst = next(m for m in proj if m["body"] == "psst")
+    assert psst["meta"]["to"] == a.id and psst["legacy"].startswith("msg:")
+    sit = next(m for m in proj if m["kind"] == "sit_out")
+    assert sit["body"] == "busy"
+    # history is never mail, and never a delivery
+    assert api(hub, a, "GET", "/inbox", params={"peek": True}).json()["messages"][0]["kind"] == "private"
+    assert all(m.get("kind") != "chat" for m in api(hub, a, "GET", "/inbox", params={"peek": True}).json()["messages"])
+    # the single prompt was still pending at the upgrade: it is delivered now, as the operator's message
+    assert [d["body"] for d in deliveries(hub, a)] == ["fix the bug"]
+    # ordered by when it happened
+    ts = [m["ts"] for m in mine]
+    assert ts == sorted(ts)
+    _ = single
+
+
+def test_backfill_runs_at_startup(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from agenthub.hub import private
+
+    from .conftest import make_hub
+
+    hub = make_hub(tmp_path)
+    a = hub.enroll("alice")
+    conn = hub.conn()
+    with db.transaction(conn):
+        private.send(conn, a.id, author=OPERATOR, body="written while rolled back to 0.3.7")
+    with TestClient(hub.client.app, client=("127.0.0.1", 40000)):
+        pass
+    assert any(m["body"] == "written while rolled back to 0.3.7" for m in chats.messages(hub.conn(), "agent", a.id))
+
+
+def test_stop_hook_counts_operator_chat_messages_without_their_text(trio):
+    from agenthub.hooks.stop import summarize
+
+    hub, a, b, _ = trio
+    t = mk_task(hub, a, b)
+    op_send(hub, "task", str(t["id"]), body=f"task note {SECRET}")
+    op_send(hub, "agent", a.id, body=f"direct {SECRET}")
+    api(hub, b, "POST", f"/chats/task/{t['id']}/messages", json={"body": f"hey {SECRET}", "to": "alice"})
+    mail = api(hub, a, "GET", "/inbox", params={"peek": True, "addressed_only": True}).json()["messages"]
+    text = summarize(mail)
+    assert "2 unread messages from the operator" in text and "1 unread message addressed to you, from: bob" in text
+    assert SECRET not in text
+    assert len(deliveries(hub, a)) == 2  # the hook only peeks
+
+
+def test_text_addressed_to_another_agent_is_not_mail(trio):
+    hub, a, b, _ = trio
+    c = hub.enroll("dave")
+    api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "for bob", "to": "bob"})
+    api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "for all"})
+    assert [m["body"] for m in api(hub, c, "GET", "/inbox").json()["messages"]] == ["for all"]
+    assert [m["body"] for m in api(hub, b, "GET", "/inbox").json()["messages"]] == ["for bob", "for all"]
+    assert "for bob" in [m["body"] for m in api(hub, c, "GET", "/chats/project/proj/messages").json()["messages"]]
+
+
+def test_session_narration_is_not_mail_nor_pushed(trio):
+    hub, a, b, _ = trio
+    t = mk_task(hub, a, b)
+    stream(hub, b, f"task/{t['id']}", [{"type": "text", "text": "thinking aloud"}])
+    assert api(hub, a, "GET", "/inbox").json()["messages"] == []
+    ev = q(hub, "SELECT payload FROM events WHERE type = 'chat.message' ORDER BY id DESC LIMIT 1")[0]
+    event = {"type": "chat.message", "actor": b.id, "project": "proj", "payload": json.loads(ev["payload"])}
+    assert bus.recipients(event, hub.conn()) == set()
+    assert chats.messages(hub.conn(), "task", str(t["id"]))[-1]["meta"]["source"] == "session"
+
+
+def test_status_links_only_the_agents_own_approval(trio):
+    hub, a, b, _ = trio
+    t = mk_task(hub, a, b)
+    mine = api(hub, a, "POST", "/approvals/tool", json={"task_id": t["id"], "tool_name": "Bash"}).json()["id"]
+    theirs = api(hub, b, "POST", "/approvals/tool", json={"task_id": t["id"], "tool_name": "Edit"}).json()["id"]
+    stream(hub, a, f"task/{t['id']}", [{"type": "status", "state": "approval_wait", "approval_id": mine},
+                                       {"type": "status", "state": "approval_wait", "approval_id": theirs},
+                                       {"type": "status", "state": "approval_wait", "approval_id": True}])
+    rows = chats.messages(hub.conn(), "task", str(t["id"]))[-3:]
+    assert [r["meta"].get("approval_id") for r in rows] == [mine, None, None]
+
+
+def test_backfill_turns_prompts_still_open_into_deliveries(trio):
+    from agenthub.hub import prompts
+
+    hub, a, b, _ = trio
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE agents SET connected = 1, prompt_support = 1")
+        single = prompts.create(conn, target=f"agent:{a.id}", body="check the nightly", actor=OPERATOR)
+        group = prompts.create(conn, target="project:proj", body="split the release", actor=OPERATOR)
+        prompts.decline(conn, group["id"], store.get_agent(conn, b.id), reason="busy")
+        done = prompts.create(conn, target=f"agent:{b.id}", body="already done", actor=OPERATOR)
+        prompts.start(conn, done["id"], store.get_agent(conn, b.id))
+        prompts.finish(conn, done["id"], store.get_agent(conn, b.id), ok=True)
+        conn.execute("DELETE FROM chat_messages")
+        chats.backfill(conn)
+    got = {d["body"]: d for d in deliveries(hub, a)}
+    assert set(got) == {"check the nightly", "split the release"}
+    assert got["check the nightly"]["chat"]["kind"] == "agent" and got["check the nightly"]["verified"] is True
+    request = got["split the release"]
+    assert request["chat"]["kind"] == "project"
+    assert deliveries(hub, b) == []  # it declined; its other prompt is done
+    r = api(hub, a, "POST", f"/chats/requests/{request['message_id']}/take", json={"title": "the release notes"})
+    assert r.status_code == 201, r.text
+    with db.transaction(conn):
+        assert chats.backfill(conn) == 0
+    assert len(q(hub, "SELECT * FROM chat_deliveries")) == 2  # made once, with the row
+    assert prompts.get(conn, single["id"])["status"] == "pending"  # the prompt itself is left as it was
+
+
+async def test_client_chat_methods_round_trip(dev_hub):
+    import httpx
+
+    from agenthub.client import HubClient, HubError
+
+    hub = dev_hub
+    a = hub.enroll("alice")
+    c = HubClient("http://hub", a.token, transport=httpx.ASGITransport(app=hub.client.app))
+    op_send(hub, "agent", a.id, body="hello")
+    try:
+        (d,) = await c.pending_deliveries()
+        assert (await c.claim_delivery(d["id"], "woke"))["mode"] == "woke"
+        with pytest.raises(HubError) as info:
+            await c.claim_delivery(d["id"], "live")
+        assert info.value.status == 409
+        r = await c.chat_stream("agent", "me", [{"type": "text", "text": "hi"}, {"type": "tool", "line": "Bash: ls"}])
+        assert len(r["ids"]) == 2
+        await c.set_chat_session("sess-1")
+        assert await c.chat_session() == "sess-1"
+        assert (await c.report_chat_run("agent", "me", outcome="success", seconds=3, num_turns=1))["id"]
+        assert (await c.chat_post("agent", "me", "done"))["body"] == "done"
+        texts = [m["body"] for m in (await c.chat_history("agent", "me"))["messages"] if m["kind"] == "text"]
+        assert texts[-1] == "done"
+    finally:
+        await c.aclose()

@@ -20,8 +20,9 @@ agent, a task's members, a project's allowed agents; never a revoked one). The r
 session, or queues it for the next turn; a session can also claim it through ``read_inbox``. Nothing times out.
 Only a human operator writes operator text: no agent route reaches :func:`send`.
 
-Events carry ids only (``chat.message``, ``chat.updated``, ``chat.deliver``), never a body, so the event log and its
-full-text index hold no chat text. The bus sends the operator's socket the full row; agents get ids.
+Events carry ids only (``chat.message``, ``chat.updated``, ``chat.deliver``), never a body. The full-text index holds
+the text of task and project chats (so ``search_history`` finds it, for agents in that project), never of an agent's
+own chat. The bus sends the operator's socket the full row; agents get ids.
 
 :func:`backfill` copies 0.3.7's private chats, prompts, channel posts, approvals and questions into chats, keyed on
 ``legacy`` so it can run on every start and never copies a row twice. It reads those tables and never changes them.
@@ -222,8 +223,8 @@ def messages(
 
 
 def _emit(conn: sqlite3.Connection, etype: str, chat_row: dict[str, Any], message_id: int, kind: str, *,
-          actor: str, device: str | None = None, **extra: Any) -> None:
-    events.emit(conn, type=etype, actor=actor, project=chat_row["project"], device=device,
+          actor: str, device: str | None = None, index_text: str | None = None, **extra: Any) -> None:
+    events.emit(conn, type=etype, actor=actor, project=chat_row["project"], device=device, index_text=index_text,
                 payload={"chat_id": chat_row["id"], "chat_kind": chat_row["kind"], "chat_ref": chat_row["ref"],
                          "message_id": message_id, "kind": kind, **extra})
 
@@ -240,7 +241,11 @@ def _insert(
     extra: dict[str, Any] = {"to": meta["to"]} if meta.get("to") else {}
     if meta.get("source"):
         extra["source"] = meta["source"]
-    _emit(conn, "chat.message", chat_row, cur.lastrowid, kind, actor=author, device=device, **extra)
+    # What agents write in task and project chats is searchable (search_history) by the agents in that project;
+    # an agent's own chat with the operator never is.
+    index = body if chat_row["kind"] != "agent" and kind in ("text", "sit_out") else None
+    _emit(conn, "chat.message", chat_row, cur.lastrowid, kind, actor=author, device=device, index_text=index,
+          **extra)
     return cur.lastrowid
 
 
@@ -441,13 +446,15 @@ def stream(
             close()
             ids.append(_insert(conn, chat_row, author=agent.id, kind="text", body=item["text"][:MAX_BODY_CHARS],
                                meta={"source": "session", **tag}, device=device))
-        elif itype == "status" and item.get("state") in STATES and item["state"] != "queued":
+        elif itype == "status" and item.get("state") in STATES:
             close()
             meta: dict[str, Any] = {"state": item["state"], **tag}
             if isinstance(item.get("until"), str):
                 meta["until"] = item["until"][:64]
-            if isinstance(item.get("approval_id"), int) and not isinstance(item["approval_id"], bool):
-                meta["approval_id"] = item["approval_id"]
+            approval_id = item.get("approval_id")
+            if isinstance(approval_id, int) and not isinstance(approval_id, bool) and conn.execute(
+                    "SELECT 1 FROM approvals WHERE id = ? AND requester = ?", (approval_id, agent.id)).fetchone():
+                meta["approval_id"] = approval_id  # only an approval this agent asked for
             if isinstance(item.get("detail"), str) and item["detail"].strip():
                 meta["detail"] = item["detail"][:MAX_DETAIL_CHARS]
             ids.append(_insert(conn, chat_row, author=agent.id, kind="status", meta=meta, device=device))
@@ -456,6 +463,40 @@ def stream(
     if grown and stretch is not None:
         _update_meta(conn, chat_row, stretch["id"], stretch_meta, actor=agent.id, kind="tools")
     return {"ids": ids, "ignored": ignored}
+
+
+MAX_RUN_SECONDS = 7 * 24 * 3600
+
+
+def record_run(
+    conn: sqlite3.Connection, agent: Agent, kind: str, ref: str, *, outcome: str, seconds: float,
+    session_id: str | None = None, num_turns: int | None = None, cost_usd: float | None = None,
+    project: str | None = None, task_id: int | None = None,
+) -> dict[str, Any]:
+    """``agent``'s runner ran one session for a chat it is in; it ended now, after ``seconds`` (the hub's clock places
+    it). Shown on the Usage page. It counts in the chat's project; an agent chat's session counts in ``project`` if
+    ``agent`` may see that project, and on ``task_id`` if ``agent`` is on that task (a task chat's on its task)."""
+    from datetime import UTC, datetime, timedelta
+
+    chat_row = _member_chat(conn, agent, kind, ref)
+    if chat_row["kind"] == "task":
+        task_id = int(chat_row["ref"])
+    elif task_id is not None and not conn.execute("SELECT 1 FROM task_agents WHERE task_id = ? AND agent_id = ?",
+                                                  (task_id, agent.id)).fetchone():
+        task_id = None
+    if chat_row["project"] is not None:
+        project = chat_row["project"]
+    elif project is not None:
+        known = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
+        project = project if known and project in agent.allowed_projects else None
+    now = datetime.now(UTC)
+    started = now - timedelta(seconds=min(max(seconds, 0.0), MAX_RUN_SECONDS))
+    cur = conn.execute(
+        "INSERT INTO chat_runs (chat_id, agent_id, project, task_id, session_id, started_at, ended_at, outcome, "
+        "num_turns, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (chat_row["id"], agent.id, project, task_id, session_id, now_iso(started), now_iso(now), outcome, num_turns,
+         cost_usd))
+    return {"id": cur.lastrowid}
 
 
 # --- deliveries --------------------------------------------------------------------------------------------------
@@ -571,8 +612,8 @@ def chat_mail(
 ) -> list[dict[str, Any]]:
     """What other agents and the hub wrote in ``agent``'s task and project chats (in ``projects``) since it last
     read them, as inbox entries, oldest first (only rows addressed to it, with ``addressed_only``, which never marks
-    read: moving the cursor would skip the rest). Tool lines, statuses, cards, the operator's text (it comes as
-    deliveries) and backfilled history are not mail."""
+    read: moving the cursor would skip the rest). Tool lines, statuses, cards, a session's live text, the operator's
+    text (it comes as deliveries), text addressed to another agent and backfilled history are not mail."""
     chat_ids = _agent_chat_ids(conn, agent, projects)
     if limit <= 0 or not chat_ids:
         return []
@@ -599,15 +640,21 @@ def _chat_mail(conn: sqlite3.Connection, agent: Agent, chat_ids: list[int], limi
                addressed_only: bool) -> list[sqlite3.Row]:
     marks = ",".join("?" * len(chat_ids))
     kinds = ",".join("?" * len(MAIL_KINDS))
-    addressed = "AND json_extract(m.meta, '$.to') = ? " if addressed_only else ""
+    # Text addressed to another agent stays visible in the chat but isn't this agent's mail (as with 0.3.7's `to`).
+    addressed = ("AND json_extract(m.meta, '$.to') = ? " if addressed_only
+                 else "AND COALESCE(json_extract(m.meta, '$.to'), ?) = ? ")
+    # A session's live narration (meta.source 'session') is for the operator to watch, not mail: only what an agent
+    # posts on purpose (chat_post, took a task, sat out) and the hub's addressed notes reach other agents.
     return conn.execute(
         "SELECT m.id, m.chat_id, c.kind AS chat_kind, c.ref AS chat_ref, c.project, m.author, a.name AS author_name, "
         "m.kind, m.body, m.meta, m.created_at AS ts FROM chat_messages m JOIN chats c ON c.id = m.chat_id "
         "LEFT JOIN agents a ON a.id = m.author LEFT JOIN chat_cursors k ON k.chat_id = m.chat_id AND k.agent_id = ? "
         f"WHERE m.chat_id IN ({marks}) AND m.id > COALESCE(k.last_read_id, 0) AND m.author != ? "
-        f"AND m.author NOT LIKE 'human:%' AND m.legacy IS NULL AND m.kind IN ({kinds}) {addressed}"
+        f"AND m.author NOT LIKE 'human:%' AND m.legacy IS NULL AND m.kind IN ({kinds}) "
+        f"AND json_extract(m.meta, '$.source') IS NULL {addressed}"
         "ORDER BY m.id LIMIT ?",
-        [agent.id, *chat_ids, agent.id, *MAIL_KINDS, *([agent.id] if addressed_only else []), limit]).fetchall()
+        [agent.id, *chat_ids, agent.id, *MAIL_KINDS, *([agent.id] if addressed_only else [agent.id, agent.id]),
+         limit]).fetchall()
 
 
 def _mail_body(r: sqlite3.Row, meta: dict[str, Any]) -> str:
@@ -731,6 +778,21 @@ def card(conn: sqlite3.Connection, kind: str, item_id: int) -> dict[str, Any] | 
     return get_message(conn, row["id"]) if row else None
 
 
+def with_bodies(conn: sqlite3.Connection, found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Search hits with the text of the task- and project-chat messages they point at (their events carry ids;
+    the caller already limited the hits to its projects, and agent chats have no project)."""
+    ids = [e["payload"].get("message_id") for e in found
+           if e["type"] == "chat.message" and e["payload"].get("chat_kind") in ("task", "project")]
+    if not ids:
+        return found
+    rows = conn.execute(f"SELECT id, body FROM chat_messages WHERE id IN ({','.join('?' * len(ids))})", ids)
+    bodies = {r["id"]: r["body"] for r in rows}
+    for e in found:
+        if e["type"] == "chat.message" and e["payload"].get("message_id") in bodies:
+            e["payload"] = e["payload"] | {"body": bodies[e["payload"]["message_id"]]}
+    return found
+
+
 # --- backfill from 0.3.7 -----------------------------------------------------------------------------------------
 
 
@@ -745,41 +807,55 @@ def _prompt_chat(target: str, project: str | None, agent_id: str) -> tuple[str, 
     return "agent", agent_id
 
 
-def _legacy_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str, str, dict[str, Any], str]]:
-    """``(ts, legacy, chat kind, chat ref, author, kind, meta, body)`` for every 0.3.7 row a chat should show."""
-    out: list[tuple[str, str, str, str, str, str, dict[str, Any], str]] = []
+Legacy = tuple[str, str, str, str, str, str, dict[str, Any], str, tuple[str, ...]]
+OPEN_RECIPIENT = ("pending", "running")
+
+
+def _legacy_rows(conn: sqlite3.Connection) -> list[Legacy]:
+    """``(ts, legacy, chat kind, chat ref, author, kind, meta, body, deliver_to)`` for every 0.3.7 row a chat should
+    show. ``deliver_to``: the agents a prompt was still pending or running for when the hub was upgraded (they get
+    it as the operator's chat message, since no runner runs prompts any more)."""
+    out: list[Legacy] = []
     tasks_ = {r["id"]: r["project"] for r in conn.execute("SELECT id, project FROM tasks")}
     for r in conn.execute("SELECT id, agent_id, author, body, ts FROM private_messages WHERE prompt_id IS NULL"):
         out.append((r["ts"], f"pm:{r['id']}", "agent", r["agent_id"], r["author"], "text",
-                    {"legacy": {"from": "private", "id": r["id"]}}, r["body"]))
+                    {"legacy": {"from": "private", "id": r["id"]}}, r["body"], ()))
     prompts_ = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM prompts")}
+    still_open: dict[int, list[str]] = {}
     for r in conn.execute("SELECT * FROM prompt_recipients ORDER BY prompt_id, agent_id"):
         p = prompts_[r["prompt_id"]]
         pid, agent_id = p["id"], r["agent_id"]
         legacy_meta = {"from": "prompt", "prompt_id": pid, "target": p["target"], "mode": p["mode"]}
-        out.append((p["created_at"], f"prompt:{pid}:{agent_id}", "agent", agent_id, p["created_by"], "text",
-                    {"legacy": legacy_meta}, p["body"]))
         kind, ref = _prompt_chat(p["target"], p["project"], agent_id)
         if kind == "task" and int(ref) not in tasks_:
             kind, ref = "agent", agent_id
+        is_open = r["status"] in OPEN_RECIPIENT
+        if is_open:
+            still_open.setdefault(pid, []).append(agent_id)
+        # A group prompt with a task or project chat is delivered there (so its recipients can take_task); any
+        # other open prompt in the recipient's own chat.
+        deliver = (agent_id,) if is_open and not (p["mode"] == "group" and kind != "agent") else ()
+        out.append((p["created_at"], f"prompt:{pid}:{agent_id}", "agent", agent_id, p["created_by"], "text",
+                    {"legacy": legacy_meta}, p["body"], deliver))
         key, status = f"pr:{pid}:{agent_id}:{r['status']}", r["status"]
         meta: dict[str, Any] = {"legacy": legacy_meta}
         if status == "claimed" and r["task_id"] is not None:
-            out.append((r["updated_at"], key, kind, ref, agent_id, "took_task", meta | {"task_id": r["task_id"]}, ""))
+            out.append((r["updated_at"], key, kind, ref, agent_id, "took_task", meta | {"task_id": r["task_id"]}, "",
+                        ()))
         elif status == "declined":
-            out.append((r["updated_at"], key, kind, ref, agent_id, "sit_out", meta, r["note"] or "(no reason)"))
+            out.append((r["updated_at"], key, kind, ref, agent_id, "sit_out", meta, r["note"] or "(no reason)", ()))
         elif status in ("done", "failed", "timed_out", "skipped"):
             meta |= {"state": "finished" if status == "done" else "failed"}
             if r["note"]:
                 meta |= {"detail": r["note"][:MAX_DETAIL_CHARS], "detail_by_hub": bool(r["note_by_hub"])}
             out.append((r["updated_at"], key, "agent", agent_id, SYSTEM if r["note_by_hub"] else agent_id,
-                        "status", meta, ""))
+                        "status", meta, "", ()))
     for p in prompts_.values():  # a group prompt's text also opens its task's or project's chat
         kind, ref = _prompt_chat(p["target"], p["project"], "")
         if p["mode"] == "group" and kind != "agent" and (kind != "task" or int(ref) in tasks_):
             out.append((p["created_at"], f"prompt:{p['id']}:group", kind, ref, p["created_by"], "text",
                         {"legacy": {"from": "prompt", "prompt_id": p["id"], "target": p["target"],
-                                    "mode": p["mode"]}}, p["body"]))
+                                    "mode": p["mode"]}}, p["body"], tuple(still_open.get(p["id"], ()))))
     for r in conn.execute("SELECT m.id, m.project, c.name AS channel, m.author, m.to_agent, m.body, m.ts "
                           "FROM messages m JOIN channels c ON c.id = m.channel_id"):
         kind, ref = "project", r["project"]
@@ -794,7 +870,7 @@ def _legacy_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str
         meta = {"legacy": {"from": "channel", "channel": name, "id": r["id"]}}
         if r["to_agent"]:
             meta["to"] = r["to_agent"]
-        out.append((r["ts"], f"msg:{r['id']}", kind, ref, r["author"], "text", meta, r["body"]))
+        out.append((r["ts"], f"msg:{r['id']}", kind, ref, r["author"], "text", meta, r["body"], ()))
     for r in conn.execute("SELECT id, requester, details, created_at FROM approvals"):
         task_id = json.loads(r["details"]).get("task_id")
         if isinstance(task_id, int) and task_id in tasks_:
@@ -802,11 +878,11 @@ def _legacy_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str
         else:
             kind, ref = "agent", r["requester"]
         out.append((r["created_at"], f"ap:{r['id']}", kind, ref, r["requester"], "approval",
-                    {"approval_id": r["id"]}, ""))
+                    {"approval_id": r["id"]}, "", ()))
     for r in conn.execute("SELECT id, agent_id, task_id, created_at FROM questions"):
         kind, ref = ("task", str(r["task_id"])) if r["task_id"] in tasks_ else ("agent", r["agent_id"])
         out.append((r["created_at"], f"q:{r['id']}", kind, ref, r["agent_id"], "question",
-                    {"question_id": r["id"]}, ""))
+                    {"question_id": r["id"]}, "", ()))
     return out
 
 
@@ -817,15 +893,19 @@ def backfill(conn: sqlite3.Connection) -> int:
     group prompt's text in its task's or project's chat, channel posts (``task-<id>`` to the task's chat, a prompt's
     thread to its task's chat, the rest to the project's chat, ``to`` kept), and a card for every approval and
     question. Keyed on ``legacy``, so running it again (every start, or after a rollback to 0.3.7 and back) adds only
-    what is new; rows are added oldest first. No events: the history is old."""
-    agents = {r["id"] for r in conn.execute("SELECT id FROM agents")}
+    what is new; rows are added oldest first. A prompt still pending or running for an active agent becomes a
+    pending delivery of its copy, made once with the row, so the work the operator asked for before the upgrade still
+    reaches the agent. No events: the bus starts after this, and an agent's runner asks for its deliveries when it
+    connects."""
+    agents = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM agents")}
     projects = {r["name"] for r in conn.execute("SELECT name FROM projects")}
     tasks_ = {str(r["id"]): r["project"] for r in conn.execute("SELECT id, project FROM tasks")}
     done = {r["legacy"] for r in conn.execute("SELECT legacy FROM chat_messages WHERE legacy IS NOT NULL")}
     rows = sorted((r for r in _legacy_rows(conn) if r[1] not in done), key=lambda r: (r[0], r[1]))
     chat_ids: dict[tuple[str, str], int] = {}
     added = 0
-    for ts, legacy, kind, ref, author, mkind, meta, body in rows:
+    now = now_iso()
+    for ts, legacy, kind, ref, author, mkind, meta, body, deliver_to in rows:
         if (kind == "agent" and ref not in agents) or (kind == "project" and ref not in projects) or \
                 (kind == "task" and ref not in tasks_):
             continue
@@ -837,4 +917,9 @@ def backfill(conn: sqlite3.Connection) -> int:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             (chat_ids[(kind, ref)], author, mkind, body, json.dumps(meta, separators=(",", ":")), legacy, ts, ts))
         added += cur.rowcount
+        if cur.rowcount and _is_operator(author):
+            for agent_id in deliver_to:
+                if agents.get(agent_id) == "active":
+                    conn.execute("INSERT INTO chat_deliveries (message_id, agent_id, status, created_at) "
+                                 "VALUES (?, ?, 'pending', ?) ON CONFLICT DO NOTHING", (cur.lastrowid, agent_id, now))
     return added

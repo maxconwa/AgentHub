@@ -64,11 +64,9 @@ def test_bus_pushes_events_and_closes_on_revoke(tmp_path):
     with TestClient(hub.client.app, client=("127.0.0.1", 40000)) as live:  # runs lifespan: starts the bus
         with live.websocket_connect("/api/v1/ws", headers=b.headers) as conn:
             assert conn.receive_json()["type"] == "hello"
-            live.post("/api/v1/projects/proj/messages", json={"body": "hi b", "to": "b"}, headers=a.headers)
+            live.post("/api/v1/chats/project/proj/messages", json={"body": "hi b", "to": "b"}, headers=a.headers)
             msg = conn.receive_json()
-            if msg["event"]["type"] == "channel.created":  # the first post also creates the channel
-                msg = conn.receive_json()
-            assert msg["event"]["type"] == "message.posted"
+            assert msg["event"]["type"] == "chat.message"
             assert msg["event"]["data"]["addressed_to_me"] is True
             assert "body" not in json.dumps(msg["event"]["data"])  # notifications carry no content
             hub.set_status(b, "revoked")  # written straight to the DB, like the operator CLI

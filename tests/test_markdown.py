@@ -9,7 +9,7 @@ from markupsafe import Markup
 from agenthub.hub import db, markdown, store, task_agents, tasks
 from agenthub.hub.dashboard import SECURITY_HEADERS
 
-from .conftest import OPERATOR
+from .conftest import OPERATOR, legacy_post, legacy_private
 
 MD = "Use **bold** and $x^2$"
 RENDERED_BOLD = "<strong>bold</strong>"
@@ -175,8 +175,7 @@ def rich(hub):
         store.post_message(conn, author=a.id, project="proj", channel=f"task-{t['id']}", body=MD)
         store.set_project_description(conn, "proj", "Operator **desc** $y$", actor=OPERATOR)
     for body in (MD, "**pair**"):
-        hub.client.post("/api/v1/projects/proj/messages", headers=a.headers,
-                        json={"channel": "general", "body": body, "to": "helper"})
+        legacy_post(hub, a, body, to="helper")
     ap = hub.client.post("/api/v1/approvals/command", headers=a.headers,
                          json={"command": "ls", "cwd": "/w", "reason": MD}).json()
     hub.client.post(f"/api/v1/approvals/{ap['id']}/discussion", headers=a.headers, json={"body": MD})
@@ -184,7 +183,7 @@ def rich(hub):
     q2 = hub.client.post("/api/v1/projects/proj/questions", headers=a.headers, json={"question": "port?"}).json()
     hub.client.post(f"/ui/questions/{q2['id']}/answer", headers=hub.op_headers(),
                     data={"csrf": hub.csrf(), "answer": "Use **8080**"})
-    hub.client.post("/api/v1/private", headers=a.headers, json={"body": MD})
+    legacy_private(hub, a, MD)
     hub.client.post("/api/v1/device/messages", headers=a.headers, json={"body": MD})
     node = conn.execute("SELECT device_node_id FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
     x, y = sorted([a.id, c.id])

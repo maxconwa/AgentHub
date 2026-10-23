@@ -71,8 +71,7 @@ def test_long_answer_still_reaches_the_agent(pair):
     qid = ask(hub, alice).json()["id"]
     assert op_answer(hub, qid, "x" * 4000).status_code == 303
     body = hub.client.get("/api/v1/inbox", headers=alice.headers).json()["messages"][0]["body"]
-    assert body.startswith(f"Answer to your question #{qid}: xxx") and f"get_question with question_id={qid}" in body
-    assert len(body) <= 4000 and body.endswith(f"\n\n(call get_question({qid}) for your question)")
+    assert body == f"Answer to your question #{qid}: {'x' * 4000}\n\n(call get_question({qid}) for your question)"
     full = hub.client.get(f"/api/v1/questions/{qid}", headers=alice.headers).json()
     assert full["answer"] == "x" * 4000
 
@@ -222,7 +221,7 @@ async def test_mcp_ask_operator_tool(dev_hub):
         out = "\n".join(x.text for x in r.content)
         qid = questions.pending(dev_hub.conn())[0]["id"]
         assert out == (f"Asked the operator (question #{qid}). "
-                       "The answer will arrive in your inbox as a private message.")
+                       "The answer will arrive as the operator's message in your chat.")
         bad = await c.call_tool("ask_operator", {"project": "nope", "question": "x"})
         assert bad.is_error and "403" in "\n".join(x.text for x in bad.content)
 

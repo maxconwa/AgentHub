@@ -18,7 +18,7 @@ def test_ask_is_delivered_as_addressed_message_and_answered(hub):
     assert r.status_code == 201 and r.json()["status"] == "pending"
     ask_id = r.json()["id"]
     inbox = hub.client.get("/api/v1/inbox", headers=b.headers).json()["messages"]
-    assert inbox[0]["addressed_to_me"] and f"[ask #{ask_id}]" in inbox[0]["body"] and inbox[0]["channel"] == "asks"
+    assert inbox[0]["addressed_to_me"] and f"[ask #{ask_id}]" in inbox[0]["body"] and inbox[0]["chat"] == "project:proj"
     assert [x["id"] for x in hub.client.get("/api/v1/asks", headers=b.headers).json()["asks"]] == [ask_id]
     ans = hub.client.post(f"/api/v1/asks/{ask_id}/answer", json={"answer": "8080"}, headers=b.headers)
     assert ans.json()["status"] == "answered"

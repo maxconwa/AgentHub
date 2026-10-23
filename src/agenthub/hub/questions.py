@@ -95,11 +95,9 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
     agent = get_agent(conn, q["agent_id"])
     if agent is None or agent.status == "revoked":  # a revoked agent's chat is read-only
         return get(conn, qid)
-    text, about = _answer_prefix(qid) + answer, "\n\n" + _about(q)
-    if len(text + about) > chats.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
-        note = f"… [truncated; full answer: call get_question with question_id={qid}]"
-        text = text[: chats.MAX_BODY_CHARS - len(note) - len(about)] + note
-    chats.send(conn, "agent", agent.id, text + about, actor, meta={"answer_to": qid})
+    # A chat message holds the whole answer (MAX_CHARS is well under chats.MAX_BODY_CHARS).
+    chats.send(conn, "agent", agent.id, _answer_prefix(qid) + answer + "\n\n" + _about(q), actor,
+               meta={"answer_to": qid})
     return get(conn, qid)
 
 

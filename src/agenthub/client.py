@@ -69,11 +69,56 @@ class HubClient:
     async def projects(self) -> list[str]:
         return (await self._request("GET", "/projects"))["projects"]
 
-    # --- messages --------------------------------------------------------------
+    # --- chats -----------------------------------------------------------------
 
-    async def post(self, project: str, body: str, channel: str = "general", to: str | None = None) -> dict[str, Any]:
-        payload = {"channel": channel, "body": body, "to": to}
-        return await self._request("POST", f"/projects/{quote(project)}/messages", json=payload)
+    @staticmethod
+    def _chat_path(kind: str, ref: str) -> str:
+        return f"/chats/{quote(kind, safe='')}/{quote(str(ref), safe='')}"
+
+    async def chat_post(self, kind: str, ref: str, body: str, to: str | None = None) -> dict[str, Any]:
+        """Write in a chat this agent is in (``agent``/``me``, ``task``/<id>, ``project``/<name>)."""
+        return await self._request("POST", self._chat_path(kind, ref) + "/messages", json={"body": body, "to": to})
+
+    async def chat_history(self, kind: str, ref: str, limit: int = 30, after: int = 0) -> dict[str, Any]:
+        return await self._request("GET", self._chat_path(kind, ref) + "/messages",
+                                   params={"limit": limit, "after": after})
+
+    async def chat_stream(self, kind: str, ref: str, items: list[dict[str, Any]],
+                          task_id: int | None = None) -> dict[str, Any]:
+        """A session's live output: ``text``, ``tool`` and ``status`` items (see the chat contract)."""
+        return await self._request("POST", self._chat_path(kind, ref) + "/stream",
+                                   json={"items": items, "task_id": task_id})
+
+    async def report_chat_run(self, kind: str, ref: str, *, outcome: str, seconds: float,
+                              session_id: str | None = None, num_turns: int | None = None,
+                              cost_usd: float | None = None, project: str | None = None,
+                              task_id: int | None = None) -> dict[str, Any]:
+        """One chat session this runner ran (turns, est. cost, duration), for the Usage page."""
+        payload = {"outcome": outcome, "seconds": seconds, "session_id": session_id, "num_turns": num_turns,
+                   "cost_usd": cost_usd, "project": project, "task_id": task_id}
+        return await self._request("POST", self._chat_path(kind, ref) + "/runs", json=payload)
+
+    async def pending_deliveries(self) -> list[dict[str, Any]]:
+        """The operator's messages this agent's runner hasn't given to a session yet, oldest first."""
+        return (await self._request("GET", "/chats/deliveries"))["deliveries"]
+
+    async def claim_delivery(self, delivery_id: int, mode: str, note: str = "") -> dict[str, Any]:
+        """Compare-and-set: HubError 409 when it was delivered already (skip it then)."""
+        return await self._request("POST", f"/chats/deliveries/{delivery_id}", json={"mode": mode, "note": note})
+
+    async def chat_session(self) -> str | None:
+        return (await self._request("GET", "/chats/agent/me/session"))["session_id"]
+
+    async def set_chat_session(self, session_id: str | None) -> dict[str, Any]:
+        return await self._request("PUT", "/chats/agent/me/session", json={"session_id": session_id})
+
+    async def take_task(self, request_id: int, title: str, body: str = "") -> dict[str, Any]:
+        return await self._request("POST", f"/chats/requests/{request_id}/take", json={"title": title, "body": body})
+
+    async def sit_out(self, request_id: int, reason: str) -> dict[str, Any]:
+        return await self._request("POST", f"/chats/requests/{request_id}/sit-out", json={"reason": reason})
+
+    # --- messages --------------------------------------------------------------
 
     async def inbox(
         self, project: str | None = None, limit: int = 50, peek: bool = False, addressed_only: bool = False
@@ -84,6 +129,7 @@ class HubClient:
         return await self._request("GET", "/inbox", params=params)
 
     async def message_operator(self, body: str) -> dict[str, Any]:
+        """Write to the operator in this agent's own chat."""
         return await self._request("POST", "/private", json={"body": body})
 
     async def post_device(self, body: str, to: str | None = None) -> dict[str, Any]:
@@ -93,13 +139,6 @@ class HubClient:
     async def device_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """The newest notes on this agent's own machine's board (read-only, inbox cursor untouched)."""
         return (await self._request("GET", "/device/messages", params={"limit": limit}))["messages"]
-
-    async def recent_messages(self, project: str, channel: str | None = None, limit: int = 20
-                              ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": limit}
-        if channel:
-            params["channel"] = channel
-        return (await self._request("GET", f"/projects/{quote(project)}/messages", params=params))["messages"]
 
     # --- questions to the operator -------------------------------------------
 
@@ -113,7 +152,7 @@ class HubClient:
     async def withdraw_question(self, question_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/questions/{question_id}/withdraw")
 
-    # --- prompts from the operator ----------------------------------------------
+    # --- prompts (retired in 0.3.8: the hub finds none pending; kept until the runner moves to chats) ----------
 
     async def pending_prompts(self) -> list[dict[str, Any]]:
         """Prompts this agent still has to act on (``pending``, or ``running`` to resume after a restart)."""

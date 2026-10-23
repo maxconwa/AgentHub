@@ -78,7 +78,6 @@ class HubState:
     insecure_dev: bool = False
     whois: Whois = field(default=None)  # type: ignore[assignment]
     bus_poll_seconds: float = 0.5
-    prompt_expiry_seconds: float = 60.0
     csrf_secret: bytes = b""
     bus: EventBus = field(init=False)
     agent_limiter: RateLimiter = field(init=False)
@@ -250,6 +249,16 @@ class ChatStreamRequest(BaseModel):
     # Items are checked one by one (an unknown or malformed one is skipped and counted), so a newer runner's items
     # don't make the whole call fail.
     items: list[Any] = Field(max_length=chats.MAX_STREAM_ITEMS)
+
+
+class ChatRunRequest(BaseModel):
+    outcome: str = Field(min_length=1, max_length=64)
+    seconds: float = Field(ge=0, le=chats.MAX_RUN_SECONDS)
+    session_id: str | None = Field(default=None, max_length=128)
+    num_turns: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+    project: str | None = Field(default=None, max_length=64)
+    task_id: int | None = None
 
 
 class DeliveryClaimRequest(BaseModel):
@@ -445,6 +454,14 @@ def create_app(state: HubState) -> FastAPI:
         with db.transaction(conn):
             return chats.stream(conn, caller.agent, kind, ref, body.items, task_id=body.task_id,
                                 device=caller.device.name)
+
+    @app.post(f"{api}/chats/{{kind}}/{{ref}}/runs", status_code=201)
+    def chat_run(kind: str, ref: str, body: ChatRunRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """One chat session the runner ran (turns, est. cost, duration), for the Usage page."""
+        with db.transaction(conn):
+            return chats.record_run(conn, caller.agent, kind, ref, outcome=body.outcome, seconds=body.seconds,
+                                    session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
+                                    project=body.project, task_id=body.task_id)
 
     @app.post(f"{api}/chats/requests/{{message_id}}/take", status_code=201)
     def take_task(message_id: int, body: TakeTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -912,7 +929,7 @@ def create_app(state: HubState) -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> dict[str, Any]:
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
-        return {"results": events.search(conn, q, projects=projects, limit=limit)}
+        return {"results": chats.with_bodies(conn, events.search(conn, q, projects=projects, limit=limit))}
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):

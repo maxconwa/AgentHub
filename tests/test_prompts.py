@@ -53,8 +53,52 @@ def create(hub, target, body=f"Please look at this. {SECRET}", actor=OPERATOR):
         return prompts.create(conn, target=target, body=body, actor=actor)
 
 
-def api(hub, agent, method, path, **kw):
-    return hub.client.request(method, f"/api/v1/prompts{path}", headers=agent.headers, **kw)
+class _Reply:
+    def __init__(self, status_code, body):
+        self.status_code, self._body = status_code, body
+        self.text = json.dumps(body, default=str)
+
+    def json(self):
+        return self._body
+
+
+def api(hub, agent, method, path, json=None, **kw):
+    """What a 0.3.7 runner's prompt calls did, run in-process: 0.3.8 retired the prompt API (its routes answer 410,
+    see test_chats), but the hub's prompt module stays for 0.3.7's prompts and is tested through this."""
+    body, parts = json or {}, path.strip("/").split("/")
+    conn = hub.conn()
+    me = store.get_agent(conn, agent.id)
+    if me is None or me.status != "active":
+        return _Reply(403, {"detail": "agent is not active"})
+    status = {store.NotFound: 404, store.Conflict: 409, store.Invalid: 422, store.Forbidden: 403}
+    try:
+        with db.transaction(conn):
+            if method == "GET" and parts == ["pending"]:
+                return _Reply(200, {"prompts": prompts.pending_for(conn, me)})
+            if not parts[0].isdigit():
+                return _Reply(405, {"detail": "no such route"})
+            pid, action = int(parts[0]), parts[1] if len(parts) > 1 else None
+            if method == "GET" and action is None:
+                return _Reply(200, prompts.get_for_agent(conn, pid, me))
+            if method == "POST" and action == "start":
+                return _Reply(200, prompts.start(conn, pid, me))
+            if method == "POST" and action == "finish":
+                if len(body.get("note", "")) > 4000:
+                    return _Reply(422, {"detail": "note too long"})
+                return _Reply(200, prompts.finish(conn, pid, me, ok=body["ok"], note=body.get("note", ""),
+                                                  stale=body.get("stale", False)))
+            if method == "POST" and action == "runs":
+                return _Reply(201, prompts.record_run(conn, pid, me, **body))
+            if method == "POST" and action == "claim":
+                return _Reply(201, prompts.claim(conn, pid, me, title=body.get("title", ""),
+                                                 body=body.get("body", ""), project=body.get("project")))
+            if method == "POST" and action == "decline":
+                if not body.get("reason"):
+                    return _Reply(422, {"detail": "reason required"})
+                return _Reply(200, prompts.decline(conn, pid, me, reason=body["reason"]))
+    except store.StoreError as exc:
+        return _Reply(status.get(type(exc), 400), {"detail": str(exc)})
+    return _Reply(405, {"detail": "no such route"})
 
 
 def prompt_events(hub, pid=None):
@@ -202,8 +246,9 @@ def test_no_agent_route_creates_prompts(trio):
     hub, a, b, c = trio
     online(hub, a)
     for method, path in (("POST", ""), ("POST", "/"), ("PUT", ""), ("POST", "/new")):
-        r = api(hub, a, method, path, json={"target": f"agent:{a.id}", "body": "do it"})
-        assert r.status_code in (404, 405), (method, path, r.status_code)
+        r = hub.client.request(method, f"/api/v1/prompts{path}", headers=a.headers,
+                               json={"target": f"agent:{a.id}", "body": "do it"})
+        assert r.status_code in (404, 405, 410), (method, path, r.status_code)
     assert hub.conn().execute("SELECT COUNT(*) FROM prompts").fetchone()[0] == 0
 
 
@@ -936,24 +981,20 @@ def test_target_with_nobody_to_prompt(trio):
     assert msg["title"] == f"Prompt #{p['id']}: nobody to prompt"
 
 
-def test_hub_loop_runs_expiry(tmp_path):
+def test_hub_no_longer_runs_prompt_expiry(tmp_path):
+    """0.3.8 makes no prompts and leaves 0.3.7's open ones alone (a rolled-back 0.3.7 settles them)."""
     from .conftest import make_hub
 
     hub = make_hub(tmp_path)
     hub.state.config.prompt_discussion_minutes = 1
-    hub.state.prompt_expiry_seconds = 0.02
     a, b = hub.enroll("a"), hub.enroll("b")
     t = mk_task(hub, a, b)
     online(hub, a, b)
     p = create(hub, f"task:{t['id']}")
     backdate(hub, p["id"], minutes=2)
-    import time
-
     with TestClient(hub.client.app, client=("127.0.0.1", 40000)):
-        deadline = time.monotonic() + 5
-        while prompts.get(hub.conn(), p["id"])["status"] != "done" and time.monotonic() < deadline:
-            time.sleep(0.02)
-    assert prompts.get(hub.conn(), p["id"])["status"] == "done"
+        pass
+    assert prompts.get(hub.conn(), p["id"])["status"] == "discussing"
 
 
 def backdate(hub, pid, *, minutes):

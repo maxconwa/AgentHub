@@ -481,6 +481,22 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (agent_id, chat_id)
     );
 
+    -- one row per chat session a runner ran (its turns, est. cost and duration), for the Usage page
+    CREATE TABLE chat_runs (
+        id          INTEGER PRIMARY KEY,
+        chat_id     INTEGER NOT NULL REFERENCES chats(id),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        project     TEXT REFERENCES projects(name),
+        task_id     INTEGER REFERENCES tasks(id),
+        session_id  TEXT,
+        started_at  TEXT NOT NULL,
+        ended_at    TEXT NOT NULL,
+        outcome     TEXT NOT NULL,
+        num_turns   INTEGER,
+        cost_usd    REAL
+    );
+    CREATE INDEX chat_runs_started ON chat_runs(started_at);
+
     ALTER TABLE agents ADD COLUMN chat_support INTEGER NOT NULL DEFAULT 0;
     """,
 ]
