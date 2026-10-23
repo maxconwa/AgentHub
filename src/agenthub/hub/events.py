@@ -51,7 +51,8 @@ def emit(
     text = " ".join([type, actor, *_strings(payload), *([index_text] if index_text else [])])[:_MAX_INDEXED_CHARS]
     conn.execute("INSERT INTO events_fts (rowid, text) VALUES (?, ?)", (event_id, text))
     if type in LANDING_EVENTS and not actor.startswith(("human:", "system:")):
-        from agenthub.hub import wakes  # an agent's progress lands the wake chain it works in (0.3.9.1)
+        # an agent's progress lands the wake chain it works in (0.3.9.1)
+        from agenthub.hub import wakes
 
         wakes.land(conn, actor)
     return event_id

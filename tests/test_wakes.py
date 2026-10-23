@@ -221,7 +221,7 @@ def test_operator_reads_and_may_write_in_a_direct_chat(trio):
     hub, a, _, c = trio
     post(hub, a, "dm:carol", "hello")
     pair = chats.pair_key(a.id, c.id)
-    r = hub.client.get(f"/ui/api/agents/carol/wakes", headers=hub.op_headers())
+    r = hub.client.get("/ui/api/agents/carol/wakes", headers=hub.op_headers())
     assert r.status_code == 200
     sent = op_send(hub, "dm", pair, "both of you, stop")
     assert {d["agent_id"] for d in sent["deliveries"]} == {a.id, c.id}
@@ -229,7 +229,7 @@ def test_operator_reads_and_may_write_in_a_direct_chat(trio):
 
 
 def test_an_operator_wake_is_recorded_and_starts_no_chain(trio):
-    hub, a, b, _ = trio
+    hub, a, _, _ = trio
     op_send(hub, "agent", a.id, "look at #3")
     [d] = deliveries(hub, a)
     assert (d["chain_id"], d["wake"], d["verified"], d["author_name"]) == (None, True, True, None)
@@ -344,7 +344,7 @@ def test_decline_request_shows_in_the_chat_and_tells_the_requester_without_wakin
     assert api(hub, c, "POST", f"/chats/requests/{req['id']}/decline", json={"reason": "x"}).status_code == 404
     op = op_send(hub, "task", str(t["id"]))
     assert api(hub, a, "POST", f"/chats/requests/{op['id']}/decline", json={"reason": "x"}).status_code == 422
-    row = [m for m in chats.messages(hub.conn(), "task", str(t["id"])) if m["id"] == note["id"]][0]
+    row = next(m for m in chats.messages(hub.conn(), "task", str(t["id"])) if m["id"] == note["id"])
     assert mcp_server._format_chat_row(row, {}).split("\n")[0].endswith(f"declined request #{req['id']}:")
 
 
@@ -501,7 +501,7 @@ def test_an_agent_woken_by_the_operator_starts_a_new_chain(looped):
 
 def test_wakes_count_against_the_rate_limit(tmp_path):
     hub = make_hub(tmp_path, agent_rate_per_second=0.001, agent_rate_burst=10)
-    a, b, c, d = (hub.enroll(n) for n in ("alice", "bob", "cara", "dave"))
+    a, *_ = (hub.enroll(n) for n in ("alice", "bob", "cara", "dave"))
     # each post costs 1 (the request) + the agents it wakes
     first = api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "@bob @cara @dave look"})
     assert first.status_code == 201  # 1 + 3
