@@ -29,49 +29,68 @@ messages don't reach the agents.
 
 ## What the database keeps
 
-0.3.8 adds schema migration 22. A 0.3.7 hub stops at migration 21 and leaves
-the newer tables alone:
+0.3.8 adds schema migration 22. A 0.3.7 hub stops at migration 21: when the
+database is already at 22 it starts without migrating and ignores the newer
+parts:
 
-- `chats`: one per agent, task and project.
-- `chat_messages`: every chat bubble, tool fold and status line.
-- `chat_deliveries`: one row per operator message and recipient.
-- `chat_cursors`: the agents' read positions in chats.
-- `agents.chat_support`: whether the agent's runner speaks chat.
+- the `chats` table: one chat per agent, task and project;
+- `chat_messages`: every chat bubble, tool fold, status line and card;
+- `chat_deliveries`: one row per operator message and recipient;
+- `chat_cursors`: the agents' read positions in chats;
+- the column `agents.chat_support`: whether the agent's runner speaks chat.
 
-The prompts, private messages, channel messages and boards are never changed.
-0.3.8 copies them into chats when it starts, and leaves the originals in place.
-After a rollback, 0.3.7 shows everything that existed before the upgrade
-exactly as it did before.
+0.3.8 never drops or changes an existing table or row. When it starts it
+copies 0.3.7's private messages, prompts (with each recipient's outcome),
+channel posts, approvals and questions into chats, and leaves the originals
+where they were. After a rollback, 0.3.7 shows everything that existed before
+the upgrade just as it did then.
 
 ## What rolling back loses
 
-Everything written only to chats while the hub ran 0.3.8 stays in the
-database, but 0.3.7 can't see it:
+Everything written under 0.3.8 that lives only in the chat tables stays in
+the database, but 0.3.7 can't see it:
 
-- **Messages you sent in a chat.** These include agent chats, task chats and
-  project chats. 0.3.7 has no prompt or private-message row for them, so they
-  don't appear in Prompts, Chats or boards.
-- **Agents' replies and live output.** Text bubbles, "ran N tools" folds and
-  status lines (started, working, usage limit, waiting for approval,
-  finished, failed, queued) exist only in `chat_messages`.
-- **Undelivered messages.** A chat message still pending for an agent is
-  never delivered by 0.3.7. Send it again as a prompt.
-- **"took task" and "sitting out" lines.** The tasks that agents took from a
-  project-chat request stay: they are ordinary, pre-approved tasks and 0.3.7
-  shows them. The line that links a task to your request, and the reasons
-  agents gave for sitting a request out, are visible only in chat.
-- **The agent chat's Claude session.** 0.3.7 runners start prompt sessions
-  afresh, so an agent doesn't carry its 0.3.8 chat conversation into 0.3.7
+- **Your chat messages.** This covers messages to agents, tasks and projects,
+  and whether each one was delivered. 0.3.7 has no prompt or private message
+  for them.
+- **Agents' messages to you and to each other.** `message_operator` writes to
+  the agent's chat, not to private messages. Posts in task and project chats,
+  `ask_agent` questions and answers, and the kickoff messages for overlapping
+  intents work the same way. The `asks` table, the `intent_conflicts` rows and
+  the `coordination/<id>` board documents are still written, so 0.3.7 keeps
+  those.
+- **Live output.** Text bubbles, "ran N tools" folds and status lines
+  (started, working, usage limit, waiting for approval, finished, failed,
+  queued).
+- **Undelivered messages.** If a chat message was still waiting for an agent,
+  0.3.7 never delivers it. Send it again as a prompt.
+- **"took task #N" and "sitting out" lines.** Tasks that agents took from a
+  project-chat request stay. They are ordinary, pre-approved tasks with the
+  role "Took from the operator's request #N", and 0.3.7 shows them. The
+  reasons agents gave for sitting a request out are in chat only.
+- **Answers to questions as messages.** 0.3.7's Approvals page still shows
+  each answer, because the `questions` row holds it, but it has no private
+  message or prompt to go with it.
+- **Cards.** Approvals and questions stay in their own tables, and both
+  versions show and decide them. Only the card in the chat is lost.
+- **The agent chat's Claude session.** 0.3.7 runners start each prompt
+  session afresh, so an agent doesn't carry its 0.3.8 chat into 0.3.7
   prompts.
-- **Read positions.** The chats' unread counts and the agents' chat cursors.
+- **Unread counts.** Read positions in chats are lost, for you and for the
+  agents.
 
-Approvals and questions are unaffected. They live in their own tables, and
-both versions show and decide them.
+0.3.8 makes no prompts and doesn't time any out. If prompts were still open
+when you upgraded, they're untouched, and a rolled-back 0.3.7 settles or times
+them out as usual.
+
+0.3.7's search indexes the events of task and project chats, which carry ids
+only. It can match them, but it shows nothing more than the ids. Agents' own
+chats are never indexed.
 
 ## Upgrading to 0.3.8 again
 
-Upgrade the hub and the runners together, as before. On start the 0.3.8 hub
-copies whatever 0.3.7 wrote in the meantime (prompts, private messages,
-channel messages) into the chats. The copy is keyed on the source row, so
-nothing is duplicated, and the chat history from before the rollback is still
-there.
+Upgrade the hub and the runners together, as before. Each time it starts, the
+0.3.8 hub copies whatever 0.3.7 wrote in the meantime into the chats: private
+messages, prompts, channel posts, approvals and questions. Each row goes into
+its chat by timestamp. The copy is keyed on the source row, so nothing is
+duplicated, and the chat history from before the rollback is still there.
