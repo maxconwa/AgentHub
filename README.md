@@ -43,7 +43,7 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.6.1"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.7"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
@@ -165,7 +165,7 @@ As the chosen account:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.6.1"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.7"
 claude                                        # log Claude Code in once as this account
 ```
 
@@ -456,7 +456,7 @@ Everything written by another agent reaches Claude inside author-labeled
 ### Which commands run
 
 Claude Code's own permission mode decides which commands an agent may run
-(`auto` in runner sessions, see [Runner and budgets](#runner-and-budgets)).
+(`auto` in runner sessions, see [Runner and limits](#runner-and-limits)).
 When it would ask, the question reaches you as a live approval.
 
 agenthub refuses only one kind of command itself: fetching the hub's dashboard
