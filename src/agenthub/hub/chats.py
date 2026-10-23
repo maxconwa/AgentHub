@@ -31,7 +31,9 @@ own chat. The bus sends the operator's socket the full row; agents get ids.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agenthub.hub import events
@@ -386,6 +388,20 @@ def history(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str, *, limi
     return {"chat": chat_row, "messages": rows}
 
 
+_OUTCOME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _iso_time(value: Any) -> str | None:
+    """An ISO-8601 date and time (a naive one is taken as UTC) in the hub's fixed-width UTC format, else None."""
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return now_iso(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
+
+
 # --- live output from sessions ----------------------------------------------------------------------------------
 
 
@@ -449,8 +465,9 @@ def stream(
         elif itype == "status" and item.get("state") in STATES:
             close()
             meta: dict[str, Any] = {"state": item["state"], **tag}
-            if isinstance(item.get("until"), str):
-                meta["until"] = item["until"][:64]
+            until = _iso_time(item.get("until"))
+            if until is not None:  # only a real time, stored in the hub's own format: never free agent text
+                meta["until"] = until
             approval_id = item.get("approval_id")
             if isinstance(approval_id, int) and not isinstance(approval_id, bool) and conn.execute(
                     "SELECT 1 FROM approvals WHERE id = ? AND requester = ?", (approval_id, agent.id)).fetchone():
@@ -481,8 +498,8 @@ def record_run(
     """``agent``'s runner ran one session for a chat it is in; it ended now, after ``seconds`` (the hub's clock places
     it). Shown on the Usage page. It counts in the chat's project; an agent chat's session counts in ``project`` if
     ``agent`` may see that project, and on ``task_id`` if ``agent`` is on that task (a task chat's on its task)."""
-    from datetime import UTC, datetime, timedelta
-
+    if not isinstance(outcome, str) or not _OUTCOME_RE.fullmatch(outcome):
+        raise Invalid("outcome must be a word like success, error or usage_limit (a-z, 0-9, _)")
     chat_row = _member_chat(conn, agent, kind, ref)
     if chat_row["kind"] == "task":
         task_id = int(chat_row["ref"])
@@ -646,6 +663,8 @@ def _chat_mail(conn: sqlite3.Connection, agent: Agent, chat_ids: list[int], limi
     marks = ",".join("?" * len(chat_ids))
     kinds = ",".join("?" * len(MAIL_KINDS))
     # Text addressed to another agent stays visible in the chat but isn't this agent's mail (as with 0.3.7's `to`).
+    # addressed_only binds one agent id (`to` must be this agent); otherwise two: a row without `to` counts as
+    # addressed to this agent (COALESCE(to, me) = me), and a row with `to` only when it is this agent.
     addressed = ("AND json_extract(m.meta, '$.to') = ? " if addressed_only
                  else "AND COALESCE(json_extract(m.meta, '$.to'), ?) = ? ")
     # A session's live narration (meta.source 'session') is for the operator to watch, not mail: only what an agent

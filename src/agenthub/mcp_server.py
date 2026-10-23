@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -104,9 +105,11 @@ def _format_chat_row(m: dict[str, Any], names: dict[str, str]) -> str:
         return f"{head} {who} ran {meta.get('count', len(meta.get('lines', [])))} tools:\n" + untrusted.wrap(
             "\n".join(meta.get("lines", [])), author=who, kind="tool_lines", id=m["id"])
     if kind == "status":
+        # Only what the hub checked goes outside the untrusted block: a known state, a time in the hub's own format.
         whom = names.get(meta.get("agent_id"), meta.get("agent_id")) or who
-        line = f"{head} status: {meta.get('state')} ({whom})"
-        if meta.get("until"):
+        state = meta.get("state") if meta.get("state") in STATUS_STATES else "(unknown)"
+        line = f"{head} status: {state} ({whom})"
+        if isinstance(meta.get("until"), str) and _HUB_TIME.fullmatch(meta["until"]):
             line += f" until {meta['until']}"
         if meta.get("detail"):
             line += "\n" + untrusted.wrap(meta["detail"], author=who, kind="status_detail", id=m["id"])
@@ -119,6 +122,10 @@ def _format_chat_row(m: dict[str, Any], names: dict[str, str]) -> str:
         return (f"{head} {who} sits out the operator's request #{meta.get('request_id')}:\n"
                 + untrusted.wrap(m["body"], author=who, kind="sit_out_reason", id=m["id"]))
     return f"{head} {kind} by {who}"
+
+
+STATUS_STATES = frozenset({"started", "working", "usage_limit", "approval_wait", "finished", "failed", "queued"})
+_HUB_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
 
 
 def _chat_spec(chat: str) -> tuple[str, str]:
