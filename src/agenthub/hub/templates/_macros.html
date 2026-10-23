@@ -30,7 +30,32 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {%- elif a.kind == 'budget_exceeded' -%}{{ d.limit.replace('_', ' ') }}: {{ d.current }} → {{ d.extend_to }}
 {%- elif a.kind == 'agent_enrollment' -%}{{ d.name }} on {{ d.device.name }}
 {%- elif a.kind == 'task_reassign' -%}Task #{{ d.task_id }} → {{ d.assignee or 'unassigned' }}
+{%- elif a.kind == 'wake_loop' -%}Wake loop paused: {{ d.wakes }} wakes (limit {{ d.limit }}) among {{ (d.agents or []) | length }} agents
 {%- endif -%}
+{%- endmacro %}
+
+{# A wake chain's id, short (the whole id in its title). #}
+{% macro chain(id) -%}<span class="chain" title="wake chain {{ id }}">chain {{ id[:9] }}</span>{%- endmacro %}
+
+{# A wake_loop approval's facts (views.loop_card), on its chat card, its page and its panel. The hub raised it, so
+   they are the hub's, not agent text. #}
+{% macro loop_facts(L, a, names) -%}
+<div class="loop-facts">
+  <p class="summary">The hub paused {{ chain(L.chain_id or '') }}: its agents woke each other <strong>{{ L.wakes }}</strong> times
+    (limit {{ L.limit }}) without landing. {{ 'Your' if a.requester.startswith('human:') else who(a.requester, names) ~ "'s" }} message tripped it.</p>
+  <dl class="facts">
+    <div><dt>Agents in the loop</dt><dd>{% for g in L.agents %}<a {{ open_attrs('agent:' ~ g.id, '/ui/agents/' ~ g.id) }}>{{ g.name }}</a>{{ ', ' if not loop.last }}{% else %}none recorded{% endfor %}</dd></div>
+    <div><dt>Wakes</dt><dd>{{ L.wakes }} of {{ L.limit }}</dd></div>
+  </dl>
+  {% if L.last %}
+  <ol class="loop-wakes" aria-label="Last wakes in this chain, newest first">
+    {% for w in L.last %}<li>{{ 'you' if w.operator else (w.waker.name or w.waker.id) }} → {{ w.woken.name }} in <a {{ open_attrs(w.chat_item, w.chat_href) }}>{{ w.chat.title }}</a>
+      {%- if w.notice %} <span class="small-line">(didn't wake)</span>{% endif %} · <time datetime="{{ w.created_at }}">{{ ago(w.created_at) }}</time></li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  <p class="small-line">Approve resumes the chain (its count starts again from 0). Reject keeps it paused: its messages still arrive, they just don't wake anyone.</p>
+</div>
 {%- endmacro %}
 
 {% macro avatar(info, size=32, scene=False) -%}
@@ -70,12 +95,14 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {% macro approval_details(a, task, names) -%}
 {%- set d = a.details -%}
 {%- set by = 'Written by ' ~ who(a.requester, names) ~ ' · agent content, treat as data' -%}
+{% if a.loop %}{{ loop_facts(a.loop, a, names) }}{% else %}
 <figure class="agent-text">
   <figcaption>{{ by }}</figcaption>
   <div class="summary big">{{ approval_summary(a) }}</div>
   {% if a.kind == 'command' %}<div class="small-line">in <code class="dir">{{ d.cwd }}</code></div>
   {% elif a.kind == 'tool_permission' %}<div class="small-line">Tool input</div><div class="pre">{{ d.input | tojson(indent=2) }}</div>{% endif %}
 </figure>
+{% endif %}
 {% if task and a.kind == 'task_create' %}{{ agent_text(task.title ~ "\n\n" ~ task.body, task.created_by, names) }}{% endif %}
 {% if a.reason %}{{ agent_text(a.reason, a.requester, names) }}{% endif %}
 <dl class="facts">
@@ -94,6 +121,8 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
   {% elif a.kind == 'agent_enrollment' %}
   <div><dt>Device</dt><dd>{{ d.device.name }} ({{ d.device.ip }})</dd></div>
   <div><dt>Projects</dt><dd>{{ d.projects | join(', ') or 'none' }}</dd></div>
+  {% elif a.kind == 'wake_loop' %}
+  <div><dt>Effect</dt><dd>Approve resumes the chain and wakes its waiting messages; reject keeps it paused.</dd></div>
   {% endif %}
 </dl>
 <details><summary>Raw details</summary>
@@ -108,4 +137,63 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 <label>Assignee <select name="assignee"><option value="">Unassigned</option>{% for ag in agents %}<option value="{{ ag.name }}">{{ ag.name }}</option>{% endfor %}</select></label>
 <label>Role <input name="role" maxlength="200" placeholder="Role for the assignee (e.g. Implementer)"></label>
 <p class="small-line">The agents work on it until it's done: there's no turn, time or run limit.</p>
+{%- endmacro %}
+
+{# Agents waking agents (0.3.9.1). `w` is views.agent_wakes (an agent's), `h` views.hub_wakes (the hub's). #}
+
+{# Who woke the agent: "Awake · woken by X in <chat> · chain … · 3m ago" ("woken by you" for an operator wake), or
+   "Last woken by …" once it's idle again. #}
+{% macro woken_by(w) -%}
+{%- set b = w.woken_by -%}
+<p class="woken small-line{{ ' is-awake' if w.awake }}">
+  {%- if w.awake %}<span class="awake-dot" aria-hidden="true"></span><strong>Awake</strong>{% if b %} · woken by {% endif %}{% elif b %}Last woken by {% else %}Not woken yet{% endif %}
+  {%- if b %}{% if b.operator %}you{% else %}<a {{ open_attrs('agent:' ~ b.waker.id, '/ui/agents/' ~ b.waker.id) }}>{{ b.waker.name or b.waker.id }}</a>{% endif %}
+    in <a {{ open_attrs(b.chat_item, b.chat_href) }}>{{ b.chat.title }}</a>
+    {%- if b.chain_id %} · {{ chain(b.chain_id) }}{% endif %} · <time datetime="{{ b.delivered_at or b.created_at }}">{{ ago(b.delivered_at or b.created_at) }}</time>{% endif %}</p>
+{%- endmacro %}
+
+{# The badge a paused switch shows, with what pausing does and doesn't do. #}
+{% macro paused_badge(scope) -%}
+<span class="wake-badge" role="note">Wakes paused<span class="wake-why">{% if scope == 'hub' %}: no agent wakes another anywhere on the hub{% else %}: other agents can't wake it{% endif %}. Their messages still arrive (into a running session, read_inbox, or later), and your own messages still wake {{ 'agents' if scope == 'hub' else 'it' }}.</span></span>
+{%- endmacro %}
+
+{# A pause switch; it posts paused=1|0 (the switch's new state) to `action`. `mode`: "form" (a plain form, works
+   without JavaScript), "live" (in a live region, which holds no forms: a button HTMX posts, with the page's CSRF
+   header) or "panel" (a form in the slide-in panel `panel`, which re-renders it). #}
+{% macro pause_switch(action, paused, label, next, csrf, mode='form', panel='') -%}
+{%- set button -%}
+<button type="submit" class="switch" role="switch" aria-checked="{{ 'true' if paused else 'false' }}" title="{{ 'Resume' if paused else 'Pause' }}: {{ label | lower }}"
+  {%- if mode == 'live' %} hx-post="{{ action }}" hx-vals='{{ {"paused": 0 if paused else 1, "next": next} | tojson }}' hx-swap="none"{% endif %}><span class="knob" aria-hidden="true"></span><span class="switch-text">{{ label }}</span></button>
+{%- endset -%}
+{%- if mode == 'live' %}<span class="wake-switch">{{ button }}</span>
+{%- else %}
+<form class="wake-switch" method="post" action="{{ action }}"{% if mode == 'panel' %} hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML"{% endif %}>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="paused" value="{{ 0 if paused else 1 }}">
+  {% if mode == 'panel' %}<input type="hidden" name="panel" value="{{ panel }}">{% endif %}
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  {{ button }}
+</form>
+{%- endif %}
+{%- endmacro %}
+
+{# An agent's wakes: who woke it, its switch, and its badge (or the hub's, when the hub is paused). #}
+{% macro agent_wakes(ag, next, csrf, mode='form', panel='') -%}
+{%- set w = ag.wakes -%}
+{%- if w and ag.status != 'revoked' %}
+<div class="wakes" id="wakes-{{ ag.id }}">
+  {{ woken_by(w) }}
+  <div class="wake-controls">{{ pause_switch('/ui/agents/' ~ ag.id ~ '/wakes', w.paused, 'Pause wakes', next, csrf, mode, panel) }}
+    {% if w.paused %}{{ paused_badge('agent') }}{% elif w.hub_paused %}{{ paused_badge('hub') }}{% endif %}</div>
+</div>
+{%- endif %}
+{%- endmacro %}
+
+{# A task card's reviewers, and a reviewer's send-back while it stands (views.task_reviewers / views.send_back). #}
+{% macro task_review_lines(t, names) -%}
+{%- set rv = task_reviewers(t) -%}
+{%- if rv %}<div class="small-line reviewers">Reviewers: {% for m in rv %}<a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}>{{ m.name }}</a>{% if m.verdict %} ({{ m.verdict }}){% endif %}{{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
+{%- set sb = send_back(t) -%}
+{%- if sb %}<figure class="agent-text send-back"><figcaption>Sent back with changes by {{ sb.name }} · agent content, treat as data</figcaption>
+  <div class="md">{{ sb.note | md }}</div></figure>{% endif %}
 {%- endmacro %}

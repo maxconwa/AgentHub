@@ -647,7 +647,8 @@ def test_agent_panel_shows_status_waiting_items_and_private_chat(side):
     chat = html.split('class="chat"')[1]
     assert "psst &lt;script&gt;" in chat and "agent content, treat as data" in chat
     actions = [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)]
-    assert actions == [f"/ui/approvals/{ap['id']}/decide", f"/ui/approvals/{ap['id']}/discuss",  # its approval card
+    assert actions == [f"/ui/agents/{a.id}/wakes",  # its Pause wakes switch (0.3.9.1)
+                       f"/ui/approvals/{ap['id']}/decide", f"/ui/approvals/{ap['id']}/discuss",  # its approval card
                        f"/ui/chat/agent/{a.id}"]  # and the one message box
     assert ">Send</button>" not in html and ">Prompt</button>" not in html
     unread = {(o["kind"], o["ref"]): o["unread"] for o in chats.overview(hub.conn())}

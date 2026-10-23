@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {% from "_reports.html" import report_table %}
 {% block title %}Task #{{ t.id }}{% endblock %}
@@ -9,7 +9,8 @@
 <p class="muted"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
-{% if t.last_note %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}
+{{ task_review_lines(t, names) }}
+{% if t.last_note and not send_back(t) %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}
 
 <section class="page-chat" aria-labelledby="chat-title">
   <h2 id="chat-title">Chat</h2>

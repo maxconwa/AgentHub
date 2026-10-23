@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title, open_attrs %}
+{% from "_macros.html" import chip, avatar, task_title, open_attrs, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {% from "_reports.html" import report_table %}
 {% block title %}{{ project.name }}{% endblock %}
@@ -16,6 +16,20 @@
   </form>
 </details>
 
+<details class="panel reviewers-picker"{% if not picker.reviewers %} open{% endif %}>
+  <summary>Reviewers{% if picker.reviewers %}: {% for r in picker.reviewers %}{{ r.name }}{{ ', ' if not loop.last }}{% endfor %}{% else %} <span class="small-line">none yet</span>{% endif %}</summary>
+  {% if picker.choices %}
+  <form class="stack" method="post" action="{{ project_url(project.name) }}/reviewers">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <fieldset class="checks"><legend class="small-line">A task in {{ project.name }} that reaches review with no reviewer gets these agents as its reviewers. An agent never reviews a task it works on.</legend>
+      {% for ch in picker.choices %}<label class="check"><input type="checkbox" name="reviewer" value="{{ ch.id }}"{{ ' checked' if ch.checked }}> {{ ch.name }}</label>
+      {% endfor %}</fieldset>
+    {% for r in picker.reviewers if not r.allowed or r.status != 'active' %}<p class="small-line">{{ r.name }} is {{ 'not allowed into ' ~ project.name ~ ' any more' if not r.allowed else r.status }}, so it isn't added to tasks.</p>{% endfor %}
+    <button type="submit">Save reviewers</button>
+  </form>
+  {% else %}<p class="muted">No agent may use {{ project.name }} yet. Allow one on its agent page, then pick reviewers here.</p>{% endif %}
+</details>
+
 <section class="page-chat" aria-labelledby="chat-title">
   <h2 id="chat-title">Chat</h2>
   {{ chat(c) }}
@@ -26,6 +40,7 @@
 {% for t in tasks %}
 <div class="task-row">
   <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+  {{ task_review_lines(t, names) }}
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}
     <div class="small-line">{{ m.device }} · {{ m.stage }}</div></div></div>

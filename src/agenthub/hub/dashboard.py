@@ -256,7 +256,7 @@ def highlight_mentions(html: str, mentioned: Any, names: dict[str, str]) -> Mark
 
 
 templates.globals.update(ago=ago, who=who, event_summary=event_summary, long_text=long_text,
-                         project_url=views.project_url)
+                         project_url=views.project_url, task_reviewers=views.task_reviewers, send_back=views.send_back)
 templates.filters["clock"] = clock
 templates.filters["mentions"] = highlight_mentions
 templates.filters["md"] = markdown.render
@@ -338,7 +338,7 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
 
 
 # A form's ``next`` may only lead back to one of our own pages (no other host, no header tricks).
-SAFE_NEXT = re.compile(r"/ui/[A-Za-z0-9_\-./]*")
+SAFE_NEXT = re.compile(r"/ui/[A-Za-z0-9_\-./:]*")  # ':' for a direct chat's page, /ui/dm/<id>:<id>
 
 
 def safe_next(next: str) -> str:
@@ -445,14 +445,24 @@ def build_router() -> APIRouter:
     @router.get("/dashboard", response_class=HTMLResponse)
     def dashboard_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         pending = list(reversed(approvals.list_approvals(conn, status="pending")))
-        agents = views.agent_rows(conn)
+        agents = views.agent_rows(conn, with_wakes=True)
         tally: dict[str, int] = {}
         for a in agents:
             tally[a["avatar"]["pose"]] = tally.get(a["avatar"]["pose"], 0) + 1
         tally_chips = [{"pose": p, "count": n, "label": avatar_art.POSE_LABELS[p]}
                        for p, n in sorted(tally.items(), key=lambda kv: avatar_art.POSES.index(kv[0]))]
         return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
-                      tally=tally_chips, questions=questions.pending(conn))
+                      tally=tally_chips, questions=questions.pending(conn), hub_wakes=views.hub_wakes(conn))
+
+    @router.post("/wakes")
+    def hub_wakes_switch(request: Request, operator: PostOp, conn: Conn,
+                         paused: Annotated[bool, Form()], next: NextField = "") -> Response:
+        """The hub-wide Pause wakes switch (wakes.set_hub_paused; also PUT /ui/api/wakes)."""
+        from agenthub.hub import wakes  # it imports this module's operator checks
+
+        with db.transaction(conn):
+            wakes.set_hub_paused(conn, paused, actor=operator.actor)
+        return done(request, safe_next(next) or "/ui/dashboard")
 
     @router.get("/projects", response_class=HTMLResponse)
     def projects_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -483,7 +493,19 @@ def build_router() -> APIRouter:
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
                       c=page_chat(request, conn, "project", name), c_kind="project", next=views.project_url(name),
-                      reports=reports.list_reports(conn, projects=[name]))
+                      reports=reports.list_reports(conn, projects=[name]), picker=views.project_reviewers(conn, name))
+
+    @router.post("/projects/{name}/reviewers")
+    def project_reviewers(name: str, request: Request, operator: PostOp, conn: Conn,
+                          reviewer: Annotated[list[str] | None, Form(max_length=64)] = None) -> Response:
+        """The Reviewers picker (reviewers.set_reviewers; also PUT /ui/api/projects/{name}/reviewers). Every box
+        is posted, so an empty list clears them."""
+        from agenthub.hub import reviewers  # it imports this module's operator checks
+
+        with db.transaction(conn):
+            name = reviewers.project_name(conn, name)
+            reviewers.set_reviewers(conn, name, reviewer or [], actor=operator.actor)
+        return done(request, views.project_url(name))
 
     @router.post("/projects/{name}/description")
     def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
@@ -538,6 +560,13 @@ def build_router() -> APIRouter:
     def chat_page_moved(agent_id: str, operator: Op) -> RedirectResponse:
         """0.3.7's private chat page: an agent's chat is on its page now."""
         return RedirectResponse(f"/ui/agents/{quote(agent_id, safe='')}", status_code=308, headers=SECURITY_HEADERS)
+
+    @router.get("/dm/{ref}", response_class=HTMLResponse)
+    def dm_page(ref: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        """A direct chat between two agents (``<id>:<id>``): the operator reads every one, and may write in it."""
+        c = page_chat(request, conn, "dm", ref)
+        return render(request, operator, "dm.html", conn, nav="chats", c=c, c_kind="dm", next=c["page"],
+                      pair=[r for i in c["ref"].split(":") for r in views.agent_rows(conn, agent_id=i, with_wakes=True)])
 
     @router.get("/chat/msg/{message_id}", response_class=HTMLResponse)
     def chat_row_fragment(message_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -621,6 +650,7 @@ def build_router() -> APIRouter:
     @router.get("/approvals/{approval_id}", response_class=HTMLResponse)
     def approval_page(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         a = approvals.get(conn, approval_id)
+        a["loop"] = views.loop_card(conn, a)
         task = tasks.get_task(conn, a["details"]["task_id"]) if a["details"].get("task_id") else None
         return render(request, operator, "approval.html", conn, nav="approvals", a=a, task=task)
 
@@ -791,8 +821,9 @@ def build_router() -> APIRouter:
     # agents -------------------------------------------------------------------------
 
     def render_agents(request: Request, operator: Operator, conn: sqlite3.Connection, new_code: dict | None) -> HTMLResponse:
-        return render(request, operator, "agents.html", conn, nav="agents", agents=views.agent_rows(conn),
-                      projects=store.list_projects(conn), new_code=new_code, live_url="/ui/agents")
+        return render(request, operator, "agents.html", conn, nav="agents",
+                      agents=views.agent_rows(conn, with_wakes=True), projects=store.list_projects(conn),
+                      new_code=new_code, live_url="/ui/agents")
 
     @router.get("/agents", response_class=HTMLResponse)
     def agents_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -812,7 +843,7 @@ def build_router() -> APIRouter:
 
     @router.get("/agents/{agent_id}", response_class=HTMLResponse)
     def agent_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> Response:
-        rows = views.agent_rows(conn, agent_id=agent_id)
+        rows = views.agent_rows(conn, agent_id=agent_id, with_wakes=True)
         agent = store.get_agent(conn, agent_id)
         if not rows or agent is None:
             try:  # /ui/agents/<name>, in any case: the agent's page is at its id
@@ -824,6 +855,19 @@ def build_router() -> APIRouter:
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
                       c=c, c_kind="agent", next=f"/ui/agents/{agent_id}")
+
+    @router.post("/agents/{agent_id}/wakes")
+    def agent_wakes_switch(agent_id: str, request: Request, operator: PostOp, conn: Conn,
+                           paused: Annotated[bool, Form()], panel: PanelField = "", next: NextField = "") -> Response:
+        """An agent's Pause wakes switch (wakes.set_agent_paused; also PUT /ui/api/agents/{name}/wakes): from its
+        page, its row in a live list (HTMX), or its slide-in panel (which comes back re-rendered)."""
+        from agenthub.hub import wakes
+
+        with db.transaction(conn):
+            view = wakes.set_agent_paused(conn, agent_id, paused, actor=operator.actor)
+        if panel and request.headers.get("hx-request"):
+            return render_panel(request, operator, conn, panel, next)
+        return done(request, safe_next(next) or f"/ui/agents/{quote(view['agent_id'], safe='')}")
 
     @router.post("/agents/{agent_id}/approve")
     def agent_approve(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:

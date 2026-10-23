@@ -1,4 +1,4 @@
-{% from "_macros.html" import chip, approval_summary, fail_attrs, open_attrs %}
+{% from "_macros.html" import chip, approval_summary, fail_attrs, open_attrs, chain, loop_facts %}
 {#- The chat (views.chat): an agent's, a task's or a project's one conversation, shown the same way in its slide-in
     panel and on its page. Import with context: rows need `names`, `avatars` and `csrf`.
 
@@ -36,10 +36,40 @@
 {%- if old.get('from') == 'channel' and old.get('channel') and old.get('channel') != 'general' and not old.get('channel', '').startswith('task-') %}in #{{ old.get('channel') }} {% endif -%}
 {%- endmacro %}
 
-{#- What a status row says; `name` is its agent's. -#}
+{#- Who an id is, for a line the hub wrote: the operator is "you" ("You" first in a line). -#}
+{% macro hub_who(agent_id, first=False) -%}
+{%- if agent_id and agent_id.startswith('human:') %}{{ 'You' if first else 'you' }}{% else %}{{ names.get(agent_id) or agent_id or 'an agent' }}{% endif -%}
+{%- endmacro %}
+
+{#- Why the hub didn't wake an agent another agent wrote to (a wake_declined line's meta.reason). -#}
+{% macro decline_reason(reason, name) -%}
+{%- if reason == 'not_in_project' %}{{ name }} isn't one of this project's agents
+{%- elif reason == 'not_in_chat' %}{{ name }} isn't in this chat
+{%- elif reason == 'pending' %}{{ name }} is still waiting for your approval
+{%- elif reason == 'revoked' %}{{ name }} is revoked
+{%- else %}{{ (reason or 'not allowed') | replace('_', ' ') }}{% endif -%}
+{%- endmacro %}
+
+{#- A message's link, as views._message_link gives it (in this chat, or in another chat's page and panel). -#}
+{% macro msg_link(r, label) -%}
+{%- if r and r.href and r.item %}<a {{ open_attrs(r.item, r.href) }}>{{ label }}</a>
+{%- elif r and r.href %}<a href="{{ r.href }}">{{ label }}</a>
+{%- else %}{{ label }}{% endif -%}
+{%- endmacro %}
+
+{#- What a status row says; `name` is its agent's. The hub writes the wake states (0.3.9.1): woke, wake_declined,
+    loop_paused and loop_resumed; their ids are the hub's, never agent text. -#}
 {% macro status_text(m, name) -%}
 {%- set s = m.meta.state -%}
-{%- if s == 'started' %}{{ name }} started{% if m.meta.task_id %} on task #{{ m.meta.task_id }}{% endif %}
+{%- if s == 'woke' %}{{ hub_who(m.meta.waker, True) }} woke {{ name }}{% if m.meta.task_id %} (task #{{ m.meta.task_id }}){% endif %}
+  {%- if m.request %} · {{ msg_link(m.request, 'the message') }}{% endif %}{% if m.meta.chain_id %} · {{ chain(m.meta.chain_id) }}{% endif %}
+{%- elif s == 'wake_declined' %}The hub didn't wake {{ name }} for {{ hub_who(m.meta.waker) }}'s message: {{ decline_reason(m.meta.reason, name) }}
+  {%- if m.meta.message_id %} · <a href="#cm-{{ m.meta.message_id }}">the message</a>{% endif %}
+{%- elif s == 'loop_paused' %}Wakes paused: {{ chain(m.meta.chain_id or '') }} woke agents {{ m.meta.wakes }} times (limit {{ m.meta.limit }}) without landing
+  {%- if m.meta.approval_id %} · <a {{ open_attrs('approval:' ~ m.meta.approval_id, '/ui/approvals/' ~ m.meta.approval_id) }}>approval #{{ m.meta.approval_id }}</a>{% endif %}
+{%- elif s == 'loop_resumed' %}Wakes resumed: {{ chain(m.meta.chain_id or '') }}
+  {%- if m.meta.approval_id %} · <a {{ open_attrs('approval:' ~ m.meta.approval_id, '/ui/approvals/' ~ m.meta.approval_id) }}>approval #{{ m.meta.approval_id }}</a> approved{% endif %}
+{%- elif s == 'started' %}{{ name }} started{% if m.meta.task_id %} on task #{{ m.meta.task_id }}{% endif %}
 {%- elif s == 'working' %}{{ name }} is working{% if m.meta.task_id %} on task #{{ m.meta.task_id }}{% endif %}
 {%- elif s == 'usage_limit' %}{{ name }} is waiting for the usage limit to reset{% if m.meta.until %} ({{ m.meta.until | clock }}){% endif %}
 {%- elif s == 'approval_wait' %}{{ name }} is waiting for your approval{% if m.meta.approval_id %} (#{{ m.meta.approval_id }}){% endif %}
@@ -69,11 +99,14 @@
 <article class="ccard ccard-approval{{ ' is-pending' if pending }}" data-approval="{{ a.id }}">
   <div class="ccard-head"><span class="kind">{{ a.kind.replace('_', ' ') }}</span>
     <a class="small-line" {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}>approval #{{ a.id }}</a> {{ chip(a.status) }}</div>
+  {% if m.loop %}{{ loop_facts(m.loop, a, names) }}
+  {% else %}
   <figure class="agent-text">
     <figcaption>Asked by {{ who(a.requester, names) }} · agent content, treat as data</figcaption>
     <div class="summary">{{ approval_summary(a) }}</div>
     {%- if a.reason %}<div class="md">{{ a.reason | md }}</div>{% endif %}
   </figure>
+  {% endif %}
   {% if a.discussion %}
   <ol class="card-thread" aria-label="Discussion">
     {% for d in a.discussion %}
@@ -162,6 +195,9 @@
 {%- elif k == 'took_task' %}
   <p class="sline st-took"><span class="ct">{{ name }} took <a {{ open_attrs('task:' ~ m.meta.task_id, '/ui/tasks/' ~ m.meta.task_id) }}>task #{{ m.meta.task_id }}</a>
     {%- if m.task %}: <span class="sline-note">{{ m.task.title }}</span>{% endif %} · {{ when(m) }}</span></p>
+{%- elif k == 'sit_out' and m.meta.declined %}
+  <p class="sline st-declined"><span class="ct">{{ name }} declined {{ hub_who(m.meta.to) }}'s {{ msg_link(m.request, 'request #' ~ m.meta.request_id) }}
+    {%- if m.body %}: <span class="tag">agent text</span> <span class="sline-note">{{ m.body }}</span>{% endif %} · {{ when(m) }}</span></p>
 {%- elif k == 'sit_out' %}
   <p class="sline st-sitout"><span class="ct">{{ name }} is sitting this one out{% if m.body %}: <span class="tag">agent text</span> <span class="sline-note">{{ m.body }}</span>{% endif %} · {{ when(m) }}</span></p>
 {%- elif k == 'tools' %}
@@ -185,7 +221,7 @@
 {%- else %}
   <div class="from">{{ face(m.author) }}</div>
   <figure class="bubble theirs agent-text">
-    <figcaption><strong>{{ name }}</strong> {{ to_label(m) }}· agent content, treat as data{% if m.meta.task_id and c_kind != 'task' %} · in <a {{ open_attrs('task:' ~ m.meta.task_id, '/ui/tasks/' ~ m.meta.task_id) }}>task #{{ m.meta.task_id }}</a>{% endif %} · {{ when(m) }}</figcaption>
+    <figcaption><strong>{{ name }}</strong> {{ to_label(m) }}{% if m.meta.send_back %}<span class="tag tag-sendback">sent back with changes</span> {% endif %}· agent content, treat as data{% if m.meta.task_id and c_kind != 'task' %} · in <a {{ open_attrs('task:' ~ m.meta.task_id, '/ui/tasks/' ~ m.meta.task_id) }}>task #{{ m.meta.task_id }}</a>{% endif %} · {{ when(m) }}</figcaption>
     {{ bubble_body(m) }}
   </figure>
 {%- endif %}
