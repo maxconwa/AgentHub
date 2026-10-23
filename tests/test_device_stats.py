@@ -354,7 +354,7 @@ def test_migration_26_adds_the_table_and_nothing_else(tmp_path, monkeypatch):
     conn = db.init_db(path)
     before = {r[0]: r[1] for r in conn.execute("SELECT name, sql FROM sqlite_master")}
     conn.close()
-    monkeypatch.setattr(db, "MIGRATIONS", newest)
+    monkeypatch.setattr(db, "MIGRATIONS", newest[:26])  # only 26: later migrations may change other tables
     conn = db.init_db(path)
     after = {r[0]: r[1] for r in conn.execute("SELECT name, sql FROM sqlite_master")}
     assert {k: v for k, v in after.items() if k in before} == before  # nothing changed
