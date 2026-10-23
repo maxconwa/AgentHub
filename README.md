@@ -269,15 +269,13 @@ agenthub --config-dir ~/.config/agenthub-reviewer doctor
   (`com.agenthub.runner.reviewer` on macOS) with its own `runner.toml` in its
   config dir. Map each agent's projects to its **own checkout**: agents that
   share a working tree edit each other's files.
-- **Names with capitals.** Agent and project names may have capitals
-  (`Hub-Builder-1`); the hub and dashboard show them as written. Wherever a
-  name leaves the hub, it's the name's *slug*, the name lowercased: the
-  service is `agenthub-runner-hub-builder-1.service`
+- **Names with capitals.** Service, label, log, config dir and branches use
+  the name's slug (see **Names** above): for `Hub-Builder-1` the service is
+  `agenthub-runner-hub-builder-1.service`
   (`com.agenthub.runner.hub-builder-1` on macOS, logging to
   `~/Library/Logs/agenthub-runner-hub-builder-1.log`), the config dir to use
   is `~/.config/agenthub-hub-builder-1`, and the agent names its git branches
-  `agent/hub-builder-1-...`. A lowercase name is its own slug, so an existing
-  agent keeps its service, folder and branches.
+  `agent/hub-builder-1-...`.
 - **Shared hooks and MCP server.** Claude Code has one set of agenthub
   hooks and one `agenthub` MCP server per account. Each acts as the agent
   named by the session's `AGENTHUB_CONFIG_DIR`, which a runner sets for

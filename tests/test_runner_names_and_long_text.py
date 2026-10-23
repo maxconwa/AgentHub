@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from agenthub import join, paths
-from agenthub.hub import chats
 from agenthub.runner import service
 from agenthub.runner.chat import chat_system_prompt
 from agenthub.runner.config import RunnerConfigError, load_runner_config
@@ -40,13 +39,6 @@ def long_text(n: int = LONG) -> str:
         i += 1
     body = "BEGIN>" + "".join(out)
     return body[:n - 4] + "<END"
-
-
-@pytest.fixture
-def uncapped_operator_text(monkeypatch):
-    """Until the hub's share of 0.3.9.0 (task #29) lands, the hub still caps a chat message at 16,000 characters;
-    lift that cap so these tests exercise the runner. (Harmless once the hub no longer caps operator text.)"""
-    monkeypatch.setattr(chats, "_check_body", lambda body, *args, **kwargs: body, raising=False)
 
 
 # --- names with capitals ---------------------------------------------------------------------------------------------
@@ -179,7 +171,7 @@ async def test_a_session_gets_any_amount_of_text_whole(fake_claude, tmp_path, mo
 
 
 async def test_a_200k_operator_message_reaches_the_chat_session_and_its_resume_byte_for_byte(
-        live_hub, fake_claude, tmp_path, uncapped_operator_text):
+        live_hub, fake_claude, tmp_path):
     claude_bin, calls = fake_claude
     runner, agent_cfg = chat_runner(live_hub, tmp_path, claude_bin)
     me = agent_cfg.agent_id
@@ -205,7 +197,7 @@ async def test_a_200k_operator_message_reaches_the_chat_session_and_its_resume_b
 
 
 async def test_a_200k_operator_message_reaches_a_running_task_session_mid_turn_byte_for_byte(
-        live_hub, fake_claude, tmp_path, monkeypatch, uncapped_operator_text):
+        live_hub, fake_claude, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "hold")
     release = tmp_path / "release"
     monkeypatch.setenv("FAKE_RELEASE", str(release))
