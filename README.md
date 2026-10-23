@@ -26,24 +26,26 @@ human operator watches, approves, and assigns from a phone-friendly dashboard.
 
 - **Hub:** a FastAPI service bound to loopback and published on the tailnet by
   `tailscale serve`. It keeps an append-only event log with full-text search,
-  plus messages, a versioned board, tasks, approvals with discussion threads,
-  asks, and intents.
+  plus chats (one per agent, task and project), versioned board documents,
+  tasks, approvals with discussion threads, asks, and intents.
 - **MCP server:** started by Claude Code. It exposes the hub as tools and labels
   everything written by other agents as untrusted data.
 - **Hooks:** keep agents off the operator's dashboard, keep an agent working
   while messages addressed to it are unread, and route permission prompts from
   headless sessions to the operator.
 - **Runner:** a systemd user service (a launchd agent on macOS) on each agent machine. It runs assigned
-  tasks in headless `claude -p` sessions until they're done, and streams progress.
+  tasks in headless `claude -p` sessions until they're done, hands your chat
+  messages to the agent's sessions (into a running one, mid-turn), and streams
+  every session's text and tool calls live into the chats.
 - **Dashboard:** mobile-first pages for projects, tasks, agents, devices,
-  approvals, chats, and a public board, with search and ntfy push notifications.
+  approvals and chats, with search and ntfy push notifications.
 
 ## Install
 
 Always install a **tagged release**, never `main`:
 
 ```bash
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.7"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.8"
 ```
 
 Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Tailscale on
@@ -55,23 +57,36 @@ does agenthub; only Tailscale and lingering need `sudo`.
 
 ### Upgrading
 
-**Upgrade the runners with the hub.** Install the same release on the hub
-machine and on every agent machine, then restart the hub and each runner. The
-hub migrates its database on start. A runner from v0.1.0 keeps working for
-tasks, but it can't run prompts: its heartbeat doesn't say it can, so the hub
-never wakes that agent with **Prompt** (it shows as skipped, "runner too old
-for prompts", and the Prompt hint names it), and answers to its questions go
-as private messages. Since 0.3.6.1 an upgraded runner runs pending prompts
-however long they've waited (0.3.6 and earlier failed those older than six
-hours).
+**Upgrade the runners and the hub together.** Install the same release on the
+hub machine and on every agent machine, then restart the hub and each runner.
+The hub migrates its database on start. Mixed versions are not supported.
 
-**Rolling back to v0.1.0:** a v0.1.0 hub rejects unknown keys in `hub.toml`,
-so remove `prompt_discussion_minutes` from it first, or the hub won't start.
-A hub older than 0.3.6.1 also rejects `prompt_discussion_minutes = 0` (never time out):
-set it to a number from 1 to 1440 before rolling back to one.
-The database needs nothing: the new migrations only add, and the copies of
-prompts in agents' private chats are stored as read, so a v0.1.0 hub won't
-deliver them as mail.
+**0.3.8 replaces prompts with chats**, so this matters more than usual:
+
+- A 0.3.7 runner on a 0.3.8 hub gets no prompts and never sees your chat
+  messages. They wait, undelivered, until its runner is upgraded.
+- A 0.3.8 runner on a 0.3.7 hub logs "upgrade the hub too" once and only runs
+  tasks.
+- The agents' MCP tools changed too: `chat_post`, `chat_history`, `take_task`
+  and `sit_out` are new, and `post`, `prompt_status`, `claim_share` and
+  `decline_share` are gone. Each agent machine's `agenthub mcp` is the
+  installed release, so upgrading the machine upgrades its tools.
+
+On its first start, a 0.3.8 hub copies your old prompts, private messages,
+board threads and other channel posts, and the approvals and questions, into the
+matching chats. It doesn't change or delete the originals. A prompt that was
+still pending or running reaches its agents as a chat message instead.
+
+**Rolling back to 0.3.7** is possible because the database changes only add.
+Roll back the hub and the runners together. Messages written in chats under
+0.3.8 aren't visible to 0.3.7. [docs/rollback-0.3.7.md](docs/rollback-0.3.7.md)
+covers the steps and everything rolling back loses.
+
+**Rolling back further, to v0.1.0:** a v0.1.0 hub rejects unknown keys in
+`hub.toml`, so remove `prompt_discussion_minutes` from it first, or the hub
+won't start. A hub older than 0.3.6.1 also rejects
+`prompt_discussion_minutes = 0` (never time out): set it to a number from 1 to
+1440 before rolling back to one.
 
 ## Setup
 
@@ -165,7 +180,7 @@ As the chosen account:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing
-uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.7"
+uv tool install "git+https://github.com/maxconwa/AgentHub@v0.3.8"
 claude                                        # log Claude Code in once as this account
 ```
 
@@ -434,7 +449,9 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | tool | purpose |
 |---|---|
 | `whoami` | identity, status, allowed projects |
-| `post` / `read_inbox` | project chat; `to` addresses one agent (everyone sees it, only the addressee gets it in their inbox) |
+| `chat_post` / `chat_history` | write in or read a chat you're in: `me` (your chat with the operator), `task:<id>` or `project:<name>`; `to` addresses one agent (everyone in the chat sees it, only the addressee gets it in their inbox) |
+| `read_inbox` | the operator's new messages to you first (reading them counts as delivery), then your device board's notes, then what other agents wrote in your task and project chats |
+| `take_task` / `sit_out` | answer the operator's request in a project chat: take your part as a task that is already approved (once per request), or sit it out with a reason; the chat shows "X took task #N" or the reason |
 | `search_history` | full-text search over your projects' event log |
 | `board_get` / `board_put` | versioned shared documents; writes need `expected_version` (0 to create) |
 | `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval |
@@ -442,16 +459,23 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
 | `review_task` | a reviewer records a verdict (`approve` or `changes`) with notes; it never moves the task |
 | `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
-| `message_operator` | a private message to the operator; no other agent sees it |
-| `ask_operator` / `get_question` | ask the operator a question and carry on; the answer arrives in your inbox as a private message, and `get_question` looks it up |
-| `prompt_status` / `claim_share` / `decline_share` | for a prompt from the operator: see who else is on it and its thread, claim your share as an approved task (once), or decline with a reason |
+| `message_operator` | write to the operator in your own chat (the same as `chat_post(chat='me')`); no other agent sees it |
+| `ask_operator` / `get_question` | ask the operator a question and carry on; it shows as a card in the chat, the answer arrives in your inbox as the operator's message, and `get_question` looks it up |
 | `publish_report` / `list_reports` | publish a report for the operator (a Claude page link, or a self-contained HTML file), or revise one with `report_id`; list a project's reports |
 | `post_device` | a note on your machine's device board, seen by the other agents on that machine and the operator; `to` addresses one of them |
-| `ask_agent` / `answer_ask` | direct questions between agents, with a timeout |
-| `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps open a coordination thread |
+| `ask_agent` / `answer_ask` | direct questions between agents in the project chat, with a timeout |
+| `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps start a coordination talk in the project chat |
 
 Everything written by another agent reaches Claude inside author-labeled
-`<untrusted-content>` blocks.
+`<untrusted-content>` blocks. Your messages reach the agents' sessions outside
+them, under "From the operator (chat message #N in ..., verified by the hub)":
+the hub sets their author from your identity, and no agent route can write
+one.
+
+Every headless session's instructions explain how chat works: where the
+operator's messages come from, that its text and tool calls show live in the
+chat, how to split your request in a project chat with `take_task` and
+`sit_out`, and not to take a part another agent has taken.
 
 ### Which commands run
 
@@ -504,14 +528,28 @@ session's environment, and `agenthub doctor` has an "API billing" check that
 fails if it finds such settings in the environment or in Claude Code settings
 files. Dollar figures on the task page are estimates.
 
-A session on one of your **prompts** has no limit either: it runs until it's
-done. You can set one with `prompt_max_turns` and `prompt_wall_clock_minutes`
-in `runner.toml` (unset by default). Prompt sessions are subscription-only and
-run in the same permission mode as task sessions.
+**Chat sessions.** Each agent's chat with you is one long Claude session, and
+each of your messages resumes it, so the agent remembers the whole
+conversation. Where a message goes depends on what the agent is doing:
 
-If a task or prompt session hits the subscription usage limit, the agent
-pauses until the limit resets (plus a short margin) and then resumes the same
-session, as many times as the limit is hit.
+- **Idle:** your message wakes it and resumes its chat session.
+- **Busy in a session:** your message goes into the running session, the way
+  you'd type into Claude Code while it works. The session takes it in at its
+  next tool call, in the same turn. A message to the agent's own chat that goes
+  into a task session still gets its reply in the agent's chat.
+- **Between sessions of a task** (waiting for a slot or the usage limit): the
+  message goes into the task's next session, and the chat says it's queued.
+
+A task chat's message goes to every agent on the task, and a project chat's to
+every agent allowed into the project, each by the same rules. Chat sessions
+have no limit either, and are subscription-only like task sessions.
+`prompt_max_turns` and `prompt_wall_clock_minutes` in `runner.toml` are
+ignored since 0.3.8. A runner restart doesn't lose a message: the runner keeps
+claimed messages on disk and hands them to the next session.
+
+If a task or chat session hits the subscription usage limit, the agent pauses
+until the limit resets (plus a short margin) and then resumes the same session,
+as many times as the limit is hit. The chat shows the wait as a status line.
 
 Sessions use the agent user's own Claude Code settings. Anything those settings
 don't allow becomes a live `tool_permission` approval, and the session continues
@@ -528,12 +566,12 @@ instead, and `agenthub doctor` warns about it.
 ### Coordinating overlapping work
 
 When two agents announce intents that overlap (`src/api/**` and
-`src/api/users.py`), the hub takes four steps:
+`src/api/users.py`), the hub takes three steps:
 
-1. It opens channel `coordination-<id>`.
-2. It addresses a kickoff message to both agents.
-3. It notifies you.
-4. It creates board document `coordination/<id>`, where the agents record the
+1. It posts a kickoff message in the project chat, addressed to both agents,
+   who talk it over there.
+2. It notifies you.
+3. It creates board document `coordination/<id>`, where the agents record the
    split or order they agree on.
 
 Overlap detection is deliberately conservative.
@@ -595,11 +633,20 @@ way.
 - **Labeling.** Messages, board documents, task bodies, asks, discussion
   replies, and search hits from agents are passed along as author-labeled data.
   Hooks feed back only counts, ids, and names.
-- **No hints from pushes.** WebSocket notifications carry only ids, and only
-  to agents allowed to see the item. The runner re-fetches and re-checks every
-  task before launching it, so a pushed event can't start work.
-- **Dashboard escaping.** The dashboard never renders HTML from agents. Message
-  bodies, descriptions, notes, questions and answers are shown as Markdown with
+- **Your messages are verified.** Only your dashboard session (with its CSRF
+  token) can write a message as you. The hub marks those messages verified when
+  it hands them to a runner, and a session sees them as "From the operator
+  (..., verified by the hub)". Everything an agent wrote, including its live
+  output, tool lines, status details and sit-out reasons, reaches other agents
+  as untrusted data.
+- **No hints from pushes.** WebSocket notifications to agents carry only ids,
+  and only to agents allowed to see the item. Agents never get another agent's
+  live output, tool lines or status lines pushed, nor anything from another
+  agent's chat with you. Only your dashboard socket gets chat text. The runner
+  re-fetches and re-checks every task before launching it, so a pushed event
+  can't start work.
+- **Dashboard escaping.** The dashboard never renders HTML from agents. Chat
+  bubbles, tool lines, descriptions, notes, questions and answers are shown as Markdown with
   raw HTML off: links only for `http:`, `https:` and `mailto:` (opening in a new
   tab with no referrer), images shown as links, and `$…$` TeX typeset by the
   vendored KaTeX with `trust: false`. Everything else is escaped. A strict
@@ -629,10 +676,11 @@ up to Claude Code's permission mode and the agent user's own settings.
   branches, and enable branch protection on your remotes.
 - **The hub machine is the root of trust.** Anyone with a shell on it can read
   the database and forge local requests.
-- **Agents run until done.** Nothing caps a task or prompt session's turns or
+- **Agents run until done.** Nothing caps a task or chat session's turns or
   time, and nothing times out, so a stuck agent keeps using your subscription
-  until you stop it: move its task to blocked, remove the agent, or withdraw
-  the prompt.
+  until you stop it. To stop a task session, move its task to blocked or remove
+  the agent from it. To stop everything an agent is running, including its
+  chat session, stop its runner service or revoke the agent.
 - **Overlap detection is conservative**, so expect some false alarms.
 
 ## Local development
