@@ -5,9 +5,9 @@ import re
 
 import pytest
 
-from agenthub.hub import db, private, store, task_agents, tasks
+from agenthub.hub import chats, db, store, task_agents, tasks
 
-from .conftest import OPERATOR, legacy_post, legacy_private
+from .conftest import OPERATOR
 
 POLL = {"hx-request": "true", "hx-target": "live"}
 
@@ -21,12 +21,14 @@ def live_region(html):
 
 
 def agent_says(hub, agent, body):
-    """A private message as 0.3.7 wrote it: the pages here still show those (0.3.8's agents write in chats)."""
-    legacy_private(hub, agent, body)
+    """The agent writes in its own chat (message_operator)."""
+    r = hub.client.post("/api/v1/private", json={"body": body}, headers=agent.headers)
+    assert r.status_code in (200, 201), r.text
 
 
 def unread(hub, agent):
-    return private.unread_counts(hub.conn()).get(agent.id, 0)
+    """Agent messages in its chat the operator hasn't seen."""
+    return {(o["kind"], o["ref"]): o["unread"] for o in chats.overview(hub.conn())}.get(("agent", agent.id), 0)
 
 
 @pytest.fixture
@@ -40,22 +42,21 @@ def site(hub):
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Fix login", assignee=None)
         task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
-    legacy_post(hub, a, "hi", to="helper")
     node = store.get_agent(conn, a.id).device_node_id
     x, y = sorted([a.id, c.id])
     return hub, a, {"task": t["id"], "approval": ap["id"], "question": q["id"], "node": node, "pair": f"pair-{x}-{y}"}
 
 
 def live_pages(ids, agent):
-    return ["/ui/dashboard", "/ui/projects", "/ui/projects/proj", "/ui/tasks", f"/ui/tasks/{ids['task']}",
-            "/ui/agents", f"/ui/agents/{agent.id}", "/ui/devices", f"/ui/devices/{ids['node']}", "/ui/approvals",
-            "/ui/chats", f"/ui/chats/{agent.id}", f"/ui/chats/pair/{ids['pair']}", "/ui/board",
-            "/ui/board/ch-proj~general", "/ui/usage", "/ui/reports"]
+    return ["/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals", "/ui/chats",
+            "/ui/usage", "/ui/reports"]
 
 
 def still_pages(ids, agent):
+    # The agent, task and project pages hold their chat, which the socket keeps live (no 10 s refresh).
     return ["/ui/activity", "/ui/search?q=push", f"/ui/approvals/{ids['approval']}",
-            f"/ui/questions/{ids['question']}", f"/ui/compose?to=agent:{agent.id}"]
+            f"/ui/questions/{ids['question']}", "/ui/projects/proj", f"/ui/tasks/{ids['task']}",
+            f"/ui/agents/{agent.id}", f"/ui/devices/{ids['node']}"]
 
 
 def test_only_pages_with_a_live_block_poll(site):
@@ -116,37 +117,73 @@ def test_approvals_tasks_and_agents_update_live(site):
 # --- reading private replies ----------------------------------------------------------------
 
 
-def test_agent_page_chat_is_live_and_marks_read_only_what_it_shows(site):
+def test_agent_page_marks_its_chat_read_but_other_requests_do_not(site):
     hub, a, ids = site
     agent_says(hub, a, "a reply you have not seen")
-    # Another HTMX request for the page (not its live region) shows no chat: the reply stays unread.
+    waiting = unread(hub, a)  # the reply, and the cards of its approval and question
+    assert waiting >= 1
+    # Another HTMX request for the page doesn't put the chat in front of the operator: the reply stays unread.
     get(hub, f"/ui/agents/{a.id}", **{"hx-request": "true", "hx-target": "panel"})
-    assert unread(hub, a) == 1
-    # The live region's poll shows the chat, so the reply is read.
-    r = get(hub, f"/ui/agents/{a.id}", **POLL)
-    assert "a reply you have not seen" in r.text and unread(hub, a) == 0
-    agent_says(hub, a, "second reply")
+    assert unread(hub, a) == waiting
     page = get(hub, f"/ui/agents/{a.id}").text
-    assert "second reply" in live_region(page) and unread(hub, a) == 0
-    assert 'action="/ui/prompts"' in page.split('id="live"')[1].split("</section>", 1)[1]  # Prompt sits below
-
-
-def test_chat_page_poll_marks_read_but_other_requests_do_not(site):
-    hub, a, ids = site
-    agent_says(hub, a, "hello operator")
-    get(hub, f"/ui/chats/{a.id}", **{"hx-request": "true", "hx-target": "compose"})
+    assert "a reply you have not seen" in page and unread(hub, a) == 0
+    agent_says(hub, a, "second reply")
     assert unread(hub, a) == 1
-    get(hub, f"/ui/chats/{a.id}", **POLL)
+    get(hub, f"/ui/panel?item=agent:{a.id}")  # the panel is the chat too
     assert unread(hub, a) == 0
 
 
-@pytest.mark.parametrize("path", ["/ui/agents/{id}", "/ui/chats/{id}", "/ui/panel?item=agent:{id}",
-                                  "/ui/messenger/agent:{id}"])
+def chat_unread(hub, kind, ref):
+    return {(o["kind"], o["ref"]): o["unread"] for o in chats.overview(hub.conn())}.get((kind, str(ref)), 0)
+
+
+@pytest.mark.parametrize("kind", ["agent", "task", "project"])
+def test_only_a_chat_put_in_front_of_the_operator_is_marked_read(site, kind):
+    """0.3.7's chat-page test, for 0.3.8's chats: a cross-site GET, a non-live HTMX request, or a row fetched without
+    app.js (no X-Chat) of a page or panel never marks its chat read; showing it does, and so do the rows app.js
+    fetches into the open chat."""
+    hub, a, ids = site
+    ref = {"agent": a.id, "task": ids["task"], "project": "proj"}[kind]
+    page = {"agent": f"/ui/agents/{a.id}", "task": f"/ui/tasks/{ref}", "project": "/ui/projects/proj"}[kind]
+
+    def agent_writes(body):
+        path = "/api/v1/private" if kind == "agent" else f"/api/v1/chats/{kind}/{ref}/messages"
+        r = hub.client.post(path, json={"body": body}, headers=a.headers)
+        assert r.status_code in (200, 201), r.text
+        return r.json()["id"]
+
+    first = agent_writes("not seen yet")
+    waiting = chat_unread(hub, kind, ref)
+    assert waiting >= 1
+    for path, headers in [(page, {"sec-fetch-site": "cross-site"}),
+                          (f"/ui/panel?item={kind}:{ref}", {"sec-fetch-site": "cross-site"}),
+                          (page, {"hx-request": "true", "hx-target": "panel"}),
+                          (f"/ui/chat/msg/{first}", {}),
+                          (f"/ui/chat/msg/{first}", {"x-chat": "1", "sec-fetch-site": "cross-site"}),
+                          (f"/ui/chat/{kind}/{ref}?after=0", {"x-chat": "1", "sec-fetch-site": "cross-site"})]:
+        assert get(hub, path, **headers).status_code == 200, path
+        assert chat_unread(hub, kind, ref) == waiting, (path, headers)
+    get(hub, f"/ui/panel?item={kind}:{ref}")
+    assert chat_unread(hub, kind, ref) == 0
+    second = agent_writes("arrives while the chat is open")
+    assert chat_unread(hub, kind, ref) == 1
+    get(hub, f"/ui/chat/msg/{second}", **{"x-chat": "1"})  # app.js swaps it into the open chat
+    assert chat_unread(hub, kind, ref) == 0
+    agent_writes("missed while the socket was down")
+    get(hub, f"/ui/chat/{kind}/{ref}?after={second}", **{"x-chat": "1"})  # app.js catching up
+    assert chat_unread(hub, kind, ref) == 0
+    agent_writes("seen on the page")
+    get(hub, page)
+    assert chat_unread(hub, kind, ref) == 0
+
+
+@pytest.mark.parametrize("path", ["/ui/agents/{id}", "/ui/panel?item=agent:{id}"])
 def test_cross_site_get_never_marks_read(site, path):
     hub, a, ids = site
     agent_says(hub, a, "keep me unread")
+    waiting = unread(hub, a)
     r = get(hub, path.format(id=a.id), **{"sec-fetch-site": "cross-site"})
-    assert r.status_code == 200 and unread(hub, a) == 1
+    assert r.status_code == 200 and unread(hub, a) == waiting >= 1
     get(hub, path.format(id=a.id))
     assert unread(hub, a) == 0
 
@@ -158,11 +195,10 @@ def test_whitespace_only_operator_posts_are_refused(site):
     hub, a, ids = site
     conn = hub.conn()
     count = lambda: sum(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
-                        for t in ("messages", "private_messages", "device_messages", "approval_messages", "prompts"))
+                        for t in ("chat_messages", "approval_messages"))
     before = count()
-    posts = [("/ui/projects/proj/notes", "body", {}), (f"/ui/tasks/{ids['task']}/notes", "body", {}),
-             (f"/ui/devices/{ids['node']}/notes", "body", {}), ("/ui/prompts", "body", {"target": f"agent:{a.id}"}),
-             ("/ui/board/ch-proj~general", "body", {}), (f"/ui/questions/{ids['question']}/answer", "answer", {}),
+    posts = [(f"/ui/chat/agent/{a.id}", "body", {}), (f"/ui/chat/task/{ids['task']}", "body", {}),
+             ("/ui/chat/project/proj", "body", {}), (f"/ui/questions/{ids['question']}/answer", "answer", {}),
              (f"/ui/approvals/{ids['approval']}/discuss", "body", {})]
     for url, field, extra in posts:
         r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), field: "  \n\t ", **extra},
@@ -180,8 +216,9 @@ def test_narrow_screen_and_math_rules_in_the_stylesheet(hub):
     assert re.search(r"\.inline \{[^}]*flex-wrap: wrap", css)  # the task page's member forms wrap at 360px
     assert re.search(r"^select \{ max-width: 100%; \}", css, re.M)
     assert re.search(r"\.md \.math\.inline \.katex \{ display: inline-block; max-width: 100%; overflow-x: auto;", css)
-    # A list row's subtitle is nowrap; a long task title in the row's own spans must still wrap.
-    assert ".chat-list .t > span { display: block;" in css and ".chat-list .t span " not in css
+    # A chat-list row's last line and title clip with an ellipsis rather than widen the list at 360px.
+    assert re.search(r"^\.clast \{[^}]*white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", css, re.M)
+    assert ".cline strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }" in css
     assert re.search(r"^\.member-card \{", css, re.M)
 
 

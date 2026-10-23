@@ -232,7 +232,7 @@ def test_usage_page_shows_tasks_and_prompts(mixed):
     assert "<title>Usage · agenthub</title>" in html
     assert 'aria-current="page">Last 7 days</a>' in html
     for needle in ("By agent", "By project", "By task", "Per day", "Recent runs", "Fix login",
-                   f'href="/ui/prompts/{p1}"', f'href="/ui/tasks/{t1["id"]}"', "chip-usage_limit", "limit hit",
+                   f"Prompt #{p1}", f'href="/ui/tasks/{t1["id"]}"', "chip-usage_limit", "limit hit",
                    f'href="/ui/agents/{a.id}"', "<svg class=\"usage-strip\""):
         assert needle in html, needle
     assert "Old work" not in html  # outside the window

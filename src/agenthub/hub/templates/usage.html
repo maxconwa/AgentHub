@@ -95,7 +95,7 @@
   {% for r in u.recent %}
   <tr{% if r.limit_hit %} class="limit-row"{% endif %}>
     <td>{{ ago(r.started_at) }}</td>
-    <td><span class="swatch swatch-{{ r.kind }}" aria-hidden="true"></span>{% if r.kind == "task" %}<a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>Task #{{ r.task_id }}</a>{% else %}<a href="/ui/prompts/{{ r.prompt_id }}">Prompt #{{ r.prompt_id }}</a>{% endif %}{% if r.project %} <span class="by-label">{{ r.project }}</span>{% endif %}</td>
+    <td><span class="swatch swatch-{{ r.kind }}" aria-hidden="true"></span>{% if r.kind == "task" %}<a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>Task #{{ r.task_id }}</a>{% else %}Prompt #{{ r.prompt_id }}{% endif %}{% if r.project %} <span class="by-label">{{ r.project }}</span>{% endif %}</td>
     <td><a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.agent }}</a></td>
     <td>{% if r.limit_hit %}<span class="chip chip-usage_limit">usage limit</span>{% else %}{{ chip(r.outcome or 'running') }}{% endif %}</td>
     <td class="num">{{ r.num_turns if r.num_turns is not none else '–' }}</td>

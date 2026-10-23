@@ -1,0 +1,55 @@
+{% from "_macros.html" import open_attrs, chip, task_title %}
+{#- The chat list (views.chat_index): Agents, Tasks, Projects, each newest first. The Chat button's window
+    (_messenger.html) and the Chats page share it. A row is a link to the item's page that opens its slide-in
+    panel (its chat) when JavaScript runs. A last line an agent wrote carries the "agent text" tag. -#}
+{% macro face(info, size) -%}
+{%- if info %}<img class="avatar" src="{{ info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
+{%- endmacro %}
+{% macro group_icon(kind, members) -%}
+<span class="group-icon g-{{ kind }}" aria-hidden="true">{{ {'task': '#', 'project': '▦'}[kind] }}
+  {%- if members %}<span class="stack">{% for m in members %}<img class="avatar" src="{{ m.mini }}" width="18" height="18" alt="" loading="lazy">{% endfor %}</span>{% endif %}</span>
+{%- endmacro %}
+{% macro last_line(r, empty) -%}
+<span class="clast">{% if not r.last %}{{ empty }}{% elif r.last.author.startswith('human:') %}You: {{ r.last.body }}{% else %}<span class="tag">agent text</span> {{ names.get(r.last.author, '') }}{{ ': ' if names.get(r.last.author) }}{{ r.last.body }}{% endif %}</span>
+{%- endmacro %}
+{% macro dot(r) -%}
+{%- set n = (r.unread or 0) + (r.waiting or 0) -%}
+{%- if n %}<span class="unread" role="img" aria-label="{{ r.unread or 0 }} unread{% if r.waiting %}, {{ r.waiting }} waiting on you{% endif %}"></span>{% endif -%}
+{%- endmacro %}
+{% macro chat_list() -%}
+<div class="mlists">
+  {% if not (agents or tasks or projects) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
+  {% if agents %}
+  <div class="chat-group">Agents</div>
+  <ul class="clist">
+    {% for a in agents %}
+    <li><a class="crow" {{ open_attrs(a.item, a.href) }}>{{ face(a.avatar, 44) }}
+      <span class="ctext"><span class="cline"><strong>{{ a.title }}</strong><span class="cago">{{ ago(a.last_ts) if a.last_ts else '' }}</span></span>
+        <span class="cline cstatus">{% if a.avatar %}<span class="avatar-status status-{{ a.avatar.pose }}">{{ a.avatar.label }}</span>{% endif %}{% if a.status != 'active' %} {{ chip(a.status) }}{% endif %}</span>
+        {{ last_line(a, 'No messages yet') }}</span>
+      {{- dot(a) }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if tasks %}
+  <div class="chat-group">Tasks</div>
+  <ul class="clist">
+    {% for t in tasks %}
+    <li><a class="crow" {{ open_attrs(t.item, t.href) }}>{{ group_icon('task', t.members) }}
+      <span class="ctext"><span class="cline"><strong>{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}</strong><span class="cago">{{ ago(t.last_ts) if t.last_ts else '' }}</span></span>
+        {{ last_line(t, 'No messages yet · ' ~ t.state.replace('_', ' ')) }}</span>{{ dot(t) }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if projects %}
+  <div class="chat-group">Projects</div>
+  <ul class="clist">
+    {% for p in projects %}
+    <li><a class="crow" {{ open_attrs(p.item, p.href) }}>{{ group_icon('project', p.members) }}
+      <span class="ctext"><span class="cline"><strong>{{ p.title }}</strong><span class="cago">{{ ago(p.last_ts) if p.last_ts else '' }}</span></span>
+        {{ last_line(p, 'No messages yet') }}</span>{{ dot(p) }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{%- endmacro %}

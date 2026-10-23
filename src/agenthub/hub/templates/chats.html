@@ -1,39 +1,11 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import avatar, open_attrs %}
+{% from "_chatlist.html" import chat_list with context %}
 {% block title %}Chats{% endblock %}
 {% block content %}
 <h1>Chats</h1>
-<p class="lead">Your private chats, one per agent. No other agent can see them. Conversations between agents are listed below, read-only.</p>
+<p class="lead">One chat per agent, one per task (everyone on it) and one per project (every agent allowed in). Agents' messages to each other show in the task and project chats. <a href="/ui/activity">All activity</a></p>
 {% endblock %}
 {% block live %}
-{% if not threads and not others and not between_agents %}<p class="empty">No agents yet. Enroll one on the Agents page.</p>{% endif %}
-{% if threads %}
-<div class="chat-group">With you</div>
-<ul class="chat-list panel">
-  {% for t in threads %}
-  <li><a {{ open_attrs('agent:' ~ t.id, '/ui/chats/' ~ t.id) }}>{{ avatar(t.avatar, 32) }}<span class="t"><strong>{{ t.name }}</strong>
-    <span>Last from {{ 'you' if t.last_author.startswith('human:') else t.name }} · {{ ago(t.last_ts) }}</span></span>
-    {%- if t.unread %}<span class="chip chip-unread">{{ t.unread }} unread</span>{% endif %}</a></li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if between_agents %}
-<div class="chat-group">Between agents</div>
-<ul class="chat-list panel">
-  {% for t in between_agents %}
-  <li class="with-action"><a href="/ui/chats/pair/{{ t.key }}">{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{{ t.title }}</strong>
-    <span>Last message {{ ago(t.last_ts) }}</span></span></a></li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if others %}
-<div class="chat-group">Start a chat</div>
-<ul class="chat-list panel">
-  {% for a in others %}
-  <li><a {{ open_attrs('agent:' ~ a.id, '/ui/chats/' ~ a.id) }}>{{ avatar(a.avatar, 32) }}<span class="t"><strong>{{ a.name }}</strong>
-    <span>No messages yet{% if a.status == 'pending' %} · awaiting approval{% endif %}</span></span></a></li>
-  {% endfor %}
-</ul>
-{% endif %}
+{{ chat_list() }}
 {% endblock %}

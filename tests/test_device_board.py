@@ -9,7 +9,7 @@ from mcp import Client
 
 from agenthub.client import HubClient
 from agenthub.hooks import stop
-from agenthub.hub import bus, db, device_board, events, private, store, views
+from agenthub.hub import bus, db, device_board, events, private, store
 from agenthub.hub.dashboard import event_summary
 from agenthub.mcp_server import INSTRUCTIONS, build_server
 
@@ -53,13 +53,11 @@ def get(hub, path):
     return hub.client.get(path, headers=hub.op_headers())
 
 
-def note(hub, node, body, **headers):
-    return hub.client.post(f"/ui/devices/{node}/notes", headers={**hub.op_headers(), **headers},
-                           data={"csrf": hub.csrf(), "body": body}, follow_redirects=False)
-
-
-def live_region(html):
-    return re.search(r'<section id="live".*?</section>', html, re.S).group(0)
+def note(hub, node, body):
+    """An operator note on the device board. 0.3.8's dashboard has no device chat, so this is the hub's own call."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        return device_board.post(conn, node, author=OP_ACTOR, body=body)
 
 
 def device_events(hub):
@@ -237,40 +235,26 @@ def test_agent_with_no_projects_still_reads_its_device_board(hub):
 
 # --- operator notes ------------------------------------------------------------------
 
-def test_operator_note_shows_for_both_agents_and_not_others(box):
-    hub, alice, bob, carol = box
-    r = note(hub, BOX, "reboot at noon")
-    assert r.status_code == 303 and r.headers["location"] == f"/ui/devices/{BOX}"
-    for who in (alice, bob):
-        (m,) = inbox(hub, who)["messages"]
-        assert m["author"] == OP_ACTOR and m["kind"] == "device" and m["body"] == "reboot at noon"
-    assert inbox(hub, carol)["messages"] == []
-    r = hub.client.post(f"/ui/devices/{BOX}/notes", data={"body": "x"}, follow_redirects=False,
-                        headers={**hub.op_headers(), "x-csrf-token": hub.csrf(), "hx-request": "true"})
-    assert r.status_code == 204 and r.headers["hx-redirect"] == f"/ui/devices/{BOX}"
-
-
-def test_note_form_csrf_validation_and_unknown_node(box):
-    hub, alice, bob, carol = box
-    for data in ({"body": "x"}, {"body": "x", "csrf": "forged"}):
-        r = hub.client.post(f"/ui/devices/{BOX}/notes", headers=hub.op_headers(), data=data, follow_redirects=False)
-        assert r.status_code == 403
-    for body in ("", "   ", "x" * (device_board.MAX_BODY_CHARS + 1)):
-        assert note(hub, BOX, body).status_code == 422
-    assert device_board.recent(hub.conn(), BOX) == []
-    assert note(hub, "nnowhere", "x").status_code == 404
-    assert get(hub, "/ui/devices/nnowhere").status_code == 404
-    for method, path in (("GET", f"/ui/devices/{BOX}"), ("POST", f"/ui/devices/{BOX}/notes")):
-        r = hub.client.request(method, path, headers=alice.headers, data={"csrf": hub.csrf(), "body": "x"})
-        assert r.status_code == 403
-    assert device_board.recent(hub.conn(), BOX) == []
-
-
 def test_revoked_only_device_has_no_page(hub):
     alice = enroll_on(hub, "alice")
     hub.set_status(alice, "revoked")
     assert get(hub, f"/ui/devices/{BOX}").status_code == 404
-    assert note(hub, BOX, "x").status_code == 404
+
+
+def test_device_page_shows_its_agents_and_no_board(box):
+    """Devices have no chat in 0.3.8: the page lists the machine's agents (each opens its panel), and the board
+    stays the agents' own (post_device)."""
+    hub, alice, bob, carol = box
+    post(hub, alice, "only for the agents")
+    r = get(hub, f"/ui/devices/{BOX}")
+    assert r.status_code == 200 and "script-src 'self'" in r.headers["content-security-policy"]
+    html = r.text
+    assert BOX_NAME in html and "carol" not in html and "Devices have no chat" in html
+    for item in (f"agent:{alice.id}", f"agent:{bob.id}"):
+        assert f'data-panel="{item}"' in html, item
+    assert "only for the agents" not in html and "<textarea" not in html and "/notes" not in html
+    r = hub.client.post(f"/ui/devices/{BOX}/notes", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "x"})
+    assert r.status_code in (404, 405)
 
 
 # --- bus -----------------------------------------------------------------------------
@@ -381,57 +365,8 @@ def test_stop_hook_continues_for_addressed_device_note(mcp_env):
 
 # --- operator pages ------------------------------------------------------------------
 
-def test_device_page_shows_agents_board_and_note_form(box):
-    hub, alice, bob, carol = box
-    post(hub, alice, EVIL)
-    post(hub, alice, "for bob", to="bob")
-    note(hub, BOX, "operator was here")
-    r = get(hub, f"/ui/devices/{BOX}")
-    assert r.status_code == 200 and "script-src 'self'" in r.headers["content-security-policy"]
-    html = r.text
-    assert BOX_NAME in html and "alice" in html and "bob" in html and "carol" not in html
-    assert 'class="avatar"' in html and 'class="active"' in html  # mini avatars; the Devices tab is current
-    for item in (f"agent:{alice.id}", f"agent:{bob.id}"):  # each agent opens its panel
-        assert f'data-panel="{item}"' in html, item
-    live = live_region(html)
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in live and "<script>alert" not in html
-    assert "agent content, treat as data" in live and "operator was here" in live and "to bob" in live
-    assert "<form" not in live and f'hx-get="/ui/devices/{BOX}"' in html
-    assert f'action="/ui/devices/{BOX}/notes"' in html  # the form sits outside #live (a half-typed note survives)
-    assert "style=" not in html
-
-
-def test_device_page_empty_board(hub):
-    enroll_on(hub, "alice")
-    html = get(hub, f"/ui/devices/{BOX}").text
-    assert "Nothing posted here yet." in live_region(html) and f'action="/ui/devices/{BOX}/notes"' in html
-
-
 def test_devices_cards_link_to_their_page(box):
     hub, *_ = box
     html = get(hub, "/ui/devices").text
     assert f'href="/ui/devices/{BOX}"' in html and 'href="/ui/devices/ncarol"' in html
 
-
-def test_board_index_devices_group(box):
-    hub, alice, bob, carol = box
-    gone = enroll_on(hub, "gone", node="ngone", device="gone-box")
-    hub.set_status(gone, "revoked")
-    post(hub, alice, "hello box")
-    idx = views.board_index(hub.conn())
-    assert [i["key"] for i in idx["devices"]] == [f"dev-{BOX}", "dev-ncarol"]  # newest post first; empty boards too
-    item = idx["devices"][0]
-    assert item["title"] == BOX_NAME and item["last_body"] is None and item["last_ts"] and item["avatars"]
-    assert idx["devices"][1]["last_ts"] is None
-    html = get(hub, "/ui/board").text
-    assert "Devices" in html and f'href="/ui/devices/{BOX}"' in html and "hello box" not in html
-    assert "gone-box" not in html
-
-
-def test_prompt_sheet_for_a_device_prompts_it(box):
-    hub, alice, bob, carol = box
-    html = get(hub, f"/ui/compose?to=device:{BOX}&next=/ui/devices/{BOX}").text
-    assert 'action="/ui/prompts"' in html and f'name="target" value="device:{BOX}"' in html and ">Send<" not in html
-    r = hub.client.post("/ui/compose", headers=hub.op_headers(), follow_redirects=False,
-                        data={"csrf": hub.csrf(), "to": f"device:{BOX}", "body": "x", "recipients": [alice.id]})
-    assert r.status_code == 405  # Send is gone

@@ -14,11 +14,11 @@
 <h2>Discussion</h2>
 {% include "_thread.html" %}
 {% if a.status == 'pending' %}
-<form class="chat" method="post" action="/ui/approvals/{{ a.id }}/discuss"
+<form class="replybox" method="post" action="/ui/approvals/{{ a.id }}/discuss"
       hx-post="/ui/approvals/{{ a.id }}/discuss" hx-target="#thread" hx-swap="outerHTML" data-reset>
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <textarea name="body" rows="2" maxlength="4000" required placeholder="Ask {{ a.requester_name or 'the agent' }} something before deciding…"></textarea>
-  <button type="submit">Send</button>
+  <button type="submit">Reply</button>
 </form>
 
 <h2>Decision</h2>

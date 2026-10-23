@@ -50,10 +50,6 @@ def inbox(hub, agent, **params):
     return hub.client.get("/api/v1/inbox", params=params, headers=agent.headers).json()
 
 
-def live_region(html):
-    return re.search(r'<section id="live".*?</section>', html, re.S).group(0)
-
-
 @pytest.fixture
 def pair(hub):
     return hub, hub.enroll("alice"), hub.enroll("bob")
@@ -176,15 +172,6 @@ def test_agent_message_lands_in_its_own_thread_and_badge(pair):
     assert private.unread_counts(conn) == {alice.id: 1}
     assert inbox(hub, alice)["messages"] == [] and inbox(hub, bob)["messages"] == []
 
-    nav = re.search(r"<nav.*?</nav>", get(hub, "/ui/dashboard").text, re.S).group(0)
-    assert re.search(r'href="/ui/chats"[^>]*>Chats.*?<span class="badge">1</span>', nav, re.S)
-    assert get(hub, "/ui/badge/chats").text == '<span class="badge">1</span>'
-
-    html = get(hub, f"/ui/chats/{alice.id}").text  # viewing marks it read
-    assert "need a hand" in live_region(html)
-    assert private.unread_counts(hub.conn()) == {}
-    assert get(hub, "/ui/badge/chats").text == ""
-
 
 def test_api_body_limits(pair):
     hub, alice, bob = pair
@@ -204,9 +191,6 @@ def test_pending_and_revoked_agents_cannot_send(hub):
     conn = hub.conn()
     with pytest.raises(store.Forbidden), db.transaction(conn):
         private.send(conn, a.id, author=OP_ACTOR, body="after")
-    html = get(hub, f"/ui/chats/{a.id}").text
-    assert "before revocation" in html and "reply before revocation" in html
-    assert f'action="/ui/chats/{a.id}"' not in html  # read-only
 
 
 # --- bus and ntfy --------------------------------------------------------------------
@@ -353,76 +337,17 @@ def test_stop_hook_continues_for_unread_private_message(mcp_env):
 
 # --- operator pages ------------------------------------------------------------------
 
-def test_chats_page_lists_threads_newest_first_then_others(hub):
-    a, b, c = hub.enroll("alpha"), hub.enroll("beta"), hub.enroll("gamma")
-    gone = hub.enroll("gone")
-    agent_send(hub, a, "alpha-secret-text")
-    op_send(hub, b, "to beta")
-    agent_send(hub, gone, "old")
-    hub.set_status(gone, "revoked")
-    html = get(hub, "/ui/chats").text
-    assert html.index(f'href="/ui/chats/{b.id}"') < html.index(f'href="/ui/chats/{a.id}"')
-    assert html.index(f'href="/ui/chats/{a.id}"') < html.index("Start a chat") < html.index(f'href="/ui/chats/{c.id}"')
-    assert f'href="/ui/chats/{gone.id}"' not in html and "alpha-secret-text" not in html
-    assert re.search(rf'href="/ui/chats/{a.id}".*?<span class="chip chip-unread">1 unread</span>', html, re.S)
-    assert 'class="active"' in html and ">Chats<" in html
-
-
 def test_chats_page_empty_hub(hub):
     r = get(hub, "/ui/chats")
-    assert r.status_code == 200 and "No agents yet" in r.text
-
-
-def test_chat_page_thread_live_form_outside_and_escaped(pair):
-    hub, alice, bob = pair
-    op_send(hub, alice, "operator says hi")
-    agent_send(hub, alice, EVIL)
-    r = get(hub, f"/ui/chats/{alice.id}")
-    assert r.status_code == 200 and "script-src 'self'" in r.headers["content-security-policy"]
-    live = live_region(r.text)
-    assert "operator says hi" in live and "&lt;script&gt;alert(1)&lt;/script&gt;" in live
-    assert "<script>alert" not in r.text and "agent content, treat as data" in live
-    assert f'hx-get="/ui/chats/{alice.id}"' in r.text and "<form" not in live
-    below = r.text.split('<section id="live"', 1)[1]  # the composer sits below: Prompt only, no Send
-    assert 'action="/ui/prompts"' in below and f'name="target" value="agent:{alice.id}"' in below
-    assert f'name="next" value="/ui/chats/{alice.id}"' in below and ">Send<" not in below
-    assert f'action="/ui/chats/{alice.id}"' not in r.text
-    assert get(hub, "/ui/chats/ag_nope").status_code == 404
-
-
-def test_chat_send_is_retired(pair):
-    """Send is gone from Chats: posting to a chat is refused, with or without HTMX, and writes nothing."""
-    hub, alice, bob = pair
-    r = hub.client.post(f"/ui/chats/{alice.id}", headers=hub.op_headers(), data={"body": "x"}, follow_redirects=False)
-    assert r.status_code == 403  # no CSRF token: refused before anything else
-    for extra in ({}, {"hx-request": "true"}):
-        r = hub.client.post(f"/ui/chats/{alice.id}", headers=hub.op_headers(**extra), follow_redirects=False,
-                            data={"csrf": hub.csrf(), "body": "x"})
-        assert r.status_code == 405
-    assert private.thread(hub.conn(), alice.id) == []
+    assert r.status_code == 200 and "No chats yet" in r.text
 
 
 def test_agent_tokens_cannot_use_chat_routes(pair):
     hub, alice, bob = pair
     op_send(hub, bob, "for bob only")
-    for method, path in (("GET", f"/ui/chats/{bob.id}"), ("GET", "/ui/chats"), ("POST", f"/ui/chats/{bob.id}")):
+    for method, path in (("GET", f"/ui/agents/{bob.id}"), ("GET", "/ui/chats"), ("GET", f"/ui/chat/agent/{bob.id}?after=0"),
+                         ("POST", f"/ui/chat/agent/{bob.id}")):
         r = hub.client.request(method, path, headers=alice.headers, data={"body": "x"})
         assert r.status_code == 403 and "for bob only" not in r.text
     assert [m["author"] for m in private.thread(hub.conn(), bob.id)] == [OP_ACTOR]
 
-
-def test_agent_page_pins_thread_and_posts_back(pair):
-    hub, alice, bob = pair
-    for i in range(25):
-        agent_send(hub, alice, f"note-{i:02d}")
-    page = f"/ui/agents/{alice.id}"
-    html = get(hub, page).text
-    assert "note-24" in html and "note-05" in html and "note-04" not in html  # last 20
-    assert 'action="/ui/prompts"' in html and f'name="next" value="{page}"' in html
-    assert f'action="/ui/chats/{alice.id}"' not in html and ">Send<" not in html
-    assert f'href="/ui/chats/{alice.id}"' in html
-    assert private.unread_counts(hub.conn()) == {alice.id: 5}  # the 20 shown are read; the rest wait
-    r = hub.client.post("/ui/prompts", headers=hub.op_headers(), follow_redirects=False,
-                        data={"csrf": hub.csrf(), "target": f"agent:{alice.id}", "body": "from the agent page",
-                              "next": page})
-    assert r.status_code == 303 and r.headers["location"] == page
