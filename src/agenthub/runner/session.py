@@ -19,7 +19,9 @@ hand a running session more user messages (:meth:`Session.deliver`). Measured on
     new turn on the same process (a second ``result``); nothing is lost;
   * with stdin open the process waits after a ``result`` and exits cleanly once stdin closes; ``num_turns`` is per
     ``result``, ``total_cost_usd`` adds up over the process.
-So a session ends (stdin is closed) at the first ``result`` by which every message written to it has been echoed.
+So a session ends (stdin is closed) at the first ``result`` by which every message written to it has been echoed,
+or at a failed ``result`` (an error, the usage limit): messages it hasn't taken in by then may never be, so the
+session ends anyway and returns them (``SessionResult.undelivered``) for the runner to hand to the next session.
 The prompt is written to stdin so no flag can swallow it.
 
 Subscription only: every session's environment drops ``BILLING_ENV_VARS`` (see there), and a result
@@ -164,6 +166,8 @@ class SessionResult:
     errors: list[str] = field(default_factory=list)
     resets_at: datetime | None = None  # usage_limit only: when the limit resets (aware), if the message said
     pause_until: datetime | None = None  # usage_limit only: when the runner goes on (set by the runner)
+    # Tags of the messages delivered to the session (Session.deliver) that it never took in: deliver them elsewhere.
+    undelivered: list[Any] = field(default_factory=list)
 
 
 def build_command(
@@ -409,11 +413,14 @@ class Session:
                     elif kind == "result":
                         result_msg = value
                         self.turns += value.get("num_turns") or 0
-                        if value.get("is_error") or value.get("subtype") != "success":
-                            self._accepting = False  # a failed turn (or the usage limit): take nothing more
+                        failed = bool(value.get("is_error")) or value.get("subtype") != "success"
                         if self.on_turn_end is not None:
                             await self.on_turn_end(value)
-                        if not self._unechoed or self._echoes == 0:
+                        if failed:
+                            # A failed turn (or the usage limit): take nothing more, and don't wait for messages
+                            # not taken in yet (they may never be); run() returns them as undelivered.
+                            self._close_input()
+                        elif not self._unechoed or self._echoes == 0:
                             if self._echoes == 0 and len(self._unechoed) > 1:
                                 log.warning("this claude does not echo input; %d delivered message(s) may be lost",
                                             len(self._unechoed) - 1)
@@ -434,6 +441,8 @@ class Session:
                              session_id=session_id)
         if self.turns:
             result.num_turns = self.turns
+        # Delivered (tag not None) and never echoed. Without echoes at all, nothing can be told apart: none.
+        result.undelivered = [tag for tag in self._unechoed if tag is not None] if self._echoes else []
         return result
 
     async def terminate(self) -> None:

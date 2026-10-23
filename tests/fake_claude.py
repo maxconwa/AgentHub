@@ -10,6 +10,9 @@ limit_twice_then_success: likewise, but the first resumed call hits the limit ag
 A --resume'd call keeps that session id, unless --fork-session asks for a new one.
 hold: waits until the file $FAKE_RELEASE exists (at most 30 s), then succeeds.
 late_echo: like hold, but messages that arrived meanwhile are taken in only after the first result (each a turn).
+limit_with_pending: like hold, but the first call then ends its turn with the usage-limit message without taking in
+the messages that arrived meanwhile, and waits for stdin to close (as Claude Code does); later calls succeed.
+$FAKE_BAD_RESUME: a --resume of that session id fails as Claude Code's does ("No conversation found", no init line).
 prompt_share: in a prompt session ($AGENTHUB_PROMPT_ID set) it reads the prompt, posts in its channel thread and
 claims a share titled "Share for $FAKE_NAME" through the hub (as the real session would through the MCP tools),
 then succeeds; any other session just succeeds.
@@ -119,6 +122,10 @@ def main():
             fh.write(json.dumps({"argv": argv, "stdin": prompt, "cwd": os.getcwd(), "session": session, "env": env,
                                  "env_names": sorted(os.environ)}) + "\n")
     mode = os.environ.get("FAKE_CLAUDE_MODE", "success")
+    if resume is not None and resume == os.environ.get("FAKE_BAD_RESUME"):
+        emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 0,
+              "errors": [f"No conversation found with session ID: {resume}"]})
+        sys.exit(1)
 
     emit({"type": "system", "subtype": "init", "session_id": session, "tools": ["Bash"], "model": "claude-test-model"})
     _take_in_first(session, prompt)
@@ -129,10 +136,17 @@ def main():
 
     if mode == "sleep":
         time.sleep(60)
-    if mode in ("hold", "late_echo"):
+    calls_so_far = sum(1 for _ in open(log)) if log else 1  # this call is already logged
+    if mode in ("hold", "late_echo") or (mode == "limit_with_pending" and calls_so_far == 1):
         deadline = time.monotonic() + 30
         while not os.path.exists(os.environ["FAKE_RELEASE"]) and time.monotonic() < deadline:
             time.sleep(0.05)
+    if mode == "limit_with_pending" and calls_so_far == 1:
+        emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "num_turns": 1,
+              "total_cost_usd": 0, "result": "You've hit your session limit · resets 11:59pm"})
+        while _inbox.get() is not None:  # nothing more is taken in; the process ends when stdin closes
+            pass
+        sys.exit(1)
     if mode != "late_echo":  # late_echo: messages from the first turn wait for its result (a text-only reply)
         _mid_turn(session)
     if mode == "fail":
@@ -143,7 +157,6 @@ def main():
         emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "session_id": session,
               "num_turns": max_turns, "total_cost_usd": 0.01})
         sys.exit(1)
-    calls_so_far = sum(1 for _ in open(log)) if log else 1  # this call is already logged
     if (mode == "limit_then_success" and resume is None) or (mode == "limit_twice_then_success" and calls_so_far <= 2):
         reset = (datetime.now() + timedelta(minutes=2)).strftime("%I:%M%p").lstrip("0").lower()
         text = os.environ.get("FAKE_LIMIT_TEXT") or f"You've hit your session limit · resets {reset}"

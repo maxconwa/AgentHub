@@ -157,7 +157,8 @@ class ChatStream:
     async def close(self) -> None:
         """Send what is left and stop."""
         if self._flusher is not None:
-            self._flusher.cancel()
+            async with self._lock:  # never cancel a request in flight: its items would be sent twice
+                self._flusher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._flusher
             self._flusher = None
@@ -335,8 +336,9 @@ def chat_system_prompt(agent_name: str, checkouts: dict[str, str], cwd: Path) ->
 # --- state on disk ---------------------------------------------------------------------------------------------------
 
 class ChatState:
-    """The agent chat's Claude session (id and directory) and the claimed messages no session has taken yet, in a
-    private file."""
+    """The agent chat's Claude session (id and directory) and the claimed messages no session has taken in yet, in a
+    private file. A message written into a running session is kept as ``live`` until the session echoes it back
+    (then it is dropped), so that neither a failed turn nor a runner restart loses it."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -366,29 +368,47 @@ class ChatState:
         data["session"] = {"id": session_id, "cwd": str(cwd)}
         self._save(data)
 
-    def add(self, d: Delivery) -> None:
+    def add(self, d: Delivery, *, live: bool = False) -> None:
+        """Keep ``d`` until a session has it: waiting for the next session, or (``live``) written into a running
+        one and not yet taken in (it went in, as far as a restart can tell)."""
         data = self._load()
         queued = [q for q in data.get("queued", []) if q.get("id") != d.id]
         data["queued"] = queued + [asdict(d)]
+        if live:
+            data["live"] = sorted(set(data.get("live", [])) | {d.id})
+            data["started"] = sorted(set(data.get("started", [])) | {d.id})
         self._save(data)
 
+    def requeue(self, ids: set[int]) -> None:
+        """Written into a session that ended without taking them in: they wait for the next session."""
+        data = self._load()
+        if ids & set(data.get("live", [])):
+            data["live"] = [i for i in data.get("live", []) if i not in ids]
+            self._save(data)
+
+    def release_live(self) -> None:
+        """At start: messages a previous process had written into a session wait for the next one."""
+        data = self._load()
+        if data.get("live"):
+            data["live"] = []
+            self._save(data)
+
     def peek(self, target: str) -> list[Delivery]:
-        out = []
-        for q in self._load().get("queued", []):
-            with contextlib.suppress(TypeError, KeyError, ValueError):
-                d = Delivery(**q)
-                if d.target == target:
-                    out.append(d)
-        return out
+        return [d for d in self.peek_all() if d.target == target]
 
     def targets(self) -> set[str]:
         return {d.target for d in self.peek_all()}
 
     def peek_all(self) -> list[Delivery]:
+        """The messages waiting for a session (not those in a running one)."""
+        data = self._load()
+        live = set(data.get("live", []))
         out = []
-        for q in self._load().get("queued", []):
+        for q in data.get("queued", []):
             with contextlib.suppress(TypeError, KeyError, ValueError):
-                out.append(Delivery(**q))
+                d = Delivery(**q)
+                if d.id not in live:
+                    out.append(d)
         return out
 
     def mark_started(self, ids: set[int]) -> None:
@@ -402,12 +422,20 @@ class ChatState:
     def started(self, ids: set[int]) -> bool:
         return bool(ids & set(self._load().get("started", [])))
 
+    def unmark_started(self, ids: set[int]) -> None:
+        """Those never reached a session after all (e.g. its saved session could not be resumed)."""
+        data = self._load()
+        if ids & set(data.get("started", [])):
+            data["started"] = [i for i in data.get("started", []) if i not in ids]
+            self._save(data)
+
     def drop(self, ids: set[int]) -> None:
         if not ids:
             return
         data = self._load()
         data["queued"] = [q for q in data.get("queued", []) if q.get("id") not in ids]
         data["started"] = [i for i in data.get("started", []) if i not in ids]
+        data["live"] = [i for i in data.get("live", []) if i not in ids]
         self._save(data)
 
     def handover(self, batch: list[Delivery]) -> str | None:
@@ -442,6 +470,7 @@ class ChatRunner:
     def __init__(self, runner: Runner) -> None:
         self.runner = runner
         self.state = ChatState(paths.data_dir() / "runner" / f"chat-{runner.agent.agent_id}.json")
+        self.state.release_live()  # what a previous process had in a session goes to the next one
         self.supported: bool | None = None  # None until the hub answered; False: a hub without chat
         self.live: dict[Session, Live] = {}  # running sessions that take messages, oldest first
         self.chat_flow: asyncio.Task | None = None
@@ -458,6 +487,25 @@ class ChatRunner:
 
     def unregister(self, session: Session) -> None:
         self.live.pop(session, None)
+
+    def taken(self, tag: Any) -> None:
+        """A session echoed a delivered message back: it is in the conversation now."""
+        if isinstance(tag, Delivery):
+            self.state.drop({tag.id})
+
+    async def after_session(self, result: SessionResult) -> None:
+        """Hand the messages a session ended without taking in (a failed turn, the usage limit, a crash) to the
+        next session, and say so in their chats."""
+        if result.outcome == "stopped":
+            return  # the runner is stopping: they wait on disk for the next process
+        missed = [d for d in result.undelivered if isinstance(d, Delivery)]
+        if not missed:
+            return
+        self.state.requeue({d.id for d in missed})
+        self.state.unmark_started({d.id for d in missed})  # never taken in: the next session gets them as they are
+        for d in missed:
+            await self._say_queued(d)
+        self.resume_waiting()
 
     def _live_session(self, d: Delivery) -> tuple[Session, Live] | None:
         running = [(s, info) for s, info in reversed(self.live.items()) if s.accepting]  # newest first
@@ -538,10 +586,12 @@ class ChatRunner:
             session, info = live
             if not await self._claim(d, "live"):
                 return
+            self.state.add(d, live=True)  # until the session echoes it back
             if await session.deliver(delivery_text(d, session_task=info.task_id, mid_turn=True), tag=d):
                 return
             # It ended between the check and the write: the message waits for the next session.
-            self.state.add(d)
+            self.state.requeue({d.id})
+            self.state.unmark_started({d.id})
             await self._say_queued(d)
             self.resume_waiting()
             return
@@ -567,7 +617,8 @@ class ChatRunner:
     async def _say_queued(self, d: Delivery) -> None:
         stream = ChatStream(self.runner.client, d.kind, "me" if d.kind == "agent" else d.ref,
                             flush_seconds=self.runner.cfg.chat_flush_seconds)
-        stream.status("queued", detail="the session was ending; it goes into the next one")
+        stream.status("queued", message_id=d.message_id,
+                      detail="the session ended before it took this in; it goes into the next one")
         await stream.close()
 
     async def _task_project(self, task_id: int) -> str | None:
@@ -615,7 +666,8 @@ class ChatRunner:
                 batch = self.state.peek("chat")
                 if not batch and resume_note is None:
                     return
-                notes = [n for n in (resume_note, self.state.handover(batch)) if n]
+                restarted = self.state.handover(batch)
+                notes = [n for n in (resume_note, restarted) if n]
                 text = "\n\n---\n\n".join(notes + [delivery_text(d) for d in batch])
                 cwd, resume, project = self._chat_home()
                 result, until = await self._run(
@@ -629,6 +681,8 @@ class ChatRunner:
                     # The saved session could not be resumed (it never started): the same messages, a new session.
                     log.warning("the chat session %s could not be resumed; starting a new one", resume)
                     self.state.set_session("", cwd)
+                    if restarted is None:  # no session had them: the new one gets them as they are
+                        self.state.unmark_started({d.id for d in batch})
                     continue
                 self.state.drop({d.id for d in batch})
                 if result.outcome == "usage_limit":
@@ -709,9 +763,13 @@ class ChatRunner:
             if on_session is not None:
                 await on_session(session_id)
 
+        async def on_replay(tag: Any) -> None:
+            self.taken(tag)
+            await output.on_replay(tag)
+
         session = Session(
             cmd, prompt=text, cwd=cwd, timeout_seconds=None, on_session=session_started,
-            on_progress=output.on_progress, on_replay=output.on_replay, on_turn_end=output.on_turn_end,
+            on_progress=output.on_progress, on_replay=on_replay, on_turn_end=output.on_turn_end,
             env={"AGENTHUB_CONFIG_DIR": str(paths.config_dir()),
                  "AGENTHUB_PERMISSION_WAIT_SECONDS": str(cfg.permission_wait_seconds), **env},
         )
@@ -730,6 +788,7 @@ class ChatRunner:
         until = limit_until(result.resets_at) if result.outcome == "usage_limit" else None
         output.end(result, until=until)
         await output.close()
+        await self.after_session(result)
         await self._report_run(home, result, time.monotonic() - began, project=project, task_id=task_id)
         return result, until
 

@@ -182,6 +182,28 @@ async def test_session_ends_only_once_every_message_was_taken_in(fake_claude, tm
     assert turns()[0]["mid_turn"] is False and {"kind": "text", "text": "Got: and then this"} in progress
 
 
+async def test_a_failed_turn_ends_the_session_and_returns_what_it_never_took_in(fake_claude, tmp_path, monkeypatch):
+    """The usage limit ends a turn while a delivered message waits: the session ends (it doesn't wait for an echo
+    that won't come) and hands the message back."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_with_pending")
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_RELEASE", str(release))
+    turns = turns_log(tmp_path, monkeypatch)
+    claude_bin, _ = fake_claude
+
+    async def ignore(_):
+        pass
+
+    session = Session([claude_bin, "-p"], prompt="first", cwd=tmp_path, env={}, timeout_seconds=None,
+                      on_progress=ignore, on_session=ignore)
+    run = asyncio.create_task(session.run())
+    await wait_for(lambda: session.accepting)
+    assert await session.deliver("are you there?", tag="m2")
+    release.touch()
+    result = await asyncio.wait_for(run, 10)
+    assert result.outcome == "usage_limit" and result.undelivered == ["m2"] and turns() == []
+
+
 def _recording_client(status: int = 200) -> tuple[HubClient, list[dict]]:
     sent: list[dict] = []
 
@@ -220,6 +242,26 @@ async def test_chat_stream_requests_stay_under_the_hubs_body_limit():
     texts = [item["text"] for request in sent for item in request["items"]]
     assert "".join(texts) == wide * 6 and all(len(t.encode()) <= 40_000 for t in texts)
     assert all(len(json.dumps(r, ensure_ascii=False).encode()) < 64_000 for r in sent) and len(sent) > 1
+
+
+async def test_closing_a_stream_never_sends_a_batch_twice():
+    sent: list[dict] = []
+    gate = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        await gate.wait()  # the hub is slow with this request
+        return httpx.Response(201, json={"ids": [], "ignored": 0})
+
+    client = HubClient("http://hub", "t", transport=httpx.MockTransport(handler))
+    stream = ChatStream(client, "agent", "me", flush_seconds=0.01)
+    stream.text("once")
+    await wait_for(lambda: sent)  # the flusher's request is in flight
+    closing = asyncio.create_task(stream.close())
+    await asyncio.sleep(0.05)
+    gate.set()
+    await closing
+    assert [item for request in sent for item in request["items"]] == [{"type": "text", "text": "once"}]
 
 
 async def test_chat_stream_turns_off_on_a_hub_without_chat():
@@ -443,6 +485,66 @@ async def test_the_usage_limit_in_a_chat_session_is_waited_out_and_shown(live_hu
     first, second = calls()
     assert second["argv"][second["argv"].index("--resume") + 1] == first["session"]
     assert second["stdin"].startswith("The usage limit has reset.")
+
+
+async def test_a_message_a_failed_turn_never_took_in_goes_into_the_next_session(live_hub, fake_claude, tmp_path,
+                                                                                monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "limit_with_pending")
+    release = tmp_path / "release"
+    monkeypatch.setenv("FAKE_RELEASE", str(release))
+    monkeypatch.setattr(daemon, "limit_until", lambda resets_at: datetime.now(UTC) + timedelta(seconds=0.5))
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("Add health check", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: running(runner, task_id))
+        msg = send(live_hub, "task", str(task_id), "Use port 8080.")
+        await wait_for(lambda: mode(live_hub, msg) == "live")
+        assert [d.id for d in runner.chats.state.peek_all()] == []  # kept on disk as live, for no other session
+        await asyncio.sleep(0.3)
+        release.touch()  # the turn hits the usage limit before taking the message in
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review")
+    finally:
+        await stop(main)
+    first, second = calls()
+    assert heading(msg, f"the chat of task #{task_id} (project proj)") in second["stdin"]
+    assert second["stdin"].startswith("The usage limit has reset.")
+    assert "The runner restarted" not in second["stdin"]
+    queued = [r for r in rows(live_hub, "task", str(task_id))
+              if r["kind"] == "status" and r["meta"]["state"] == "queued"]
+    assert [q["meta"].get("message_id") for q in queued] == [msg["id"]]
+    assert runner.chats.state.peek_all() == [] and runner.chats.state._load().get("live") == []
+
+
+async def test_a_message_written_into_a_session_survives_a_restart_before_it_was_taken_in(tmp_path):
+    state = ChatState(tmp_path / "chat.json")
+    d = Delivery(id=9, message_id=109, kind="agent", ref="ag1", project=None, task_id=None, author=OPERATOR_AUTHOR,
+                 author_name=None, body="Still there?", verified=True)
+    state.add(d, live=True)
+    assert state.peek_all() == []  # in a running session: no other session takes it
+    state.release_live()  # the next runner process
+    assert state.peek("chat") == [d] and "The runner restarted" in state.handover([d])
+
+
+async def test_a_fresh_session_after_a_failed_resume_is_not_told_the_runner_restarted(live_hub, fake_claude,
+                                                                                       tmp_path, monkeypatch):
+    claude_bin, calls = fake_claude
+    runner, agent_cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    me = agent_cfg.agent_id
+    runner.chats.state.set_session("gone-session", tmp_path / "checkout")
+    monkeypatch.setenv("FAKE_BAD_RESUME", "gone-session")
+    msg = send(live_hub, "agent", me, "Hello again.")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: "finished" in states(live_hub, "agent", me))
+    finally:
+        await stop(main)
+    failed, fresh = calls()
+    assert failed["argv"][failed["argv"].index("--resume") + 1] == "gone-session"
+    assert "--resume" not in fresh["argv"] and heading(msg, "your chat with the operator") in fresh["stdin"]
+    assert "The runner restarted" not in fresh["stdin"]
+    assert runner.chats.state.session()["id"] == fresh["session"]
 
 
 async def test_claimed_messages_wait_on_disk_for_the_next_runner_process(live_hub, fake_claude, tmp_path):

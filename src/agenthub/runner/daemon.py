@@ -500,10 +500,14 @@ class Runner:
                     await asyncio.sleep(self.cfg.progress_flush_seconds)
                     await flush()
 
+            async def on_replay(tag: Any) -> None:
+                self.chats.taken(tag)
+                await output.on_replay(tag)
+
             session = Session(
                 cmd, prompt=prompt, cwd=project_dir, timeout_seconds=None,
                 on_progress=on_progress, on_session=on_session,
-                on_replay=output.on_replay, on_turn_end=output.on_turn_end,
+                on_replay=on_replay, on_turn_end=output.on_turn_end,
                 env={
                     "AGENTHUB_TASK_ID": str(task["id"]),
                     "AGENTHUB_PROJECT": task["project"],
@@ -532,6 +536,7 @@ class Runner:
                 result.pause_until = limit_until(result.resets_at)
             output.end(result, until=result.pause_until)
             await output.close()
+            await self.chats.after_session(result)  # messages it never took in go to the next session
             await flush()
             if me["stage"] == "reviews":  # however it ended, don't relaunch this reviewer for this round
                 self._review_rounds_done.add((task["id"], task["updated_at"]))
