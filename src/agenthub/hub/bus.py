@@ -10,9 +10,10 @@ content through the normal authenticated endpoints.
 
 Chats (0.3.8): the operator's sockets get each new or changed chat message in
 full (``{"type": "chat", "op": "new"|"update", ...}``) instead of an Activity
-row; agents get id-only ``chat.deliver`` (their own deliveries) and
-``chat.message`` events (words and decisions in their task and project chats,
-never tool lines, statuses, a session's live text or another agent's own chat).
+row; agents get id-only ``chat.deliver`` (their own deliveries, the operator's
+messages and, since 0.3.9.1, other agents') and ``chat.message`` events (words
+and decisions in their task and project chats not delivered to them, never tool
+lines, statuses, a session's live text or another agent's own or direct chat).
 
 Revocation: an ``agent.revoked`` event closes that agent's sockets with code
 4401. HTTP requests are already refused immediately because every request
@@ -94,7 +95,10 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
             return set()
         if event["actor"].startswith("human:"):  # the operator's text reaches them as chat.deliver
             return set()
-        return set(chats.members(conn, p["chat_kind"], p["chat_ref"])) - {event["actor"]}
+        # so does an agent's message to the agents it is delivered to (0.3.9.1)
+        delivered = {r["agent_id"] for r in conn.execute("SELECT agent_id FROM chat_deliveries WHERE message_id = ?",
+                                                         (p.get("message_id"),))}
+        return set(chats.members(conn, p["chat_kind"], p["chat_ref"])) - {event["actor"]} - delivered
     if etype == "intent.conflict":
         rows = conn.execute("SELECT agent_id FROM intents WHERE id IN (?, ?)", tuple(p["intents"])).fetchall()
         return {r["agent_id"] for r in rows}

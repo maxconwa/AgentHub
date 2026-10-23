@@ -49,8 +49,8 @@ class RateLimiter:
             return 0.0
         return (cost - bucket.tokens) / self.rate if self.rate > 0 else math.inf
 
-    def check(self, key: str, what: str = "requests") -> None:
-        wait = self.try_acquire(key)
+    def check(self, key: str, what: str = "requests", cost: float = 1.0) -> None:
+        wait = self.try_acquire(key, cost)
         if wait:
             retry = max(1, math.ceil(wait)) if math.isfinite(wait) else 3600
             raise HTTPException(429, f"too many {what}; retry in {retry}s", headers={"Retry-After": str(retry)})

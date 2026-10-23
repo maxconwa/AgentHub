@@ -15,6 +15,9 @@ from agenthub.hub.db import now_iso
 
 # Upper bound on how much of a payload is copied into the FTS index.
 _MAX_INDEXED_CHARS = 20_000
+# An agent's real progress, or its answer to a request: the wake chain it works in has landed (wakes.LANDING_EVENTS).
+LANDING_EVENTS = frozenset({"task.created", "task.transitioned", "task.agent_finished", "task.verdict",
+                            "chat.declined"})
 
 
 def _strings(value: Any) -> list[str]:
@@ -47,6 +50,10 @@ def emit(
     event_id = cur.lastrowid
     text = " ".join([type, actor, *_strings(payload), *([index_text] if index_text else [])])[:_MAX_INDEXED_CHARS]
     conn.execute("INSERT INTO events_fts (rowid, text) VALUES (?, ?)", (event_id, text))
+    if type in LANDING_EVENTS and not actor.startswith(("human:", "system:")):
+        from agenthub.hub import wakes  # an agent's progress lands the wake chain it works in (0.3.9.1)
+
+        wakes.land(conn, actor)
     return event_id
 
 

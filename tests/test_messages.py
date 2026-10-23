@@ -56,7 +56,8 @@ def test_addressed_messages(hub):
 def test_cannot_address_agent_outside_project(hub):
     a = hub.enroll("a")
     hub.enroll("outsider", projects=("other",))
-    assert post(hub, a, "psst", to="outsider").status_code == 422  # not in this chat
+    r = post(hub, a, "psst", to="outsider")  # not in this chat: posted, not delivered, declined in the chat
+    assert r.status_code == 201 and r.json()["declined"][0]["reason"] == "not_in_project" and not r.json()["wakes"]
     assert post(hub, a, "psst", to="ghost").status_code == 404
 
 

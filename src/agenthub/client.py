@@ -115,6 +115,10 @@ class HubClient:
     async def take_task(self, request_id: int, title: str, body: str = "") -> dict[str, Any]:
         return await self._request("POST", f"/chats/requests/{request_id}/take", json={"title": title, "body": body})
 
+    async def decline_request(self, message_id: int, reason: str) -> dict[str, Any]:
+        """Decline another agent's message delivered to this agent; the reason shows in its chat."""
+        return await self._request("POST", f"/chats/requests/{message_id}/decline", json={"reason": reason})
+
     async def sit_out(self, request_id: int, reason: str) -> dict[str, Any]:
         return await self._request("POST", f"/chats/requests/{request_id}/sit-out", json={"reason": reason})
 

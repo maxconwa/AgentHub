@@ -207,7 +207,7 @@ def test_inbox_order_limit_and_read_marking(box):
         private.send(conn, bob.id, author=OP_ACTOR, body="p1")
     got = inbox(hub, bob, peek=True)["messages"]
     assert [(m["body"], m.get("kind")) for m in got] == [("p1", "private"), ("d1", "device"), ("d2", "device"),
-                                                       ("channel", "chat")]
+                                                       ("channel", "chat")]  # a delivery since 0.3.9.1
     assert len(inbox(hub, bob, addressed_only=True)["messages"]) == 1  # the private one; marks nothing
     first = inbox(hub, bob, limit=2)
     assert [m["body"] for m in first["messages"]] == ["p1", "d1"] and first["more"] is True
