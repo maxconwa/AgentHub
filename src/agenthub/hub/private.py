@@ -19,11 +19,11 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from agenthub.hub import events
+from agenthub.hub import events, limits
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Forbidden, Invalid, NotFound, get_agent
 
-MAX_BODY_CHARS = 4000
+MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's message; the operator's have no limit
 
 _SELECT = (
     "SELECT p.id, p.agent_id, p.author, a.name AS author_name, p.body, p.ts, p.read_at, p.prompt_id "
@@ -36,7 +36,7 @@ def send(
 ) -> dict[str, Any]:
     """Add a message to ``agent_id``'s chat, from the operator or from that agent; ``prompt_id`` marks the
     operator's copy of that prompt (shown in the chat, never unread mail)."""
-    if not body.strip() or len(body) > MAX_BODY_CHARS:
+    if not body.strip() or (not author.startswith("human:") and len(body) > MAX_BODY_CHARS):
         raise Invalid(f"a private message must be 1 to {MAX_BODY_CHARS} characters")
     agent = get_agent(conn, agent_id)
     if agent is None:

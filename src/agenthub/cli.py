@@ -244,6 +244,21 @@ def agents_revoke(agent: str) -> None:
     typer.echo(f"revoked {a.name} ({a.id})")
 
 
+@agents_app.command("rename")
+def agents_rename(agent: str, new_name: str) -> None:
+    """Respell an agent's name in other case (e.g. lowercase before rolling back to 0.3.8). Its id and token stay."""
+    from agenthub.hub import db, store
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            old = store.find_agent(conn, agent).name
+            a = store.rename_agent(conn, agent, new_name, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    typer.echo(f"renamed {old} to {a.name} ({a.id}); set name = \"{a.name}\" in that agent's agent.toml")
+
+
 @agents_app.command("projects")
 def agents_projects(agent: str, projects: str) -> None:
     """Set an agent's allowed projects (comma-separated)."""
@@ -341,9 +356,26 @@ def project_add(name: str, description: str = "") -> None:
     try:
         with db.transaction(conn):
             created = store.ensure_project(conn, name, actor=_local_operator(), description=description)
+            stored = store.require_project_name(conn, name)  # an existing project by its own spelling
     except store.StoreError as exc:
         _fail(str(exc))
-    typer.echo(f"{'created' if created else 'exists'}: {name}")
+    typer.echo(f"{'created' if created else 'exists'}: {stored}")
+
+
+@project_app.command("rename")
+def project_rename(name: str, new_name: str) -> None:
+    """Respell a project's name in other case everywhere (e.g. lowercase before rolling back to 0.3.8)."""
+    from agenthub.hub import db, store
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            old = store.require_project_name(conn, name)
+            new = store.rename_project(conn, name, new_name, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    hint = "; a runner older than 0.3.9.0 needs its runner.toml [projects] key spelled the same way"
+    typer.echo(f"renamed project {old} to {new}" + (hint if old != new else ""))
 
 
 @project_app.command("list")
@@ -452,8 +484,11 @@ def tasks_list(
 ) -> None:
     from agenthub.hub import store, tasks
 
+    conn = _hub_conn()
     try:
-        rows = tasks.list_tasks(_hub_conn(), projects=[project] if project else None, state=state)
+        # names ignore case: --project Golem lists project golem's tasks
+        projects = [store.project_name(conn, project) or project] if project else None
+        rows = tasks.list_tasks(conn, projects=projects, state=state)
     except store.StoreError as exc:
         _fail(str(exc))
     for t in rows:
@@ -554,7 +589,7 @@ def tasks_move(task_id: int, state: str, note: str = "") -> None:
 def join(
     hub_url: str,
     code: Annotated[str, typer.Option(help="Enrollment code from `agenthub hub enroll`.")],
-    name: Annotated[str, typer.Option(help="Agent name (lowercase, digits, - and _).")],
+    name: Annotated[str, typer.Option(help="Agent name (letters, digits, - and _; unique ignoring case).")],
     mcp_scope: Annotated[str, typer.Option(help="Claude Code MCP scope: user, local, or project.")] = "user",
     no_mcp: Annotated[bool, typer.Option("--no-mcp", help="Skip registering the MCP server with Claude Code.")] = False,
     no_hooks: Annotated[bool, typer.Option("--no-hooks", help="Skip installing hooks and deny rules.")] = False,

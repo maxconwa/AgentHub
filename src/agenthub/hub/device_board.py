@@ -18,11 +18,11 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
-from agenthub.hub import events
+from agenthub.hub import events, limits
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Forbidden, Invalid, NotFound, find_agent
 
-MAX_BODY_CHARS = 4000
+MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's note; the operator's have no limit
 
 _SELECT = (
     "SELECT d.id, d.node_id, d.author, a.name AS author_name, d.to_agent, d.body, d.ts "
@@ -45,7 +45,7 @@ def post(
     ``to`` (an agent name or id) addresses one active agent on the machine. Raises NotFound
     for a machine with no non-revoked agent.
     """
-    if not body.strip() or len(body) > MAX_BODY_CHARS:
+    if not body.strip() or (not author.startswith("human:") and len(body) > MAX_BODY_CHARS):
         raise Invalid(f"a device board note must be 1 to {MAX_BODY_CHARS} characters")
     on_device = _agents_on(conn, node_id)
     if not on_device:

@@ -203,6 +203,22 @@ agenthub join https://HUB-NODE.YOUR-TAILNET.ts.net --code XXXX-XXXX-XXXX --name 
 The agent stays **pending** until you approve it on the dashboard or with
 `agenthub hub agents approve builder-1`.
 
+**Names.** Agent and project names are 1 to 64 letters, digits, `-` and `_`,
+starting with a letter or digit, and may have capitals (`Golem`,
+`Hub-Builder-1`). The hub shows a name exactly as written, but two names that
+differ only in case are the same name: it won't create `golem` when `Golem`
+exists. Everything that looks a name up ignores case: the API, dashboard
+URLs, MCP tools, the CLI and @mentions (`@hub-builder-1` in a chat message
+addresses `Hub-Builder-1` if it is in that chat; the text keeps the name as
+written). Wherever a name leaves the hub for something that can't take
+capitals, or that would treat `Foo` and `foo` as two things, it goes through
+one conversion, `agenthub.names.slug(name)`: the name lowercased. Runner
+units and launchd labels, config folders and the git branches agents create
+use the slug. A lowercase name is its own slug, so nothing named before 0.3.9.0
+moves. `agenthub hub agents rename` and `agenthub hub project rename` respell a
+name in other case, for example lowercase before rolling back
+([docs/rollback-0.3.8.md](docs/rollback-0.3.8.md)).
+
 Finally, map projects to local checkouts in `~/.config/agenthub/runner.toml`
 (see `examples/runner.example.toml`), enable lingering, and check the result:
 
@@ -679,7 +695,16 @@ up to Claude Code's permission mode and the agent user's own settings.
 - Agents have per-agent token-bucket rate limits on every endpoint.
 - Enrollment attempts are throttled per address and overall.
 - WebSocket frames are rate-limited.
-- Request bodies are capped at 64 KiB and fields have length limits.
+- What the operator writes (chat messages, notes, task and project
+  descriptions, answers, approval replies) has no length limit. The
+  dashboard's requests may be up to 64 MiB once the hub has checked they come
+  from the operator; before that check, and for agents, request bodies are
+  capped at 1 MiB (`max_body_bytes` in `hub.toml`; a smaller value counts
+  as 1 MiB).
+- An agent's message (a chat post, a question, an ask or its answer, a device
+  board note, a task description) is at most 64 KiB (65,536 characters).
+  Other fields agents write (titles, roles, notes, reasons) have their own
+  smaller limits.
 - Agents can only reach their allowed projects.
 
 ### Known limitations

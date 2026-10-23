@@ -15,6 +15,8 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from starlette.requests import HTTPConnection
+from starlette.types import Scope
 from pydantic import BaseModel, Field
 
 from agenthub import __version__
@@ -27,14 +29,15 @@ from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
 )
 from agenthub.hub.bus import CLOSE_FORBIDDEN, CLOSE_REVOKED, EventBus
-from agenthub.hub.limits import BodySizeLimit
+from agenthub.hub.limits import AGENT_MIN_BODY_BYTES, AGENT_TEXT_CHARS, OPERATOR_MAX_BODY_BYTES, BodySizeLimit
+from agenthub.hub.operator import authenticate_operator
 from agenthub.hub.ratelimit import RateLimiter
 from agenthub.hub.tailscale import TailscaleWhois, Whois
 
 # KaTeX's fonts under /ui/static: not every system's mime table knows woff2.
 mimetypes.add_type("font/woff2", ".woff2")
 
-MAX_MESSAGE_CHARS = 16_000
+MAX_MESSAGE_CHARS = AGENT_TEXT_CHARS  # every /api/v1 route is an agent's; the operator writes through /ui
 MAX_BOARD_VALUE_CHARS = 32_000
 MAX_COMMAND_CHARS = 8_000
 # A model name a runner may report: Claude Code's ids and aliases (claude-opus-5-5, sonnet, opus[1m], ...).
@@ -236,7 +239,7 @@ class ToolPermissionRequest(BaseModel):
 
 
 class DiscussionRequest(BaseModel):
-    body: str = Field(min_length=1, max_length=4000)
+    body: str = Field(min_length=1, max_length=AGENT_TEXT_CHARS)
 
 
 class ChatPostRequest(BaseModel):
@@ -361,8 +364,21 @@ def create_app(state: HubState) -> FastAPI:
 
     app = FastAPI(title="agenthub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.hub = state
-    app.add_middleware(BodySizeLimit, max_bytes=state.config.max_body_bytes,
-                       larger={"/api/v1/reports": max(reports.MAX_REQUEST_BYTES, state.config.max_body_bytes)})
+    async def is_operator(scope: Scope) -> bool:
+        """Whether a dashboard request comes from the operator (the dashboard's own check, run on its headers)."""
+        conn = state.connect()
+        try:
+            await authenticate_operator(HTTPConnection(scope), conn)
+            return True
+        except HTTPException:
+            return False
+        finally:
+            conn.close()
+
+    max_body = max(state.config.max_body_bytes, AGENT_MIN_BODY_BYTES)
+    app.add_middleware(BodySizeLimit, max_bytes=max_body,
+                       larger={"/api/v1/reports": max(reports.MAX_REQUEST_BYTES, max_body)},
+                       operator_bytes=OPERATOR_MAX_BODY_BYTES, is_operator=is_operator)
 
     from fastapi.staticfiles import StaticFiles
 
@@ -479,12 +495,12 @@ def create_app(state: HubState) -> FastAPI:
     @app.post(f"{api}/projects/{{project}}/messages", status_code=201)
     def post_message(project: str, caller: Caller) -> dict[str, Any]:
         """Retired: channels are read-only history (copied into the project's and tasks' chats)."""
-        require_project(caller, project)
+        project = require_project(caller, project)
         raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/projects/{{project}}/messages")
     def recent_messages(project: str, caller: Caller) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/inbox")
@@ -548,7 +564,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/questions", status_code=201)
     def ask_operator(project: str, body: QuestionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return questions.ask(conn, caller.agent, project=project, question=body.question,
                                  task_id=body.task_id, device=caller.device.name)
@@ -576,17 +592,17 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/board")
     def board_list(project: str, caller: Caller, conn: Conn, prefix: str = "") -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"keys": store.board_list(conn, project, prefix[:200])}
 
     @app.get(f"{api}/projects/{{project}}/board/{{key:path}}")
     def board_get(project: str, key: str, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return store.board_get(conn, project, key)
 
     @app.put(f"{api}/projects/{{project}}/board/{{key:path}}")
     def board_put(project: str, key: str, body: BoardPutRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return store.board_put(
                 conn, actor=caller.agent.actor, project=project, key=key, value=body.value,
@@ -604,7 +620,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/reports")
     def list_reports(project: str, caller: Caller, conn: Conn, task_id: int | None = None) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"reports": reports.list_reports(conn, projects=[project], task_id=task_id)}
 
     @app.get(f"{api}/reports/{{report_id}}")
@@ -623,13 +639,13 @@ def create_app(state: HubState) -> FastAPI:
     def list_tasks(
         project: str, caller: Caller, conn: Conn, state: str | None = None, mine: bool = False,
     ) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         member_id = caller.agent.id if mine else None
         return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=member_id)}
 
     @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
     def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             task, approval = approvals.agent_create_task(
                 conn, caller.agent, project=project, title=body.title, body=body.body,
@@ -773,7 +789,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/intents", status_code=201)
     def announce_intent(project: str, body: IntentRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return intents.announce(conn, caller.agent, project=project, patterns=body.patterns,
                                     description=body.description, ttl_minutes=body.ttl_minutes,
@@ -781,7 +797,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/intents")
     def list_intents(project: str, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"intents": intents.active(conn, project)}
 
     @app.post(f"{api}/intents/{{intent_id}}/clear")
@@ -793,7 +809,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/asks", status_code=201)
     def create_ask(project: str, body: AskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return asks.create(conn, caller.agent, project=project, to=body.to, question=body.question,
                                timeout_seconds=body.timeout_seconds, device=caller.device.name)
@@ -852,9 +868,10 @@ def create_app(state: HubState) -> FastAPI:
             events.emit(conn, type="agent.connected" if delta > 0 else "agent.disconnected",
                         actor=agent_id, device=device)
 
-    def _reported_dirs(message: dict[str, Any]) -> tuple[str, str | None] | None:
+    def _reported_dirs(conn: sqlite3.Connection, message: dict[str, Any]) -> tuple[str, str | None] | None:
         """The runner's reported checkouts (compact JSON) and current directory, or None if the frame has none
-        (an older runner's plain heartbeat) or anything invalid (then neither changes)."""
+        (an older runner's plain heartbeat) or anything invalid (then neither changes). runner.toml's project keys
+        match ignoring case, so a key is stored as the project's own spelling (a key naming no project stays)."""
         if "checkouts" not in message and "current_dir" not in message:
             return None
         checkouts, current = message.get("checkouts", {}), message.get("current_dir")
@@ -864,7 +881,10 @@ def create_app(state: HubState) -> FastAPI:
                     for k, v in checkouts.items())
             and (current is None or (isinstance(current, str) and len(current) <= 500))
         )
-        return (json.dumps(checkouts, separators=(",", ":")), current) if valid else None
+        if not valid:
+            return None
+        checkouts = {store.project_name(conn, k) or k: v for k, v in checkouts.items()}
+        return json.dumps(checkouts, separators=(",", ":")), current
 
     def _reported_model(message: dict[str, Any]) -> str | None:
         """The model the runner reports (e.g. "claude-opus-5-5"), or None if absent or not a plausible model name."""
@@ -902,7 +922,7 @@ def create_app(state: HubState) -> FastAPI:
             # and an older runner's operator messages wait as pending deliveries until it is upgraded.
             prompt_support = 1 if message.get("prompts") == 1 else 0
             chat_support = 1 if message.get("chat") == 1 else 0
-            dirs, model, effort = _reported_dirs(message), _reported_model(message), _reported_effort(message)
+            dirs, model, effort = _reported_dirs(conn, message), _reported_model(message), _reported_effort(message)
             stored = conn.execute("SELECT checkouts, current_dir, model, effort FROM agents WHERE id = ?",
                                   (agent_id,)).fetchone()
             sets = ["last_heartbeat = ?", "prompt_support = ?", "chat_support = ?"]

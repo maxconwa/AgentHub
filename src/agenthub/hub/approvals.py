@@ -194,8 +194,10 @@ def request(
         if not isinstance(tool, str) or not tool:
             raise Invalid("tool_permission approvals need details.tool_name")
         details = {"tool_name": tool, "input": details.get("input"), "task_id": details.get("task_id")}
-    if project is not None and project not in agent.allowed_projects:
-        raise Forbidden(f"no access to project {project!r}")
+    if project is not None:
+        if agent.project(project) is None:
+            raise Forbidden(f"no access to project {project!r}")
+        project = agent.project(project)
     return create(conn, kind=kind, requester=agent.id, details=details, project=project, reason=reason,
                   device=device)
 
@@ -218,8 +220,7 @@ def request_command(
     device: str | None = None,
 ) -> dict[str, Any]:
     """File (or reuse a pending) approval for one exact command in one directory."""
-    if project is not None and project not in agent.allowed_projects:
-        project = None  # a hint only; never grants anything
+    project = agent.project(project)  # a hint only; never grants anything
     key = command_key(agent.id, cwd, command)
     row = conn.execute(
         "SELECT id FROM approvals WHERE command_key = ? AND status = 'pending' ORDER BY id DESC LIMIT 1", (key,)

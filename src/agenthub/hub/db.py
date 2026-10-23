@@ -499,6 +499,25 @@ MIGRATIONS: list[str] = [
 
     ALTER TABLE agents ADD COLUMN chat_support INTEGER NOT NULL DEFAULT 0;
     """,
+    # 23: names may have capitals (0.3.9.0) and are unique ignoring case: name_key is the lowercased name, kept by
+    # triggers (so a rolled-back hub that doesn't know the column still fills it) under a unique index
+    """
+    ALTER TABLE projects ADD COLUMN name_key TEXT;
+    UPDATE projects SET name_key = lower(name);
+    CREATE UNIQUE INDEX projects_name_key ON projects(name_key);
+    CREATE TRIGGER projects_name_key_insert AFTER INSERT ON projects
+        BEGIN UPDATE projects SET name_key = lower(NEW.name) WHERE rowid = NEW.rowid; END;
+    CREATE TRIGGER projects_name_key_update AFTER UPDATE OF name ON projects
+        BEGIN UPDATE projects SET name_key = lower(NEW.name) WHERE rowid = NEW.rowid; END;
+
+    ALTER TABLE agents ADD COLUMN name_key TEXT;
+    UPDATE agents SET name_key = lower(name);
+    CREATE UNIQUE INDEX agents_name_key ON agents(name_key);
+    CREATE TRIGGER agents_name_key_insert AFTER INSERT ON agents
+        BEGIN UPDATE agents SET name_key = lower(NEW.name) WHERE rowid = NEW.rowid; END;
+    CREATE TRIGGER agents_name_key_update AFTER UPDATE OF name ON agents
+        BEGIN UPDATE agents SET name_key = lower(NEW.name) WHERE rowid = NEW.rowid; END;
+    """,
 ]
 
 
