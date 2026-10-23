@@ -22,8 +22,8 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, reviewers, store,
-    task_agents, tasks, wakes,
+    approvals, asks, chats, db, device_board, device_stats, events, intents, private, prompts, questions, reports,
+    reviewers, store, task_agents, tasks, wakes,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -395,6 +395,7 @@ def create_app(state: HubState) -> FastAPI:
     app.include_router(dashboard.build_router())
     app.include_router(wakes.build_router())  # operator-only JSON under /ui/api
     app.include_router(reviewers.build_router())  # operator-only JSON under /ui/api
+    app.include_router(device_stats.build_router())  # operator-only JSON under /ui/api
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)
@@ -964,6 +965,10 @@ def create_app(state: HubState) -> FastAPI:
                 sets.append("effort = ?")
                 args.append(effort)
             conn.execute(f"UPDATE agents SET {', '.join(sets)} WHERE id = ?", (*args, agent_id))
+            # Usage stats (0.3.10) belong to the caller's machine, never to anything the frame names; at most one
+            # sample per machine every few seconds is kept, however many of its runners report.
+            if "stats" in message:
+                device_stats.record(conn, agent.device_node_id, agent_id, message["stats"])
             await websocket.send_json({"type": "heartbeat_ack", "ts": db.now_iso()})
 
     # --- search --------------------------------------------------------------

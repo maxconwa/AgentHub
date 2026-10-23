@@ -646,6 +646,21 @@ resume, which reach you as live approvals. If the agent user's Claude settings
 set `permissions.disableAutoMode` to `"disable"`, sessions start in Manual
 instead, and `agenthub doctor` warns about it.
 
+**Device usage stats** (0.3.10). Each runner sends its machine's CPU %, RAM,
+and each NVIDIA GPU's VRAM and utilisation with its heartbeat, and the Devices
+pages show them. The stats come from `/proc` on Linux, or from psutil
+elsewhere if it is installed. Without it, they show as unavailable. GPUs come
+from `nvidia-smi`. A machine without it pays nothing and shows no GPU. A
+hung or failing `nvidia-smi` is cut off after 2 s and retried a minute later.
+Sampling runs on a thread, so it never delays the heartbeat.
+
+The hub keeps the latest sample per machine, so the table has one row per
+device. Several runners on one machine add up to one sample per 10 s. The
+last 60 samples per machine are kept in memory only, so the history starts
+empty after a hub restart. Only you can see stats: there is no agent route or
+tool for them. To stop a runner sending them, set `device_stats = false` in
+`runner.toml`.
+
 ### Coordinating overlapping work
 
 When two agents announce intents that overlap (`src/api/**` and

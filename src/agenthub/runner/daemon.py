@@ -29,6 +29,8 @@
 * Delivers the operator's chat messages (``runner/chat.py``, since 0.3.8): into a running session mid-turn when
   one takes it, else into the task's next session, else it wakes the agent's chat session. Every session's output
   (text blocks, compact tool lines, status lines) streams to its chat: a task session's to the task chat.
+* Sends the machine's usage (CPU %, RAM, per-GPU VRAM; ``runner/stats.py``, since 0.3.10) with its heartbeat:
+  sampled on a thread every heartbeat, so the heartbeat only ever sends the last sample and never waits for one.
 * Runner and hub are upgraded together: 0.3.8 retired the operator's prompts (chat replaced them), so this runner
   no longer runs any; against an older hub it runs tasks without chat and logs that the hub needs upgrading.
 """
@@ -40,6 +42,7 @@ import contextlib
 import json
 import logging
 import random
+import time
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -55,6 +58,7 @@ from agenthub.config import AgentConfig
 from agenthub.runner.chat import ChatRunner, SessionOutput, branch_guide, chat_guide, delivery_text
 from agenthub.runner.config import RunnerConfig, configured_effort, configured_model
 from agenthub.runner.session import TEXT_SNIPPET, Session, SessionResult, build_command
+from agenthub.runner.stats import Collector
 
 log = logging.getLogger("agenthub.runner")
 
@@ -229,6 +233,10 @@ class Runner:
         self.chats = ChatRunner(self)
         # One session at a time on a task's transcript: its task loop's, or one its chat woke.
         self._task_locks: dict[int, asyncio.Lock] = {}
+        # Device usage stats: the collector (only ever used from its one loop's thread) and its latest sample as
+        # (time.monotonic() when taken, sample).
+        self.stats = Collector()
+        self._stats: tuple[float, dict[str, Any]] | None = None
 
     def task_lock(self, task_id: int) -> asyncio.Lock:
         return self._task_locks.setdefault(task_id, asyncio.Lock())
@@ -238,6 +246,7 @@ class Runner:
     async def run_forever(self) -> None:
         delay = 1.0
         sync_task = asyncio.create_task(self._sync_loop())
+        stats_task = asyncio.create_task(self._stats_loop()) if self.cfg.device_stats else None
         try:
             while not self._stopping:
                 try:
@@ -251,6 +260,8 @@ class Runner:
                 delay = min(delay * 2, 60)
         finally:
             sync_task.cancel()
+            if stats_task is not None:
+                stats_task.cancel()
             await self.shutdown()
 
     async def _connection(self) -> None:
@@ -280,10 +291,30 @@ class Runner:
         dirs = list(self._session_dirs.values())
         model = self.last_model or configured_model(self.cfg)
         effort = self.last_effort or configured_effort(self.cfg)
+        stats = self._fresh_stats()
         return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
                 "current_dir": dirs[-1] if dirs else None, "prompts": 1, "chat": 1,
                 **({"model": model} if model else {}),
-                **({"effort": effort} if effort else {})}
+                **({"effort": effort} if effort else {}),
+                **({"stats": stats} if stats is not None else {})}
+
+    def _fresh_stats(self) -> dict[str, Any] | None:
+        """The latest usage sample, unless it is older than two heartbeats (its thread is stuck, or stats are off)."""
+        if self._stats is None:
+            return None
+        taken, sample = self._stats
+        return sample if time.monotonic() - taken <= 2 * self.cfg.heartbeat_seconds else None
+
+    async def _stats_loop(self) -> None:
+        """Samples the machine's usage once per heartbeat, in a thread: the collector reads /proc and may wait up to
+        2 s for nvidia-smi, and neither may hold up the event loop. A failed sample is skipped, never fatal."""
+        while True:
+            try:
+                sample = await asyncio.to_thread(self.stats.sample)
+                self._stats = (time.monotonic(), sample)
+            except Exception:  # noqa: BLE001 - usage stats are best effort
+                log.debug("usage sample failed", exc_info=True)
+            await asyncio.sleep(self.cfg.heartbeat_seconds)
 
     async def _heartbeat(self, ws) -> None:
         while True:

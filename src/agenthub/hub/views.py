@@ -154,17 +154,23 @@ def devices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Machines that host a non-revoked agent, one entry per ``device_node_id``.
 
     ``name`` is the device name of the agent that heartbeat most recently; ``online`` is true
-    if any agent on it is connected; ``last_seen`` is the latest heartbeat. Online devices
-    come first, then by name.
+    if any agent on it is connected; ``last_seen`` is the latest heartbeat. ``stats`` is its latest usage sample
+    (device_stats.get, or None) and ``stats_stale`` whether that is missing or old. Online devices come first, then
+    by name.
     """
+    from agenthub.hub import device_stats
+
     by_node: dict[str, list[dict[str, Any]]] = {}
     for a in agent_rows(conn):
         by_node.setdefault(a["device_node_id"], []).append(a)
+    samples = device_stats.latest(conn)
     out = []
     for node_id, agents in by_node.items():
         latest = max(agents, key=lambda a: a["last_heartbeat"] or "")
+        sample = samples.get(node_id)
         out.append({"node_id": node_id, "name": latest["device"], "online": any(a["connected"] for a in agents),
-                    "last_seen": latest["last_heartbeat"], "agents": agents})
+                    "last_seen": latest["last_heartbeat"], "agents": agents,
+                    "stats": sample, "stats_stale": device_stats.is_stale(sample)})
     return sorted(out, key=lambda d: (not d["online"], d["name"].lower(), d["node_id"]))
 
 

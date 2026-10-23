@@ -17,6 +17,7 @@ example-project = "/home/agent/src/example-project"
 #                                 # sessions use this user's Claude Code settings, and anything
 #                                 # else is approved live by the operator
 # heartbeat_seconds = 15
+# device_stats = true            # send this machine's CPU %, RAM and GPU VRAM (nvidia-smi) with the heartbeat
 # permission_wait_seconds = 600   # how long a live permission request waits for you
 # progress_flush_seconds = 5
 # chat_flush_seconds = 1         # a session's live output reaches its chat at most this often

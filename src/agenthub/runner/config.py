@@ -37,6 +37,8 @@ class RunnerConfig:
     # live through the PermissionRequest hook.
     extra_args: list[str] = field(default_factory=list)
     heartbeat_seconds: float = 15
+    # Send this machine's CPU %, RAM and GPU VRAM with the heartbeat (the hub's Devices page shows them).
+    device_stats: bool = True
     permission_wait_seconds: int = 600
     progress_flush_seconds: float = 5
     # How often a session's live output (text, tool lines, status) is sent to its chat at most.
@@ -78,6 +80,8 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
         if arg.startswith(FORBIDDEN_EXTRA_ARGS):
             raise RunnerConfigError(f"extra_args may not contain {arg!r}: set permission_mode instead "
                                     "(permission-bypass and permission-prompt flags are not allowed)")
+    if not isinstance(cfg.device_stats, bool):
+        raise RunnerConfigError(f"device_stats must be true or false (got {cfg.device_stats!r})")
     for key in ("prompt_max_turns", "prompt_wall_clock_minutes"):
         value = getattr(cfg, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
