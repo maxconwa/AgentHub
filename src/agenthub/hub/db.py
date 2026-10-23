@@ -614,6 +614,24 @@ MIGRATIONS: list[str] = [
         updated_at TEXT NOT NULL
     );
     """,
+    # 27 (0.3.10, task #41; 26 is the device stats of task #42): a chat per device, for the operator's message to every
+    # agent on it. chats is rebuilt only to widen its CHECK with 'device' (same columns, every row copied, as 24 did).
+    """
+    CREATE TABLE chats_v27 (
+        id               INTEGER PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('agent', 'task', 'project', 'dm', 'device')),
+        ref              TEXT NOT NULL,
+        project          TEXT REFERENCES projects(name),
+        session_id       TEXT,
+        operator_read_id INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        UNIQUE (kind, ref)
+    );
+    INSERT INTO chats_v27 (id, kind, ref, project, session_id, operator_read_id, created_at)
+        SELECT id, kind, ref, project, session_id, operator_read_id, created_at FROM chats;
+    DROP TABLE chats;
+    ALTER TABLE chats_v27 RENAME TO chats;
+    """,
 ]
 
 

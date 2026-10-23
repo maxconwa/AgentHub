@@ -1,8 +1,9 @@
 """Chats: how the operator and agents talk (0.3.8; they replace prompts, private chats and boards).
 
-There is one chat per agent (the operator and that agent), one per task (the operator and every agent on it) and one
-per project (the operator and every agent allowed into it); no device chats. A chat row is made the first time the
-chat is used. Its messages (``chat_messages``) are, by ``kind``:
+There is one chat per agent (the operator and that agent), one per task (the operator and every agent on it), one
+per project (the operator and every agent allowed into it), one per pair of agents (``dm``) and (0.3.10) one per device
+(``device``, its ref the machine's tailscale StableID: the operator's messages to every agent on it, :mod:`broadcasts`).
+A chat row is made the first time the chat is used. Its messages (``chat_messages``) are, by ``kind``:
 
 * ``text``: the operator's or an agent's words (Markdown). ``meta.to`` addresses one agent (everyone in the chat
   still sees it), ``meta.task_id`` marks text a task session streamed, ``meta.reply_to`` is a message id.
@@ -43,7 +44,7 @@ from agenthub.hub.store import (
     Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent, require_project_name,
 )
 
-KINDS = ("agent", "task", "project", "dm")
+KINDS = ("agent", "task", "project", "dm", "device")
 MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's message; the operator's have no limit
 MAX_LINE_CHARS = 300
 MAX_TOOL_LINES = 200  # kept per tools row; meta.count has the true total
@@ -87,6 +88,10 @@ def _resolve(conn: sqlite3.Connection, kind: str, ref: str) -> tuple[str, str | 
             raise NotFound(f"no direct chat {ref!r}")
         key = pair_key(ids[0], ids[1])
         return key, None, chat_title(conn, "dm", key)
+    if kind == "device":  # a machine that has (or had) an agent on it
+        if not conn.execute("SELECT 1 FROM agents WHERE device_node_id = ? LIMIT 1", (ref,)).fetchone():
+            raise NotFound(f"no device {ref!r}")
+        return ref, None, chat_title(conn, "device", ref)
     raise NotFound(f"no chat kind {kind!r}")
 
 
@@ -96,15 +101,24 @@ def pair_key(a: str, b: str) -> str:
 
 
 def chat_title(conn: sqlite3.Connection, kind: str, ref: str) -> str:
-    """How the operator's views name a chat: an agent's name, ``task #N``, ``project P``, ``a ↔ b``."""
+    """How the operator's views name a chat: an agent's name, ``task #N``, ``project P``, ``a ↔ b``, ``device D``."""
     if kind == "task":
         return f"task #{ref}"
     if kind == "project":
         return f"project {ref}"
+    if kind == "device":
+        return f"device {device_name(conn, ref)}"
     found = _names(conn, ref.split(":") if kind == "dm" else [ref])
     if kind == "dm":
         return " ↔ ".join(sorted(found.get(i, i) for i in ref.split(":")))
     return found.get(ref, ref)
+
+
+def device_name(conn: sqlite3.Connection, node_id: str) -> str:
+    """A machine's name: that of the agent on it that heartbeat most recently (its node id if none)."""
+    row = conn.execute("SELECT device_name FROM agents WHERE device_node_id = ? "
+                       "ORDER BY COALESCE(last_heartbeat, '') DESC, created_at DESC LIMIT 1", (node_id,)).fetchone()
+    return row["device_name"] if row else node_id
 
 
 def _ensure(conn: sqlite3.Connection, kind: str, ref: str, project: str | None) -> int:
@@ -114,7 +128,8 @@ def _ensure(conn: sqlite3.Connection, kind: str, ref: str, project: str | None) 
 
 
 def chat(conn: sqlite3.Connection, kind: str, ref: str) -> dict[str, Any]:
-    """The chat of an agent (id or name), task (id) or project (name), made if it doesn't exist yet:
+    """The chat of an agent (id or name), task (id), project (name), pair of agents or device, made if it doesn't exist
+    yet:
     ``{id, kind, ref, project, title, members: [{agent_id, name}]}``. NotFound for an unknown one."""
     ref, project, title = _resolve(conn, kind, str(ref))
     chat_id = _ensure(conn, kind, ref, project)
@@ -135,8 +150,8 @@ chat_row = _chat_by_id
 
 
 def members(conn: sqlite3.Connection, kind: str, ref: str, *, active_only: bool = True) -> list[str]:
-    """The agents in a chat (not the operator): the agent; the task's members; the project's allowed agents.
-    Revoked (and, with ``active_only``, pending) agents are left out."""
+    """The agents in a chat (not the operator): the agent; the pair; the task's members; the project's allowed agents;
+    the agents on the device. Revoked (and, with ``active_only``, pending) agents are left out."""
     statuses = ("active",) if active_only else ("active", "pending")
     marks = ",".join("?" * len(statuses))
     if kind == "agent":
@@ -153,6 +168,10 @@ def members(conn: sqlite3.Connection, kind: str, ref: str, *, active_only: bool 
                             f"WHERE ta.task_id = ? AND a.status IN ({marks}) ORDER BY ta.added_at, ta.rowid",
                             (int(ref), *statuses))
         return [r["agent_id"] for r in rows]
+    if kind == "device":
+        rows = conn.execute(f"SELECT id FROM agents WHERE device_node_id = ? AND status IN ({marks}) "
+                            "ORDER BY created_at, id", (ref, *statuses))
+        return [r["id"] for r in rows]
     rows = conn.execute(f"SELECT id, allowed_projects FROM agents WHERE status IN ({marks}) ORDER BY created_at",
                         statuses)
     return [r["id"] for r in rows if ref in json.loads(r["allowed_projects"])]
@@ -382,6 +401,10 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
         return chat(conn, "project", agent.project(ref))
     if kind == "dm":
         return chat(conn, "dm", pair_key(agent.id, _dm_peer(conn, agent, ref).id))
+    if kind == "device":  # its own machine's, like its device board
+        if ref not in ("me", agent.device_node_id):
+            raise NotFound(f"no chat device/{ref} you are in")
+        return chat(conn, "device", agent.device_node_id)
     raise NotFound(f"no chat kind {kind!r}")
 
 
@@ -403,13 +426,16 @@ def _dm_peer(conn: sqlite3.Connection, agent: Agent, ref: str) -> Agent:
 
 
 def parse_chat(spec: str) -> tuple[str, str]:
-    """``me`` / ``agent``, ``task:<id>``, ``project:<name>``, ``dm:<agent>`` (as agents name chats) -> ``(kind, ref)``."""
+    """``me`` / ``agent``, ``task:<id>``, ``project:<name>``, ``dm:<agent>``, ``device`` (as agents name chats) ->
+    ``(kind, ref)``."""
     spec = spec.strip()
     if spec in ("me", "agent", "operator"):
         return "agent", "me"
+    if spec == "device":  # its own machine's
+        return "device", "me"
     kind, sep, ref = spec.partition(":")
     if not sep or kind not in KINDS or not ref:
-        raise Invalid(f"name a chat as 'me', 'task:<id>', 'project:<name>' or 'dm:<agent>', not {spec!r}")
+        raise Invalid(f"name a chat as 'me', 'task:<id>', 'project:<name>', 'dm:<agent>' or 'device', not {spec!r}")
     return kind, ref
 
 
@@ -432,6 +458,7 @@ def post(
     reason}]``)."""
     _check_body(body, max_chars)
     chat_row = _member_chat(conn, agent, kind, ref)
+    _not_device(chat_row)
     if chat_row["kind"] == "dm":
         for agent_id in chat_row["ref"].split(":"):
             peer = get_agent(conn, agent_id)
@@ -501,6 +528,13 @@ def post(
             w["wake"] = False
         found["loop_paused"] = True
     return found
+
+
+def _not_device(chat_row: dict[str, Any]) -> None:
+    """Only the operator writes in a device chat; an agent reads it (and writes notes on its device board)."""
+    if chat_row["kind"] == "device":
+        raise Forbidden("only the operator writes in a device chat: post a note with post_device, or answer the "
+                        "operator in chat='me'")
 
 
 def _outside(chat_row: dict[str, Any], target: Agent) -> str:
@@ -580,6 +614,7 @@ def stream(
     unknown status are skipped and counted in ``ignored``. ``task_id`` (the session's task, if ``agent`` is on it)
     tags the rows."""
     chat_row = _member_chat(conn, agent, kind, ref)
+    _not_device(chat_row)  # a session answers the operator's device message in the agent's own chat
     if len(items) > MAX_STREAM_ITEMS:
         raise Invalid(f"at most {MAX_STREAM_ITEMS} items per call")
     if task_id is not None and not conn.execute("SELECT 1 FROM task_agents WHERE task_id = ? AND agent_id = ?",
@@ -660,6 +695,7 @@ def record_run(
     if not isinstance(outcome, str) or not _OUTCOME_RE.fullmatch(outcome):
         raise Invalid("outcome must be a word like success, error or usage_limit (a-z, 0-9, _)")
     chat_row = _member_chat(conn, agent, kind, ref)
+    _not_device(chat_row)
     if chat_row["kind"] == "task":
         task_id = int(chat_row["ref"])
     elif task_id is not None and not conn.execute("SELECT 1 FROM task_agents WHERE task_id = ? AND agent_id = ?",
@@ -705,6 +741,10 @@ def _delivery_rows(conn: sqlite3.Connection, where: str, params: list[Any]) -> l
             peer = ids[1] if ids[0] == r["agent_id"] else ids[0]
             peer_name = _names(conn, [peer]).get(peer, peer)
             chat_info |= {"with": {"agent_id": peer, "name": peer_name}, "title": f"your direct chat with {peer_name}"}
+        elif r["chat_kind"] == "device":  # the operator's message to every agent on this agent's machine
+            name = device_name(conn, r["chat_ref"])
+            chat_info |= {"device": {"node_id": r["chat_ref"], "name": name},
+                          "title": f"the operator's message to every agent on your device {name}"}
         else:
             chat_info["title"] = (f"task #{r['chat_ref']}" if r["chat_kind"] == "task" else
                                   f"project {r['chat_ref']}" if r["chat_kind"] == "project" else
