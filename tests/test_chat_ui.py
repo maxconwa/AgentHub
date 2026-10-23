@@ -88,6 +88,28 @@ def test_hints_say_who_a_message_reaches(team):
     assert "Goes to every agent in proj: helper and worker." in get(hub, "/ui/panel?item=project:proj").text
 
 
+def test_a_runner_too_old_for_chat_is_named(team):
+    """A connected agent whose runner doesn't say "chat": 1 (0.3.7's) won't get a message until it's upgraded."""
+    hub, a, b, t = team
+    conn = hub.conn()
+
+    def runner(agent, connected, chat):
+        with db.transaction(conn):
+            conn.execute("UPDATE agents SET connected = ?, chat_support = ? WHERE id = ?", (connected, chat, agent.id))
+
+    runner(a, 1, 0)
+    runner(b, 1, 1)
+    html = get(hub, f"/ui/panel?item=task:{t['id']}").text
+    assert '<p class="chat-hint small-line too-old">worker&#39;s runner is too old for chat (before 0.3.8): upgrade it.' in html
+    assert "too old" in get(hub, f"/ui/panel?item=agent:{a.id}").text
+    assert "too old" not in get(hub, f"/ui/panel?item=agent:{b.id}").text
+    runner(b, 1, 0)
+    assert "The runners of helper and worker are too old for chat" in get(hub, "/ui/panel?item=project:proj").text
+    runner(a, 0, 0)  # offline: nothing to say yet (the message waits as for any offline agent)
+    runner(b, 1, 1)
+    assert "too old" not in get(hub, f"/ui/panel?item=task:{t['id']}").text
+
+
 def test_device_panel_has_no_chat(team):
     hub, a, _, _ = team
     html = get(hub, f"/ui/panel?item=device:n{a.name}").text
@@ -316,7 +338,7 @@ def test_question_card_answer_and_reply(qcard):
     hub, a, qid, r = qcard
     html = get(hub, f"/ui/chat/msg/{r['id']}").text
     assert f'action="/ui/questions/{qid}/answer"' in html and "<em>branch</em>" in html
-    assert f'action="/ui/chat/agent/{a.id}"' in html and f'name="reply_to" value="{r["id"]}"' in html
+    assert f'name="reply_to" value="{r["id"]}"' in html
     resp = post(hub, f"/ui/questions/{qid}/answer", {"answer": "main", "chat_msg": r["id"]})
     assert resp.status_code == 200 and "Your answer" in resp.text and f"/questions/{qid}/answer\"" not in resp.text
     assert questions.get(hub.conn(), qid)["status"] == "answered"
@@ -330,12 +352,25 @@ def test_answering_on_the_question_page_updates_the_card(qcard):
     assert "develop" in html and f"/questions/{qid}/answer" not in html
 
 
-def test_question_reply_without_answering_lands_in_the_agent_chat(qcard):
-    hub, a, qid, r = qcard
-    resp = post(hub, f"/ui/chat/agent/{a.id}", {"body": "Which repo do you mean?", "reply_to": r["id"]})
-    assert resp.status_code == 200
-    assert f"↩ about question #{qid}" in resp.text
-    assert questions.get(hub.conn(), qid)["status"] == "pending"
+@pytest.mark.parametrize("on_task", [False, True])
+def test_question_reply_without_answering_lands_next_to_the_card(team, on_task):
+    """The card's Reply posts into the chat the card is in: the asker's own chat, or the task's chat for a question
+    about a task (where hub-reviewer found it 404ing when it posted to the agent chat instead)."""
+    hub, a, _, t = team
+    ask = {"question": "Which *branch*?"} | ({"task_id": t["id"]} if on_task else {})
+    qid = hub.client.post("/api/v1/projects/proj/questions", json=ask, headers=a.headers).json()["id"]
+    r = card_row(hub, "question", qid)
+    where = f"task:{t['id']}" if on_task else f"agent:{a.id}"
+    assert f"{r['chat_kind']}:{r['chat_ref']}" == where
+    html = get(hub, f"/ui/chat/msg/{r['id']}").text
+    action = re.findall(r'<form class="card-reply" method="post" action="([^"]+)"', html)[-1]
+    assert action == "/ui/chat/" + where.replace(":", "/") and f'name="reply_to" value="{r["id"]}"' in html
+    resp = post(hub, action, {"body": "Which repo do you mean?", "reply_to": r["id"]})
+    assert resp.status_code == 200, resp.text
+    assert f'data-in="{where}"' in resp.text and f"↩ about question #{qid}" in resp.text
+    assert questions.get(hub.conn(), qid)["status"] == "pending"  # replying isn't answering
+    resp = post(hub, action, {"body": "plain form", "reply_to": r["id"]}, chat=False)  # without JavaScript
+    assert resp.status_code == 303
 
 
 # --- sending, catching up, the chat list ------------------------------------------------------------------------

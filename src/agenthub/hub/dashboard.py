@@ -222,6 +222,12 @@ def unread_total(conn: sqlite3.Connection) -> int:
     return sum(o["unread"] or 0 for o in chats.overview(conn) if not (o["kind"] == "agent" and o["ref"] in revoked))
 
 
+def shown_live(request: Request) -> bool:
+    """Whether app.js fetched these rows into a chat open in front of the operator: it sends X-Chat (which another
+    site's page can't send without a CORS preflight we never allow), from our own pages. Only then are they read."""
+    return chat_request(request) and same_origin(request)
+
+
 def seen(conn: sqlite3.Connection, c: dict[str, Any]) -> None:
     """The operator is looking at chat ``c`` (views.chat): everything in it up to its newest row is read."""
     if c["rows"]:
@@ -478,6 +484,9 @@ def build_router() -> APIRouter:
     def chat_row_fragment(message_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         """One chat row, re-rendered (app.js swaps it in when the push says it changed)."""
         m = views.chat_message(conn, message_id)
+        if shown_live(request):
+            with db.transaction(conn):
+                chats.mark_read(conn, m["chat_id"], m["id"])
         return render_rows(request, operator, conn, [m], m["chat_kind"])
 
     @router.get("/chat/{kind}/{ref}", response_class=HTMLResponse)
@@ -487,6 +496,8 @@ def build_router() -> APIRouter:
             return RedirectResponse(views.chat(conn, kind, ref, rows=False)["page"], status_code=303,
                                     headers=SECURITY_HEADERS)
         c = views.chat(conn, kind, ref, after=after)
+        if shown_live(request):
+            seen(conn, c)
         return render_rows(request, operator, conn, c["rows"], kind)
 
     @router.post("/chat/{kind}/{ref}")

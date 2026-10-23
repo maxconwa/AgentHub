@@ -661,7 +661,7 @@ def test_task_panel_shows_state_agents_and_board(side):
     assert f'data-panel="agent:{a.id}"' in html and f'data-panel="agent:{c.id}"' in html and "tester" in html
     assert "task says &lt;script&gt;" in html and "agent content, treat as data" in html
     actions = [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)]
-    assert actions == [f"/ui/questions/{q['id']}/answer", f"/ui/chat/agent/{a.id}",  # the question card (it's about t)
+    assert actions == [f"/ui/questions/{q['id']}/answer", f"/ui/chat/task/{t['id']}",  # the question card (about t)
                        f"/ui/chat/task/{t['id']}"]  # and the one message box
     assert ">Post</button>" not in html and "/ui/board" not in html
     assert f'href="/ui/tasks/{t["id"]}"' in html
@@ -1178,7 +1178,6 @@ def answer(hub, qid, text):
 def assert_answered_in_chat(hub, agent, qid, text):
     """0.3.8: whatever the agent is doing, the answer is the operator's message in its chat, delivered to it (its
     runner gives it to the running session or wakes its chat session); no prompt, no private message."""
-    from agenthub.hub import chats
     conn = hub.conn()
     assert conn.execute("SELECT COUNT(*) FROM prompts WHERE body LIKE 'Answer%'").fetchone()[0] == 0
     assert [m for m in private.thread(conn, agent.id) if m["author"].startswith("human:")] == []
@@ -1211,10 +1210,11 @@ def test_an_answer_reaches_the_asking_agent_in_its_chat(window, state):
 
 def test_an_answer_to_a_revoked_agent_is_recorded_only(window):
     hub, a, c, r, t, ap, q = window
+    texts = lambda: [m for m in chats.messages(hub.conn(), "agent", a.id) if m["kind"] == "text"]  # noqa: E731
+    before = texts()
     hub.set_status(a, "revoked")
     assert answer(hub, q["id"], "Use 8080").status_code == 303
-    from agenthub.hub import chats
-    assert [m for m in chats.messages(hub.conn(), "agent", a.id) if m["kind"] == "text"] == []
+    assert texts() == before  # no answer message for a revoked agent
     assert "not delivered because worker is revoked" in get(hub, f"/ui/questions/{q['id']}").text
 
 

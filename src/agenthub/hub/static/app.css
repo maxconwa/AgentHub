@@ -548,3 +548,4 @@ details.tools[open] .fold { transform: rotate(90deg); }
 .rcpt-pending, .rcpt-skipped { opacity: 0.8; font-style: italic; }
 .rcpt-note { overflow-wrap: anywhere; }
 .sline.st-hub .ct { font-style: italic; }
+.chat-hint.too-old { color: var(--warn); }

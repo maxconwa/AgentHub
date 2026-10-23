@@ -6,7 +6,7 @@ import re
 
 from fastapi.testclient import TestClient
 
-from agenthub.hub import db, private, store, task_agents, tasks
+from agenthub.hub import db, task_agents, tasks
 from agenthub.hub.app import HubState, create_app
 
 from .conftest import OPERATOR, Hub, make_hub
@@ -53,10 +53,9 @@ def test_restart_loses_nothing(tmp_path):
         # checkouts, as a heartbeat stores them
         conn.execute("UPDATE agents SET checkouts = ?, current_dir = ? WHERE id = ?",
                      (json.dumps({"proj": "/src/proj-checkout"}), "/src/proj-checkout", alice.id))
-    form(hub, "/ui/projects/proj/notes", body="PROJECT-NOTE-A")
-    form(hub, f"/ui/tasks/{tid}/notes", body="TASK-NOTE-B")
-    with db.transaction(conn):  # the UI only prompts now; the hub still writes the operator's private messages
-        private.send(conn, alice.id, author=OPERATOR, body="OP-TO-ALICE-C")
+    form(hub, "/ui/chat/project/proj", body="PROJECT-NOTE-A")  # the operator writes in each kind of chat
+    form(hub, f"/ui/chat/task/{tid}", body="TASK-NOTE-B")
+    form(hub, f"/ui/chat/agent/{alice.id}", body="OP-TO-ALICE-C")
     assert hub.client.post("/api/v1/private", json={"body": "ALICE-TO-OP-D"}, headers=alice.headers).status_code < 300
     assert hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "PAIR-MSG-E", "to": "bob"},
                            headers=alice.headers).status_code == 201
@@ -83,12 +82,11 @@ def test_restart_loses_nothing(tmp_path):
     pages = {
         "/ui/dashboard": [],
         f"/ui/tasks/{tid}": ["Build the thing", "TASK-BODY-77", "TASK-NOTE-B", "Implementer", "Reviewer"],
-        "/ui/projects/proj": ["PROJECT-NOTE-A"],
-        f"/ui/chats/{alice.id}": ["OP-TO-ALICE-C"],
+        "/ui/projects/proj": ["PROJECT-NOTE-A", "PAIR-MSG-E"],
         f"/ui/approvals/{apid}": ["git push --force origin feature", "AGENT-DISCUSS-H", "OP-DISCUSS-I"],
         f"/ui/questions/{qid}": ["PENDING-QUESTION-J"],
-        f"/ui/devices/n{alice.name}": ["DEVICE-NOTE-G"],
-        f"/ui/agents/{alice.id}": ["/src/proj-checkout"],
+        f"/ui/devices/n{alice.name}": ["alice"],  # devices have no chat; their board is the agents'
+        f"/ui/agents/{alice.id}": ["/src/proj-checkout", "OP-TO-ALICE-C", "ALICE-TO-OP-D"],
         "/ui/approvals": ["git push --force origin feature", "PENDING-QUESTION-J"],
     }
     for path, keys in pages.items():

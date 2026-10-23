@@ -133,6 +133,50 @@ def test_agent_page_marks_its_chat_read_but_other_requests_do_not(site):
     assert unread(hub, a) == 0
 
 
+def chat_unread(hub, kind, ref):
+    return {(o["kind"], o["ref"]): o["unread"] for o in chats.overview(hub.conn())}.get((kind, str(ref)), 0)
+
+
+@pytest.mark.parametrize("kind", ["agent", "task", "project"])
+def test_only_a_chat_put_in_front_of_the_operator_is_marked_read(site, kind):
+    """0.3.7's chat-page test, for 0.3.8's chats: a cross-site GET, a non-live HTMX request, or a row fetched without
+    app.js (no X-Chat) of a page or panel never marks its chat read; showing it does, and so do the rows app.js
+    fetches into the open chat."""
+    hub, a, ids = site
+    ref = {"agent": a.id, "task": ids["task"], "project": "proj"}[kind]
+    page = {"agent": f"/ui/agents/{a.id}", "task": f"/ui/tasks/{ref}", "project": "/ui/projects/proj"}[kind]
+
+    def agent_writes(body):
+        path = "/api/v1/private" if kind == "agent" else f"/api/v1/chats/{kind}/{ref}/messages"
+        r = hub.client.post(path, json={"body": body}, headers=a.headers)
+        assert r.status_code in (200, 201), r.text
+        return r.json()["id"]
+
+    first = agent_writes("not seen yet")
+    waiting = chat_unread(hub, kind, ref)
+    assert waiting >= 1
+    for path, headers in [(page, {"sec-fetch-site": "cross-site"}),
+                          (f"/ui/panel?item={kind}:{ref}", {"sec-fetch-site": "cross-site"}),
+                          (page, {"hx-request": "true", "hx-target": "panel"}),
+                          (f"/ui/chat/msg/{first}", {}),
+                          (f"/ui/chat/msg/{first}", {"x-chat": "1", "sec-fetch-site": "cross-site"}),
+                          (f"/ui/chat/{kind}/{ref}?after=0", {"x-chat": "1", "sec-fetch-site": "cross-site"})]:
+        assert get(hub, path, **headers).status_code == 200, path
+        assert chat_unread(hub, kind, ref) == waiting, (path, headers)
+    get(hub, f"/ui/panel?item={kind}:{ref}")
+    assert chat_unread(hub, kind, ref) == 0
+    second = agent_writes("arrives while the chat is open")
+    assert chat_unread(hub, kind, ref) == 1
+    get(hub, f"/ui/chat/msg/{second}", **{"x-chat": "1"})  # app.js swaps it into the open chat
+    assert chat_unread(hub, kind, ref) == 0
+    agent_writes("missed while the socket was down")
+    get(hub, f"/ui/chat/{kind}/{ref}?after={second}", **{"x-chat": "1"})  # app.js catching up
+    assert chat_unread(hub, kind, ref) == 0
+    agent_writes("seen on the page")
+    get(hub, page)
+    assert chat_unread(hub, kind, ref) == 0
+
+
 @pytest.mark.parametrize("path", ["/ui/agents/{id}", "/ui/panel?item=agent:{id}"])
 def test_cross_site_get_never_marks_read(site, path):
     hub, a, ids = site

@@ -382,8 +382,6 @@ def test_private_copy_is_not_unread_mail_for_a_busy_agent(trio):
         "SELECT body FROM private_messages WHERE agent_id = ? AND author LIKE 'human:%' AND read_at IS NULL",
         (a.id,)).fetchall()
     assert [r["body"] for r in v010_unread] == []  # the plain note was read by the inbox call above
-    html = hub.client.get(f"/ui/chats/{a.id}", headers=hub.op_headers()).text
-    assert SECRET in html and f'href="/ui/prompts/{p["id"]}"' in html
 
 
 def test_connected_agent_whose_runner_is_too_old_is_skipped(trio):
@@ -403,32 +401,11 @@ def test_connected_agent_whose_runner_is_too_old_is_skipped(trio):
     assert api(hub, a, "GET", "/pending").json()["prompts"] == []
     msg = build_notification(ev, {a.id: "alice", b.id: "bob", c.id: "carol"}, CFG)
     assert msg["title"] == f"Prompt #{p['id']}: carol offline, skipped; alice runner too old for prompts, skipped"
-    html = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
-    assert "runner too old for prompts" in html
     online(hub, b, connected=False)
     p = create(hub, f"agent:{a.id}")
     assert p["status"] == "failed" and p["recipients"][0]["note"] == "runner too old for prompts"
     msg = build_notification(prompt_events(hub, p["id"])[0], {a.id: "alice"}, CFG)
     assert msg["title"] == f"Prompt #{p['id']}: alice runner too old for prompts, skipped; nobody could be woken"
-
-
-def test_prompt_button_names_agents_whose_runner_is_too_old(trio):
-    from agenthub.hub import views
-
-    hub, a, b, c = trio
-    t = mk_task(hub, a, b, c)
-    online(hub, a, prompts=False)
-    online(hub, b)
-    state = views.prompt_state(hub.conn(), f"task:{t['id']}")
-    assert state["wakes"] == ["bob"] and state["too_old"] == ["alice"] and state["reason"] is None
-    html = hub.client.get(f"/ui/tasks/{t['id']}", headers=hub.op_headers()).text
-    assert "Prompt wakes: task #" in html and "not alice (runner too old for prompts; upgrade it)" in html
-    online(hub, b, prompts=False)
-    state = views.prompt_state(hub.conn(), f"task:{t['id']}")
-    assert state["wakes"] == [] and state["reason"] == (
-        "Prompt is off: the runners of alice and bob are too old for prompts; upgrade them.")
-    state = views.prompt_state(hub.conn(), f"agent:{a.id}")
-    assert state["reason"] == "Prompt is off: alice's runner is too old for prompts; upgrade it."
 
 
 def test_heartbeat_tells_the_hub_whether_the_runner_runs_prompts(trio):
@@ -762,16 +739,12 @@ def test_the_card_labels_the_hubs_notes_and_never_guesses_from_agent_text(trio):
     api(hub, a, "POST", f"/{forged['id']}/finish", json={"ok": False, "note": "agent revoked"})  # agent text
     grp = create(hub, f"task:{t['id']}")
     api(hub, b, "POST", f"/{grp['id']}/decline", json={"reason": "withdrawn by the operator"})  # agent text
-    withdraw(hub, grp["id"])  # the hub's note for alice and carol
+    assert withdraw(hub, grp["id"]) == 200  # the hub's note for alice and carol
     conn = hub.conn()
     flags = lambda pid: {r["agent_id"]: r["note_by_hub"] for r in conn.execute(
         "SELECT agent_id, note_by_hub FROM prompt_recipients WHERE prompt_id = ?", (pid,))}
     assert flags(forged["id"]) == {a.id: 0}
     assert flags(grp["id"]) == {a.id: 1, b.id: 0, c.id: 1}
-    page = hub.client.get(f"/ui/prompts/{forged['id']}", headers=hub.op_headers()).text
-    assert "hub note" not in page and "agent text" in page and "note from alice" in page
-    page = hub.client.get(f"/ui/prompts/{grp['id']}", headers=hub.op_headers()).text
-    assert page.count('<span class="tag">hub note</span>') == 2 and "note from bob" in page
     online(hub, a, connected=False)
     stale = create(hub, f"agent:{b.id}")
     revoked = create(hub, f"agent:{c.id}")
@@ -790,18 +763,24 @@ def test_the_card_labels_the_hubs_notes_and_never_guesses_from_agent_text(trio):
 # --- withdraw ---------------------------------------------------------------------------------------
 
 
-def withdraw(hub, pid, **data):
-    return hub.client.post(f"/ui/prompts/{pid}/withdraw", headers=hub.op_headers(), follow_redirects=False,
-                           data={"csrf": hub.csrf(), **data})
+def withdraw(hub, pid):
+    """The operator withdraws a prompt (0.3.8's dashboard has no Withdraw button: prompts are retired, and an open
+    0.3.7 prompt becomes a chat delivery). The hub call and its outcome: 200, or 409 / 404."""
+    conn = hub.conn()
+    try:
+        with db.transaction(conn):
+            prompts.withdraw(conn, pid, actor=f"human:{OP_LOGIN}")
+    except store.Conflict:
+        return 409
+    except store.NotFound:
+        return 404
+    return 200
 
 
 def test_operator_withdraws_the_recipients_that_have_not_started(group):
     hub, a, b, c, p = group
     api(hub, b, "POST", f"/{p['id']}/start")
-    page = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
-    assert f'action="/ui/prompts/{p["id"]}/withdraw"' in page
-    r = withdraw(hub, p["id"])
-    assert r.status_code == 303 and r.headers["location"] == f"/ui/prompts/{p['id']}"
+    assert withdraw(hub, p["id"]) == 200
     got = prompts.get(hub.conn(), p["id"])
     assert {r["agent_id"]: (r["status"], r["note"]) for r in got["recipients"]} == {
         a.id: ("failed", "withdrawn by the operator"), b.id: ("running", ""),
@@ -814,9 +793,7 @@ def test_operator_withdraws_the_recipients_that_have_not_started(group):
     assert sorted(bus.recipients(ev, hub.conn())) == sorted([a.id, b.id, c.id])  # their runners hear of it
     assert build_notification(ev, {}, CFG) is None  # the operator did it: no push
     assert "withdrawn" in event_summary(ev, {a.id: "alice", c.id: "carol"})
-    page = hub.client.get(f"/ui/prompts/{p['id']}", headers=hub.op_headers()).text
-    assert "/withdraw" not in page and "withdrawn by the operator" in page  # nothing left to withdraw
-    assert withdraw(hub, p["id"]).status_code == 409
+    assert withdraw(hub, p["id"]) == 409  # nothing left to withdraw
     api(hub, b, "POST", f"/{p['id']}/claim", json={"title": "mine"})
     assert prompts.get(hub.conn(), p["id"])["status"] == "done"
 
@@ -825,26 +802,22 @@ def test_withdrawing_a_single_prompt_fails_it(trio):
     hub, a, b, c = trio
     online(hub, a)
     p = create(hub, f"agent:{a.id}")
-    panel = hub.client.get(f"/ui/panel?item=agent:{a.id}", headers=hub.op_headers()).text
-    assert f'hx-post="/ui/prompts/{p["id"]}/withdraw"' in panel and 'name="panel" value="agent:' in panel
-    r = hub.client.post(f"/ui/prompts/{p['id']}/withdraw", headers={**hub.op_headers(), "hx-request": "true"},
-                        data={"csrf": hub.csrf(), "panel": f"agent:{a.id}"})
-    assert r.status_code == 200 and "/withdraw" not in r.text  # the panel, re-rendered
+    assert withdraw(hub, p["id"]) == 200
     got = prompts.get(hub.conn(), p["id"])
     assert got["status"] == "failed" and got["finished_at"] and got["recipients"][0]["status"] == "failed"
 
 
-def test_withdraw_needs_the_operator_and_csrf(trio):
+def test_withdraw_needs_the_operator(trio):
     hub, a, b, c = trio
     online(hub, a)
     p = create(hub, f"agent:{a.id}")
-    r = hub.client.post(f"/ui/prompts/{p['id']}/withdraw", headers=hub.op_headers(), follow_redirects=False)
-    assert r.status_code == 403
+    assert hub.client.post(f"/ui/prompts/{p['id']}/withdraw", headers=hub.op_headers(),
+                           data={"csrf": hub.csrf()}).status_code == 404  # no Withdraw in 0.3.8's dashboard
     with pytest.raises(store.Forbidden):
         conn = hub.conn()
         with db.transaction(conn):
             prompts.withdraw(conn, p["id"], actor=a.id)
-    assert withdraw(hub, 9999).status_code == 404
+    assert withdraw(hub, 9999) == 404
     assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
 
 
@@ -1090,19 +1063,3 @@ def test_event_summaries(group):
     api(hub, b, "POST", f"/{p['id']}/decline", json={"reason": "no"})
     assert event_summary(prompt_events(hub, p["id"])[-1], names) == f"prompt #{p['id']}: bob declined"
 
-
-def test_prompt_hint_names_agents_without_a_checkout(trio):
-    """A prompt runs in a checkout from the agent's runner.toml; one reporting none would fail it, so say so first."""
-    from agenthub.hub import views
-
-    hub, a, b, c = trio
-    online(hub, a, b)
-    conn = hub.conn()
-    with db.transaction(conn):
-        conn.execute("UPDATE agents SET checkouts = '{\"proj\": \"/src/proj\"}' WHERE id = ?", (a.id,))
-        conn.execute("UPDATE agents SET checkouts = '{\"other\": \"/src/other\"}' WHERE id = ?", (b.id,))
-    state = views.prompt_state(conn, "project:proj")
-    assert state["no_checkout"] == ["bob"] and state["project"] == "proj"
-    assert views.prompt_state(conn, f"agent:{b.id}")["no_checkout"] == []  # any checkout will do
-    html = hub.client.get("/ui/panel", params={"item": "project:proj"}, headers=hub.op_headers(**{"hx-request": "true"})).text
-    assert "bob has no checkout for proj, so it will fail the prompt" in html

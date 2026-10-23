@@ -31,11 +31,11 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
              "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
     cols = ("id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir, "
-            "prompt_support, model, effort FROM agents ")
+            "prompt_support, chat_support, model, effort FROM agents ")
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
             else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
     return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"], "device_node_id": r["device_node_id"],
-             "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]),
+             "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]), "chat": bool(r["chat_support"]),
              "last_heartbeat": r["last_heartbeat"], "model": r["model"], "effort": r["effort"],
              "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
              "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
@@ -272,6 +272,21 @@ _CHAT_REF = {"agent": re.compile(r"ag[0-9a-f]{1,64}"), "task": re.compile(r"[1-9
              "project": store.NAME_RE}
 
 
+def _too_old(conn: sqlite3.Connection, agent_ids: list[str]) -> str:
+    """Why some of a chat's agents won't get a message for now: connected with a runner older than 0.3.8, which
+    doesn't say ``"chat": 1`` in its heartbeat (the message waits for it, as for an offline agent). Empty if none."""
+    if not agent_ids:
+        return ""
+    old = [r["name"] for r in conn.execute(
+        f"SELECT name FROM agents WHERE id IN ({','.join('?' * len(agent_ids))}) AND status = 'active' "
+        "AND connected = 1 AND chat_support = 0 ORDER BY name", agent_ids)]
+    if not old:
+        return ""
+    whose = f"{old[0]}'s runner is" if len(old) == 1 else f"The runners of {_and(old)} are"
+    return (f"{whose} too old for chat (before 0.3.8): upgrade {'it' if len(old) == 1 else 'them'}. "
+            "Until then your messages wait for {}.".format("it" if len(old) == 1 else "them"))
+
+
 def _names(members: list[dict[str, Any]]) -> str:
     return _and(sorted(m["name"] for m in members)) if members else "nobody yet"
 
@@ -280,7 +295,8 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
     """One chat (an agent's, a task's or a project's) for _chat.html: ``{id, kind, ref, title, url, page, item, rows,
     send, readonly, hint, placeholder, empty, max_chars}``.
 
-    ``rows`` are :func:`chat_rows`, oldest first (only those after ``after`` when given; none with ``rows=False``,
+    ``too_old`` says which connected agents run a runner too old for chat (:func:`_too_old`). ``rows`` are
+    :func:`chat_rows`, oldest first (only those after ``after`` when given; none with ``rows=False``,
     which only checks the chat and says who it reaches). ``send`` says whether its message box shows; when it
     doesn't, ``readonly`` says why. ``hint`` says whom a message reaches. Raises store.NotFound for an unknown or
     malformed chat.
@@ -290,7 +306,8 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
         raise store.NotFound(f"no chat {kind}:{ref}")
     c = chats.chat(conn, kind, ref)
     out: dict[str, Any] = {"id": c["id"], "kind": kind, "ref": ref, "url": f"/ui/chat/{kind}/{quote(ref, safe='')}",
-                           "item": f"{kind}:{ref}", "max_chars": CHAT_MAX_CHARS, "send": True, "readonly": ""}
+                           "item": f"{kind}:{ref}", "max_chars": CHAT_MAX_CHARS, "send": True, "readonly": "",
+                           "too_old": _too_old(conn, [m["agent_id"] for m in c["members"]])}
     if kind == "agent":
         status = conn.execute("SELECT status FROM agents WHERE id = ?", (ref,)).fetchone()["status"]
         name = c["title"]

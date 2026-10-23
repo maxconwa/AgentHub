@@ -114,7 +114,8 @@
     <textarea name="answer" rows="1" maxlength="4000" required aria-label="Answer to question #{{ q.id }}" placeholder="Your answer…"></textarea>
     <button type="submit" class="approve">Answer</button>
   </form>
-  <form class="card-reply" method="post" action="/ui/chat/agent/{{ q.agent_id }}" data-chat-form>
+  {#- The reply goes into the chat the card is in (the task's, or the asker's own), so its reply_to is a row there. -#}
+  <form class="card-reply" method="post" action="/ui/chat/{{ m.chat_kind }}/{{ m.chat_ref | urlencode }}" data-chat-form>
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="reply_to" value="{{ m.id }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
@@ -201,6 +202,7 @@
     <button type="submit" class="send-btn" aria-label="Send to {{ c.title }}"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
   </form>
   <p class="chat-hint small-line">{{ c.hint }}</p>
+  {% if c.too_old %}<p class="chat-hint small-line too-old">{{ c.too_old }}</p>{% endif %}
   {% else %}<p class="chat-hint small-line">{{ c.readonly }}</p>{% endif %}
 </div>
 {%- endmacro %}
