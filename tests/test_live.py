@@ -162,7 +162,7 @@ def test_whitespace_only_operator_posts_are_refused(site):
                         for t in ("messages", "private_messages", "device_messages", "approval_messages"))
     before = count()
     posts = [("/ui/projects/proj/notes", "body", {}), (f"/ui/tasks/{ids['task']}/notes", "body", {}),
-             (f"/ui/devices/{ids['node']}/notes", "body", {}), (f"/ui/chats/{a.id}", "body", {}),
+             (f"/ui/chats/{a.id}", "body", {}),
              ("/ui/compose", "body", {"to": f"agent:{a.id}", "recipients": a.id}),
              ("/ui/compose", "body", {"to": "project:proj", "mode": "board"}),
              ("/ui/board/ch-proj~general", "body", {}), (f"/ui/questions/{ids['question']}/answer", "answer", {}),

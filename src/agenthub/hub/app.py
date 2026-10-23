@@ -140,9 +140,11 @@ class EnrollRequest(BaseModel):
 
 
 class PostMessageRequest(BaseModel):
-    channel: str = Field(default="general", max_length=64)
+    # None: the parent's channel for a reply, else "general"
+    channel: str | None = Field(default=None, max_length=64)
     body: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     to: str | None = Field(default=None, max_length=64)
+    reply_to: int | None = Field(default=None, ge=1, le=2**63 - 1)
 
 
 class PrivateMessageRequest(BaseModel):
@@ -376,7 +378,7 @@ def create_app(state: HubState) -> FastAPI:
         with db.transaction(conn):
             return store.post_message(
                 conn, author=caller.agent, project=project, channel=body.channel,
-                body=body.body, to=body.to, device=caller.device.name,
+                body=body.body, to=body.to, device=caller.device.name, reply_to=body.reply_to,
             )
 
     @app.get(f"{api}/projects/{{project}}/messages")

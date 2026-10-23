@@ -24,7 +24,7 @@
 <input type="search" class="msearch" data-chat-filter placeholder="Search chats" aria-label="Search chats" autocomplete="off">
 <div class="mscroll" hx-get="/ui/messenger" hx-select=".mlists" hx-trigger="every 10s" hx-swap="innerHTML">
 <div class="mlists">
-  {% if not (agents or pairs or groups or devices) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
+  {% if not (agents or pairs or groups) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
   {% if agents %}
   <div class="chat-group">Agents</div>
   <ul class="clist">
@@ -57,25 +57,15 @@
     {% endfor %}
   </ul>
   {% endif %}
-  {% if devices %}
-  <div class="chat-group">Device boards</div>
-  <ul class="clist">
-    {% for d in devices %}
-    <li><a class="crow" href="{{ d.href }}" data-chat="{{ d.key }}">{{ group_icon('device', d.members) }}
-      <span class="ctext"><span class="cline"><strong>{{ d.title }}</strong><span class="cago">{{ ago(d.last_ts) if d.last_ts else '' }}</span></span>
-        <span class="clast">Only its agents and you{% if not d.last_ts %} · nothing posted yet{% endif %}</span></span></a></li>
-    {% endfor %}
-  </ul>
-  {% endif %}
 </div>
 </div>
 
 {% else %}
 <div class="mhead"><a class="icon-btn" href="/ui/chats" data-chat-list aria-label="Back to chats">‹</a>
   <a class="mtitle" {% if item %}{{ open_attrs(item, href) }}{% else %}href="{{ href }}"{% endif %}>
-    {%- if kind == 'agent' %}{{ face(ag.avatar, 36) }}{% elif kind == 'pair' %}{{ group_icon('pair', members) }}{% elif kind == 'device' %}{{ group_icon('device', members) }}{% else %}{{ group_icon(item.split(':')[0] if item else 'thread', []) }}{% endif %}
+    {%- if kind == 'agent' %}{{ face(ag.avatar, 36) }}{% elif kind == 'pair' %}{{ group_icon('pair', members) }}{% else %}{{ group_icon(item.split(':')[0] if item else 'thread', []) }}{% endif %}
     <span><strong id="messenger-title">{{ task_title({'title': title, 'created_by': created_by}, names) }}</strong>
-      <span class="small-line">{% if kind == 'agent' %}{{ status(ag) }} · private chat{% elif kind == 'pair' %}Between agents · read-only{% elif kind == 'device' %}Device board · {{ d.agents | length }} agent{{ '' if d.agents | length == 1 else 's' }}{% else %}Group chat · the project's agents can read it{% endif %}</span></span></a>
+      <span class="small-line">{% if kind == 'agent' %}{{ status(ag) }} · private chat{% elif kind == 'pair' %}Between agents · read-only{% else %}Group chat · the project's agents can read it{% endif %}</span></span></a>
   {{ close_button() }}</div>
 <div class="mthread" hx-get="/ui/messenger/{{ key | urlencode }}" hx-select=".board-thread" hx-trigger="every 10s" hx-swap="innerHTML">
   {{- board(messages, names, empty="No messages yet." if kind == 'agent' else "Nothing posted here yet.") -}}
@@ -96,7 +86,7 @@
   <textarea name="body" rows="2" maxlength="4000" required aria-label="{{ 'Message to ' ~ title if kind == 'agent' else 'Post to ' ~ title }}" placeholder="{% if kind == 'agent' %}Write to {{ title }}…{% else %}Post a note…{% endif %}"></textarea>
   {% if prompt %}{% call send_and_prompt(prompt, 'Send' if kind == 'agent' else 'Post') %}<button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button>{% endcall %}
   {% else %}<div class="composer-buttons"><button type="submit">{{ 'Send' if kind == 'agent' else 'Post' }}</button></div>{% endif %}
-  <p class="small-line">{% if kind == 'agent' %}Private: only you and {{ title }} see it.{% elif kind == 'device' %}Only the agents on this machine and you see it.{% else %}Every agent in the project can read it.{% endif %}</p>
+  <p class="small-line">{% if kind == 'agent' %}Private: only you and {{ title }} see it.{% else %}Every agent in the project can read it.{% endif %}</p>
 </form>
 {% elif kind == 'agent' %}<p class="mreadonly muted">{{ title }} is revoked, so this chat is read-only.</p>
 {% else %}<p class="mreadonly small-line">Agents talking to each other. Read-only.</p>

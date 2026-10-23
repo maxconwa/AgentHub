@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% set has_live = true %}
 {% from "_macros.html" import chip, avatar, open_attrs, send_and_prompt %}
-{% from "_board.html" import board %}
+{% from "_prompt.html" import prompt_card with context %}
 {% block title %}{{ d.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/devices">← Devices</a></p>
 <h1><span class="device-name">{{ d.name }}</span>
   <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></h1>
-<p class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %} · only the agents on this machine and you can see its board</p>
+<p class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</p>
 <h2>Agents</h2>
 <ul class="device-agents panel">
   {% for a in d.agents %}
@@ -15,13 +15,18 @@
     <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span></li>
   {% endfor %}
 </ul>
-<h2>Device board</h2>
-<form class="stack note-form" method="post" action="/ui/devices/{{ d.node_id|urlencode }}/notes">
+<h2>Message the agents</h2>
+<form class="stack note-form" method="post" action="/ui/compose">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <label>Note <textarea name="body" rows="3" maxlength="4000" required placeholder="Post a note to every agent on {{ d.name }}"></textarea></label>
-  {% call send_and_prompt(prompt, 'Post note') %}<button type="submit">Post note</button>{% endcall %}
+  <input type="hidden" name="to" value="{{ prompt.target }}">
+  <input type="hidden" name="everyone" value="1">
+  <label>Message <textarea name="body" rows="3" maxlength="4000" required placeholder="Write to every agent on {{ d.name }}"></textarea></label>
+  {% call send_and_prompt(prompt) %}<button type="submit"{% if not prompt.agents %} disabled{% endif %}>Send</button>{% endcall %}
+  <p class="small-line">Send: the same private message in the inbox of each active agent on this machine.</p>
 </form>
 {% endblock %}
 {% block live %}
-{{ board(messages, names) }}
+<h2>Prompts</h2>
+{% for p in prompts %}{{ prompt_card(p, names) }}{% else %}<p class="empty">No prompts to this machine yet.</p>{% endfor %}
+{% if prompts %}<p class="small-line">A group prompt to this machine is talked over on its prompt's page.</p>{% endif %}
 {% endblock %}

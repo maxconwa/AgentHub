@@ -50,9 +50,10 @@ def world(hub):
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
         pr = prompts.create(conn, target=f"agent:{a.id}", body="wake up", actor=OPERATOR)
+        post = store.post_message(conn, author=OPERATOR, project="proj", channel="general", body="a post")
     node_id = store.get_agent(conn, a.id).device_node_id
     return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id, "node_id": node_id,
-                    "prompt_id": pr["id"], "report_id": rep["id"],
+                    "prompt_id": pr["id"], "report_id": rep["id"], "post_id": post["id"],
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 

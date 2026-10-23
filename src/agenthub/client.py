@@ -71,8 +71,15 @@ class HubClient:
 
     # --- messages --------------------------------------------------------------
 
-    async def post(self, project: str, body: str, channel: str = "general", to: str | None = None) -> dict[str, Any]:
-        payload = {"channel": channel, "body": body, "to": to}
+    async def post(self, project: str, body: str, channel: str | None = None, to: str | None = None,
+                   reply_to: int | None = None) -> dict[str, Any]:
+        """Post to a project channel (``general`` unless set). ``reply_to`` (a message id) makes it a reply to that
+        message, in its channel when ``channel`` isn't set."""
+        payload: dict[str, Any] = {"body": body, "to": to}  # the hub defaults the channel
+        if channel is not None:
+            payload["channel"] = channel
+        if reply_to is not None:
+            payload["reply_to"] = reply_to
         return await self._request("POST", f"/projects/{quote(project)}/messages", json=payload)
 
     async def inbox(

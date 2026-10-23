@@ -297,11 +297,15 @@ def post_message(
     *,
     author: Agent | str,
     project: str,
-    channel: str,
+    channel: str | None,
     body: str,
     to: str | None = None,
     device: str | None = None,
+    reply_to: int | None = None,
 ) -> dict[str, Any]:
+    """Post ``body`` to ``project``/``channel``. With ``reply_to`` (a message id) the post is a reply to that
+    message, which must be in the same project and channel; ``channel`` None means the parent's channel when
+    replying, else ``general``."""
     actor = author.actor if isinstance(author, Agent) else author
     to_agent = None
     if to is not None:
@@ -309,11 +313,26 @@ def post_message(
         if target.status != "active" or project not in target.allowed_projects:
             raise Invalid(f"agent {to!r} is not an active member of project {project!r}")
         to_agent = target.id
+    if reply_to is not None:
+        parent = conn.execute("SELECT m.project, c.name, m.root_id FROM messages m "
+                              "JOIN channels c ON c.id = m.channel_id WHERE m.id = ?", (reply_to,)).fetchone()
+        if parent is None or parent["project"] != project:  # another project's message stays unconfirmed
+            raise Invalid(f"no message #{reply_to} in project {project!r} to reply to")
+        if channel is None:
+            channel = parent["name"]
+        elif parent["name"] != channel:
+            raise Invalid(f"message #{reply_to} is in channel {parent['name']!r}, not {channel!r}; "
+                          "a reply goes in its parent's channel")
+        root_id = parent["root_id"] or reply_to
+    else:
+        root_id = None
+    channel = channel or "general"
     channel_id = _channel_id(conn, project, channel, actor=actor)
     ts = now_iso()
     cur = conn.execute(
-        "INSERT INTO messages (project, channel_id, author, to_agent, body, ts) VALUES (?, ?, ?, ?, ?, ?)",
-        (project, channel_id, actor, to_agent, body, ts),
+        "INSERT INTO messages (project, channel_id, author, to_agent, body, ts, parent_id, root_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (project, channel_id, actor, to_agent, body, ts, reply_to, root_id),
     )
     msg_id = cur.lastrowid
     events.emit(
@@ -322,14 +341,15 @@ def post_message(
         actor=actor,
         project=project,
         device=device,
-        payload={"message_id": msg_id, "channel": channel, "to": to_agent, "body": body},
+        payload={"message_id": msg_id, "channel": channel, "to": to_agent, "body": body, "parent_id": reply_to},
     )
-    return {"id": msg_id, "project": project, "channel": channel, "to": to_agent, "ts": ts}
+    return {"id": msg_id, "project": project, "channel": channel, "to": to_agent, "ts": ts, "parent_id": reply_to,
+            "root_id": root_id}
 
 
 _MESSAGE_SELECT = (
     "SELECT m.id, m.project, c.name AS channel, m.author, a.name AS author_name, "
-    "m.to_agent, m.body, m.ts FROM messages m "
+    "m.to_agent, m.body, m.ts, m.parent_id FROM messages m "
     "JOIN channels c ON c.id = m.channel_id LEFT JOIN agents a ON a.id = m.author "
 )
 

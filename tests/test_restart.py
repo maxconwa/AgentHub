@@ -86,7 +86,6 @@ def test_restart_loses_nothing(tmp_path):
         f"/ui/chats/{alice.id}": ["OP-TO-ALICE-C", "ALICE-TO-OP-D"],
         f"/ui/approvals/{apid}": ["git push --force origin feature", "AGENT-DISCUSS-H", "OP-DISCUSS-I"],
         f"/ui/questions/{qid}": ["PENDING-QUESTION-J"],
-        f"/ui/devices/n{alice.name}": ["DEVICE-NOTE-G"],
         f"/ui/agents/{alice.id}": ["/src/proj-checkout"],
         "/ui/approvals": ["git push --force origin feature", "PENDING-QUESTION-J"],
     }
@@ -99,6 +98,7 @@ def test_restart_loses_nothing(tmp_path):
         "ask": (bob, f"/api/v1/asks/{ask_id}", {}),
         "asks": (bob, "/api/v1/asks", {}),
         "me": (alice, "/api/v1/agents/me", {}),
+        "device": (alice, "/api/v1/device/messages", {}),  # the device thread has no page of its own
     }
     api_before = {k: api(hub, a, p, **kw) for k, (a, p, kw) in api_reads.items()}
 
@@ -111,6 +111,7 @@ def test_restart_loses_nothing(tmp_path):
     assert avatar_urls(page(new, f"/ui/agents/{alice.id}")) == avatar
     for k, (a, p, kw) in api_reads.items():
         assert api(new, a, p, **kw) == api_before[k], k
+    assert any(m["body"] == "DEVICE-NOTE-G" for m in api_before["device"]["messages"])
     # bob never read his inbox: the unread messages survived, and reading moves a cursor that survives too
     inbox = api(new, bob, "/api/v1/inbox")["messages"]
     assert any("PAIR-MSG-E" in m["body"] for m in inbox) and any("ASK-QUESTION-F" in m["body"] for m in inbox)

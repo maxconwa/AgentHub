@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -120,12 +121,13 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
     snippet = lambda s: (s or "")[:160] + ("…" if s and len(s) > 160 else "")  # noqa: E731
     if t == "message.posted":
         to = f" → {who(p.get('to'), names)}" if p.get("to") else ""
-        return f"#{p.get('channel')}{to}: {snippet(p.get('body'))}"
+        reply = f" (reply to #{p['parent_id']})" if p.get("parent_id") else ""
+        return f"#{p.get('channel')}{to}{reply}: {snippet(p.get('body'))}"
     if t == "private.sent":  # the event never carries the text
         direction = "to" if p.get("from") == "operator" else "from"
         return f"private message {direction} {who(p.get('agent_id'), names)}"
     if t == "device.message_posted":  # the event never carries the text
-        return f"device board note on {names.get('device:' + str(p.get('node_id')), p.get('node_id'))}"
+        return f"device thread note on {names.get('device:' + str(p.get('node_id')), p.get('node_id'))}"
     if t == "board.updated":
         return f"board {p.get('key')} v{p.get('version')}"
     if t.startswith("task."):
@@ -366,10 +368,9 @@ def build_router() -> APIRouter:
         if project is None:
             raise store.NotFound(f"no project {name!r}")
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
-        messages = store.recent_messages(conn, project=name, channel="general", limit=50)
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
-                      messages=messages, prompt=views.prompt_state(conn, f"project:{name}"),
-                      reports=reports.list_reports(conn, projects=[name]))
+                      posts=views.board_posts(conn, name, "general"), board_key=views.board_key(name, "general"),
+                      prompt=views.prompt_state(conn, f"project:{name}"), reports=reports.list_reports(conn, projects=[name]))
 
     @router.post("/projects/{name}/description")
     def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
@@ -548,7 +549,9 @@ def build_router() -> APIRouter:
 
     @router.get("/prompts/{prompt_id}", response_class=HTMLResponse)
     def prompt_page(prompt_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "prompt.html", conn, nav="dashboard", p=views.prompt(conn, prompt_id))
+        p = views.prompt(conn, prompt_id)
+        return render(request, operator, "prompt.html", conn, nav="dashboard", p=p,
+                      discussion=views.prompt_discussion(conn, p))
 
     # board (public channels) ----------------------------------
 
@@ -559,6 +562,7 @@ def build_router() -> APIRouter:
 
     @router.get("/board/{key}", response_class=HTMLResponse)
     def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> Response:
+        """A board: its top-level posts, latest activity first, and the New post form."""
         if key.startswith("pair-"):  # agent-to-agent chats moved to Chats
             return RedirectResponse(f"/ui/chats/pair/{key}", status_code=308, headers=SECURITY_HEADERS)
         thread = views.board_thread(conn, key)
@@ -566,18 +570,36 @@ def build_router() -> APIRouter:
         return render(request, operator, "board_thread.html", conn, nav="board", key=key,
                       prompt=views.prompt_state(conn, target) if target else None, **thread)
 
+    @router.get("/board/{key}/posts/{post_id}", response_class=HTMLResponse)
+    def board_post_page(key: str, post_id: Annotated[int, PathParam(ge=1, le=2**63 - 1)], request: Request,
+                        operator: Op, conn: Conn,
+                        reply_to: Annotated[int | None, Query(ge=1, le=2**63 - 1)] = None) -> Response:
+        """One post's thread: the post, its replies nested, and a reply form (to the post, or with ``reply_to``,
+        a reply's Reply link, to that reply). A reply's own id redirects to its post's thread, scrolled to it."""
+        thread = views.board_post(conn, key, post_id)
+        root = thread["post"]["id"]
+        if root != post_id:
+            return RedirectResponse(views.post_href(key, root, post_id), status_code=303, headers=SECURITY_HEADERS)
+        parent = thread["by_id"].get(reply_to if reply_to is not None else root)
+        if parent is None:
+            raise store.NotFound(f"no reply #{reply_to} on this thread")
+        return render(request, operator, "board_post.html", conn, nav="board", key=key, parent=parent, **thread)
+
     @router.post("/board/{key}")
     def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
                    body: Annotated[str, Form(min_length=1, max_length=4000)],
+                   reply_to: Annotated[int | None, Form(ge=1, le=2**63 - 1)] = None,
                    messenger: MessengerField = "") -> Response:
+        """A new post on the board, or with ``reply_to`` a reply to one of its posts."""
         written(body)
         thread = views.board_thread(conn, key)
         if not thread["can_post"]:
             raise HTTPException(405, "this thread is read-only")
-        with db.transaction(conn):
-            store.post_message(conn, author=operator.actor, project=thread["project"], channel=thread["channel"],
-                               body=body)
-        return finish(request, operator, conn, "", "", f"/ui/board/{key}", messenger)
+        with db.transaction(conn):  # a reply_to that isn't on this board is refused there
+            msg = store.post_message(conn, author=operator.actor, project=thread["project"],
+                                     channel=thread["channel"], body=body, reply_to=reply_to)
+        return finish(request, operator, conn, "", "", views.post_href(key, msg["root_id"] or msg["id"], msg["id"]),
+                      messenger)
 
     # approvals ----------------------------------------------------------------------
 
@@ -681,8 +703,8 @@ def build_router() -> APIRouter:
         member_usage = {m["agent_id"]: tasks.usage(conn, task_id, m["agent_id"]) for m in t["agents"]}
         return render(request, operator, "task.html", conn, nav="tasks", t=t, history=history, runs=tasks.list_runs(conn, task_id),
                       usage=tasks.usage(conn, task_id), member_usage=member_usage,
-                      messages=store.recent_messages(conn, project=t["project"], channel=f"task-{task_id}", limit=50),
-                      moves=operator_moves(t["state"]), agents=agents,
+                      posts=views.board_posts(conn, t["project"], f"task-{task_id}"),
+                      board_key=views.board_key(t["project"], f"task-{task_id}"), moves=operator_moves(t["state"]), agents=agents,
                       terminal=t["state"] in tasks.TERMINAL, prompt=views.prompt_state(conn, f"task:{task_id}"),
                       reports=reports.list_reports(conn, task_id=task_id))
 
@@ -782,17 +804,7 @@ def build_router() -> APIRouter:
     def device_page(node_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         device = views.device(conn, node_id)
         return render(request, operator, "device.html", conn, nav="devices", d=device,
-                      messages=views.device_messages(conn, node_id),
-                      prompt=views.prompt_state(conn, f"device:{node_id}"))
-
-    @router.post("/devices/{node_id}/notes")
-    def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
-                    body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)],
-                    panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        written(body)
-        with db.transaction(conn):
-            device_board.post(conn, node_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}", messenger)
+                      prompts=views.prompts_for(conn, f"device:{node_id}"), prompt=views.prompt_state(conn, f"device:{node_id}"))
 
     # agents -------------------------------------------------------------------------
 

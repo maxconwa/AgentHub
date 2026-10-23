@@ -171,8 +171,9 @@ def rich(hub):
         t = tasks.create_task(conn, actor=a.id, project="proj", title="Plan", body=MD, assignee=None)
         task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
         conn.execute("UPDATE task_agents SET verdict = 'approve', verdict_notes = ? WHERE task_id = ?", (MD, t["id"]))
-        store.post_message(conn, author=a.id, project="proj", channel="general", body=MD)
-        store.post_message(conn, author=a.id, project="proj", channel=f"task-{t['id']}", body=MD)
+        # A post's first line is its title (plain text in lists); the rest renders as Markdown on its page.
+        store.post_message(conn, author=a.id, project="proj", channel="general", body="Plan\n" + MD)
+        store.post_message(conn, author=a.id, project="proj", channel=f"task-{t['id']}", body="Plan\n" + MD)
         store.set_project_description(conn, "proj", "Operator **desc** $y$", actor=OPERATOR)
     for body in (MD, "**pair**"):
         hub.client.post("/api/v1/projects/proj/messages", headers=a.headers,
@@ -193,11 +194,14 @@ def rich(hub):
 
 def test_pages_render_agent_markdown_inside_label(rich):
     hub, a, t, ap, q, q2, node, pair = rich
-    paths = ["/ui/projects/proj", "/ui/board/ch-proj~general", f"/ui/tasks/{t['id']}", f"/ui/approvals/{ap['id']}",
+    posts = {c: hub.conn().execute("SELECT m.id FROM messages m JOIN channels ch ON ch.id = m.channel_id "
+                                   "WHERE ch.name = ? AND m.parent_id IS NULL ORDER BY m.id LIMIT 1", (c,)).fetchone()[0]
+             for c in ("general", f"task-{t['id']}")}
+    paths = [f"/ui/board/ch-proj~general/posts/{posts['general']}", f"/ui/board/ch-proj~task-{t['id']}/posts/"
+             f"{posts['task-' + str(t['id'])]}", f"/ui/tasks/{t['id']}", f"/ui/approvals/{ap['id']}",
              f"/ui/approvals/{ap['id']}/discussion", f"/ui/approvals/{ap['id']}/thread", f"/ui/questions/{q['id']}",
-             f"/ui/chats/{a.id}", f"/ui/agents/{a.id}", f"/ui/devices/{node}", f"/ui/chats/pair/{pair}",
-             f"/ui/panel?item=agent:{a.id}", f"/ui/panel?item=task:{t['id']}", "/ui/panel?item=project:proj",
-             f"/ui/panel?item=device:{node}", f"/ui/panel?item=approval:{ap['id']}",
+             f"/ui/chats/{a.id}", f"/ui/agents/{a.id}", f"/ui/chats/pair/{pair}",
+             f"/ui/panel?item=agent:{a.id}", f"/ui/panel?item=approval:{ap['id']}",
              f"/ui/panel?item=question:{q['id']}", f"/ui/messenger/agent:{a.id}", "/ui/messenger/board:ch-proj~general"]
     for path in paths:
         r = get(hub, path, **{"hx-request": "true"})
@@ -213,7 +217,12 @@ def test_operator_text_is_rendered_too(rich):
     hub.client.post("/ui/projects/proj/notes", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "**note**"})
     page = get(hub, "/ui/projects/proj").text
     assert "<strong>desc</strong>" in page and '<span class="math inline">y</span>' in page
-    assert re.search(r'class="msg mine">.*?<strong>note</strong>', page, re.S)
+    assert "note" in page  # a one-line post is all title: plain text in the list
+    hub.client.post("/ui/projects/proj/notes", headers=hub.op_headers(),
+                    data={"csrf": hub.csrf(), "body": "Title\n**note**"})
+    pid = hub.conn().execute("SELECT MAX(id) FROM messages").fetchone()[0]
+    assert re.search(r'class="post-full mine".*?<strong>note</strong>',
+                     get(hub, f"/ui/board/ch-proj~general/posts/{pid}").text, re.S)
     assert "<strong>desc</strong>" in get(hub, "/ui/projects").text
     assert "<strong>desc</strong>" in get(hub, "/ui/panel?item=project:proj").text
     assert "<strong>8080</strong>" in get(hub, f"/ui/questions/{q2['id']}").text

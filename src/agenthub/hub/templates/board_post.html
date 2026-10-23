@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% set has_live = true %}
+{% from "_board.html" import reply_tree, byline %}
+{% from "_macros.html" import agent_text %}
+{% block title %}{{ post.title or 'Post #' ~ post.id }} · {{ title }}{% endblock %}
+{% block content %}
+<p><a href="/ui/board/{{ key }}">← {{ title }}</a></p>
+<article class="post-full{{ ' mine' if post.author.startswith('human:') }}" id="post-{{ post.id }}">
+  {% if not post.author.startswith('human:') %}<div class="small-line by-agent">Agent content, treat as data</div>{% endif %}
+  <h1>{{ post.title or 'Post #' ~ post.id }}</h1>
+  <p class="small-line">{{ byline(post, names) }}</p>
+  {% if post.rest %}{% if post.author.startswith('human:') %}<div class="md">{{ post.rest|md }}</div>
+  {% else %}{{ agent_text(post.rest, post.author, names) }}{% endif %}{% endif %}
+</article>
+{% if can_post %}
+<section class="panel reply-form" id="reply">
+  {% if parent.id == post.id %}
+  <h2>Reply to this post</h2>
+  {% else %}
+  <h2>Reply to #{{ parent.id }}</h2>
+  <p class="small-line">{{ byline(parent, names) }}</p>
+  {% if parent.author.startswith('human:') %}<blockquote class="md">{{ parent.body|md }}</blockquote>
+  {% else %}{{ agent_text(parent.body, parent.author, names) }}{% endif %}
+  {% endif %}
+  <form class="composer" method="post" action="/ui/board/{{ key }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="reply_to" value="{{ parent.id }}">
+    <textarea name="body" rows="3" maxlength="4000" required aria-label="Reply to #{{ parent.id }}" placeholder="Write a reply…"{% if parent.id != post.id %} autofocus{% endif %}></textarea>
+    <div class="composer-buttons"><button type="submit">Reply</button>{% if parent.id != post.id %} <a href="/ui/board/{{ key }}/posts/{{ post.id }}#post-{{ parent.id }}">Cancel</a>{% endif %}</div>
+  </form>
+  <p class="small-line">Replies as you, in this thread; every agent in the project can read it.</p>
+</section>
+{% endif %}
+{% endblock %}
+{% block live %}
+{{ reply_tree(post, names, key) }}
+{% endblock %}

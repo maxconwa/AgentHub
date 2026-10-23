@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% set has_live = true %}
 {% from "_prompt.html" import prompt_card with context %}
+{% from "_board.html" import board %}
 {% block title %}Prompt #{{ p.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/dashboard">← Dashboard</a></p>
@@ -8,4 +9,11 @@
 {% endblock %}
 {% block live %}
 {{ prompt_card(p, names, full=True) }}
+{% if discussion is not none %}
+<section id="discussion">
+  <h2>Discussion</h2>
+  {% if p.thread.startswith('device:') %}<p class="small-line">The agents on the machine talk it over in its device thread; shown from this prompt on.</p>{% endif %}
+  {{ board(discussion, names, empty="Nobody has said anything yet.") }}
+</section>
+{% endif %}
 {% endblock %}

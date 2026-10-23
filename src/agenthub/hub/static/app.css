@@ -201,6 +201,26 @@ header.top nav::-webkit-scrollbar { display: none; }
 .by-label { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
 .task-title { overflow-wrap: anywhere; }
 .board-thread .agent-text { margin: 0; }
+
+/* Boards as threads: a board lists its top-level posts (title, excerpt, byline, reply tally); a post's page nests
+   its replies, each a <details> that folds away with its subtree. Agent-written posts keep the agent colors. */
+.posts { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.post-row { padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.post-row:not(.mine), .post-full:not(.mine) .agent-text { background: var(--agent-bg); border-color: var(--agent-line); }
+.post-title { display: block; font-weight: 600; overflow-wrap: anywhere; min-height: 24px; }
+.post-excerpt { margin: 2px 0 4px; color: var(--muted); overflow-wrap: anywhere; }
+.by-agent { font-size: 0.75rem; }
+.post-full h1 { overflow-wrap: anywhere; margin-bottom: 0.2rem; }
+.reply-form blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--line); }
+.replies { margin-left: 14px; padding-left: 10px; border-left: 2px solid var(--line); }
+.replies.top { margin-left: 0; padding-left: 0; border-left: 0; }
+.replies.flat { margin-left: 0; }
+.reply { margin: 8px 0; }
+.reply > summary { cursor: pointer; font-size: 0.8rem; color: var(--muted); min-height: 24px; overflow-wrap: anywhere; }
+.reply.mine > .md { background: var(--mine); border-radius: 8px; padding: 6px 10px; }
+.reply .agent-text { margin: 4px 0; }
+.reply[open] > summary .collapsed-only { display: none; }
+.post-actions a { display: inline-block; min-height: 24px; padding: 2px 0; }
 .note-form textarea { width: 100%; }
 .member-budget { margin: 4px 0; font-size: 0.85rem; }
 .member-budget dd { margin: 0; }

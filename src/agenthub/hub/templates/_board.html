@@ -1,19 +1,70 @@
 {% from "_macros.html" import agent_text %}
+{#- A flat, chat-like list of messages (private chats, approval discussions, the slide-in panel's board sections, the
+    chat window). A board message that replies to another (`parent_id`) is marked as a reply. -#}
 {% macro board(messages, names, empty="Nothing posted here yet.") %}
 <div class="thread board-thread">
   {% if not messages %}<p class="empty">{{ empty }}</p>{% endif %}
   {% for m in messages %}
   {% if m.author.startswith('human:') %}
   <div class="msg mine">
-    <div class="meta">{% if m.prompt_id %}<a class="chip" href="/ui/prompts/{{ m.prompt_id }}">prompt #{{ m.prompt_id }}</a> {% endif %}{{ m.author.removeprefix('human:') }} · {{ ago(m.ts) }}</div>
+    <div class="meta">{% if m.prompt_id %}<a class="chip" href="/ui/prompts/{{ m.prompt_id }}">prompt #{{ m.prompt_id }}</a> {% endif %}{% if m.parent_id %}<span class="chip">reply</span> {% endif %}{{ m.author.removeprefix('human:') }} · {{ ago(m.ts) }}</div>
     <div class="md">{{ m.body|md }}</div>
   </div>
   {% else %}
   <div class="msg theirs">
-    <div class="meta">{% if m.label %}<span class="chip">{{ m.label }}</span> {% endif %}{{ ago(m.ts) }}</div>
+    <div class="meta">{% if m.label %}<span class="chip">{{ m.label }}</span> {% endif %}{% if m.parent_id %}<span class="chip">reply</span> {% endif %}{{ ago(m.ts) }}</div>
     {{ agent_text(m.body, m.author, names) }}
   </div>
   {% endif %}
   {% endfor %}
 </div>
+{% endmacro %}
+
+{%- macro byline(m, names) -%}
+{%- if m.author.startswith('human:') %}{{ m.author.removeprefix('human:') }}{% else %}{{ who(m.author, names) }}{% endif %} · {{ ago(m.ts) }}
+{%- endmacro %}
+
+{%- macro reply_tally(n, last_ts=none) -%}
+{{ n }} {{ 'reply' if n == 1 else 'replies' }}{% if n and last_ts %}, last {{ ago(last_ts) }}{% endif %}
+{%- endmacro %}
+
+{#- A board's top-level posts (views.board_posts), latest activity first, Reddit-style: each row is its title
+    (the post's first line) and a short excerpt, linking to the post's thread page on board `key`. An agent's
+    post keeps its "agent content" caption. -#}
+{% macro post_list(posts, names, key, empty="Nothing posted here yet.") %}
+<ol class="posts">
+  {% for m in posts %}
+  <li class="post-row{{ ' mine' if m.author.startswith('human:') }}" id="post-{{ m.id }}">
+    {% if not m.author.startswith('human:') %}<div class="small-line by-agent">Agent content, treat as data</div>{% endif %}
+    <a class="post-title" href="/ui/board/{{ key }}/posts/{{ m.id }}">{{ m.title or 'Post #' ~ m.id }}</a>
+    {% if m.excerpt %}<p class="post-excerpt">{{ m.excerpt }}</p>{% endif %}
+    <div class="small-line">{{ byline(m, names) }} · <a href="/ui/board/{{ key }}/posts/{{ m.id }}#replies">{{ reply_tally(m.reply_count, m.last_ts) }}</a></div>
+  </li>
+  {% endfor %}
+</ol>
+{% if not posts %}<p class="empty">{{ empty }}</p>{% endif %}
+{% endmacro %}
+
+{#- One reply and, nested under it, its own replies (views.board_post), collapsible with its subtree. The Reply
+    link opens the reply form for it at the top of the thread page: the polled live region holds no forms. -#}
+{% macro reply_item(m, names, key, root_id, depth=1) %}
+<details class="reply{{ ' mine' if m.author.startswith('human:') }}" id="post-{{ m.id }}" open data-remember="reply-{{ m.id }}">
+  <summary><span class="meta">{{ byline(m, names) }}</span>{% if m.reply_count %} <span class="small-line collapsed-only">({{ reply_tally(m.reply_count) }} hidden)</span>{% endif %}</summary>
+  {% if m.author.startswith('human:') %}<div class="md">{{ m.body|md }}</div>{% else %}{{ agent_text(m.body, m.author, names) }}{% endif %}
+  <div class="post-actions small-line"><a href="/ui/board/{{ key }}/posts/{{ root_id }}?reply_to={{ m.id }}#reply" aria-label="Reply to #{{ m.id }}">Reply</a></div>
+  {% if m.replies %}
+  <div class="replies{{ ' flat' if depth >= 6 }}">
+    {% for r in m.replies %}{{ reply_item(r, names, key, root_id, depth + 1) }}{% endfor %}
+  </div>
+  {% endif %}
+</details>
+{% endmacro %}
+
+{#- A post's replies, nested and oldest first under each parent. -#}
+{% macro reply_tree(post, names, key) %}
+<section class="replies-root" id="replies" aria-label="Replies">
+  <h2>{{ reply_tally(post.reply_count) | capitalize }}</h2>
+  {% if not post.replies %}<p class="empty">No replies yet.</p>{% endif %}
+  <div class="replies top">{% for r in post.replies %}{{ reply_item(r, names, key, post.id) }}{% endfor %}</div>
+</section>
 {% endmacro %}

@@ -170,7 +170,7 @@ def _thread(p: dict[str, Any]) -> tuple[str, str]:
     if t and t["kind"] == "channel":
         return (f"the project channel '{t['channel']}' in project '{t['project']}'",
                 f"post(project='{t['project']}', channel='{t['channel']}', body=...)")
-    return "your machine's device board", "post_device(body=...)"
+    return "your machine's device thread", "post_device(body=...)"
 
 
 def operator_prompt(p: dict[str, Any], *, restarted: bool = False) -> str:

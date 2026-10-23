@@ -1,5 +1,5 @@
 {% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, send_and_prompt %}
-{% from "_board.html" import board %}
+{% from "_board.html" import board, post_list %}
 {% from "_prompt.html" import prompt_card with context %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. Every form
     posts with HTMX, names the item in `panel` so the response re-renders this panel, and keeps a plain
@@ -7,14 +7,17 @@
     Prompt beside its button. -#}
 {#- With `send_all`, a group's panel (task, project, device) also has "Send to each agent": the same text as a private
     message to every active agent there (POST /ui/compose with everyone=1), beside its Post and Prompt. -#}
-{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='', prompt=None, send_all=False) -%}
+{#- With `everyone` (a device's panel), the form's own button is that "Send to each agent", with no Post: a machine
+    has no board. -#}
+{% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='', prompt=None, send_all=False, everyone=False) -%}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="panel" value="{{ item }}">
   {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
   <textarea name="{{ field }}" rows="2" maxlength="{{ maxlength }}" required aria-label="{{ label }}" placeholder="{{ placeholder }}"></textarea>
-  {% if send_all %}<input type="hidden" name="to" value="{{ prompt.target }}">{% endif %}
-  {% if prompt %}{% call send_and_prompt(prompt, button) %}<button type="submit">{{ button }}</button>
+  {% if send_all or everyone %}<input type="hidden" name="to" value="{{ prompt.target }}">{% endif %}
+  {% if everyone %}<input type="hidden" name="everyone" value="1">{% endif %}
+  {% if prompt %}{% call send_and_prompt(prompt, button) %}<button type="submit"{% if everyone and not prompt.agents %} disabled{% endif %}>{{ button }}</button>
     {%- if send_all %}<button type="submit" formaction="/ui/compose" name="everyone" value="1"{% if not prompt.agents %} disabled{% endif %}>Send to each agent</button>{% endif %}{% endcall %}
   {% else %}<div class="composer-buttons"><button type="submit">{{ button }}</button></div>{% endif %}
   {% if help %}<p class="small-line">{{ help }}</p>{% endif %}
@@ -93,8 +96,9 @@
 </section>
 <section class="dsec">
   <h3>Task board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'Note to task #' ~ t.id, 'Post', 'Post a note to the agents on this task…', help='Post: every agent in the project can read it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
+  <div class="dthread">{{ post_list(posts, names, board_key) }}</div>
+  <p class="small-line"><a href="/ui/board/{{ board_key }}">Open the board</a> to see every post.</p>
+  {{ panel_form('/ui/tasks/' ~ t.id ~ '/notes', 'New post on task #' ~ t.id, 'Post', 'New post to the agents on this task: the first line is its title…', help='Post: every agent in the project can read it; reply to a post on its page. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
 </section>
 {{ latest_prompts() }}
 
@@ -111,8 +115,9 @@
 </section>
 <section class="dsec">
   <h3>Project board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'Note to project ' ~ project.name, 'Post', 'Post a note to everyone on this project…', help='Post: every agent in the project can read it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
+  <div class="dthread">{{ post_list(posts, names, board_key) }}</div>
+  <p class="small-line"><a href="/ui/board/{{ board_key }}">Open the board</a> to see every post.</p>
+  {{ panel_form('/ui/projects/' ~ project.name ~ '/notes', 'New post on project ' ~ project.name, 'Post', 'New post to everyone on this project: the first line is its title…', help='Post: every agent in the project can read it; reply to a post on its page. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
 </section>
 {{ latest_prompts() }}
 
@@ -129,9 +134,8 @@
   </ul>
 </section>
 <section class="dsec">
-  <h3>Device board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-  {{ panel_form('/ui/devices/' ~ d.node_id|urlencode ~ '/notes', 'Note to ' ~ d.name, 'Post', 'Post a note to every agent on ' ~ d.name ~ '…', help='Post: only the agents on this machine and you can see it. Send to each agent: a private message in each one\'s inbox.', prompt=prompt, send_all=True) }}
+  <h3>Message the agents</h3>
+  {{ panel_form('/ui/compose', 'Message to the agents on ' ~ d.name, 'Send', 'Write to every agent on ' ~ d.name ~ '…', help='Send: the same private message in the inbox of each active agent on this machine.', prompt=prompt, everyone=True) }}
 </section>
 {{ latest_prompts() }}
 

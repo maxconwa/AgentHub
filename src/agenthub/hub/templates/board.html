@@ -7,7 +7,7 @@
 <div class="chat-group">{{ label }}</div>
 <ul class="chat-list panel">
   {% for t in items %}
-  <li class="with-action"><a href="{{ t.href or '/ui/board/' ~ t.key }}"{% if label == "Projects" %} data-panel="project:{{ t.project }}"{% elif label == "Tasks" %} data-panel="task:{{ t.task_id }}"{% elif label == "Devices" %} data-panel="device:{{ t.node_id }}"{% endif %}>{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{% if label == "Tasks" %}{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}{% else %}{{ t.title }}{% if t.created_by and not t.created_by.startswith(('human:', 'system:')) %} <span class="by-label">by {{ who(t.created_by, names) }}</span>{% endif %}{% endif %}</strong>
+  <li class="with-action"><a href="/ui/board/{{ t.key }}"{% if label == "Projects" %} data-panel="project:{{ t.project }}"{% elif label == "Tasks" %} data-panel="task:{{ t.task_id }}"{% endif %}>{% for av in t.avatars %}{{ avatar(av, 32) }}{% endfor %}<span class="t"><strong>{% if label == "Tasks" %}{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}{% else %}{{ t.title }}{% if t.created_by and not t.created_by.startswith(('human:', 'system:')) %} <span class="by-label">by {{ who(t.created_by, names) }}</span>{% endif %}{% endif %}</strong>
     <span>{% if t.last_ts %}Last post {{ ago(t.last_ts) }}{% else %}Nothing posted yet{% endif %}</span></span></a></li>
   {% endfor %}
 </ul>
@@ -15,13 +15,11 @@
 {% endmacro %}
 {% block content %}
 <h1>Board</h1>
-<p class="lead">Everything said in the open: project and task boards, coordination threads. Each machine's device board is listed too; only that machine's agents and you can see it. Private chats and agent-to-agent chats are under Chats.</p>
+<p class="lead">Each project and each task has a board: threads of posts and replies that you and the agents write. A prompt's discussion is on its prompt's page; private chats and agent-to-agent chats are under Chats.</p>
 <p><a href="{{ activity_link }}">All activity</a></p>
 {% endblock %}
 {% block live %}
-{% if not (projects or tasks or threads or devices) %}<p class="empty">Nothing on the board yet.</p>{% endif %}
+{% if not (projects or tasks) %}<p class="empty">Nothing on the board yet.</p>{% endif %}
 {{ group("Projects", projects) }}
 {{ group("Tasks", tasks) }}
-{{ group("Threads", threads) }}
-{{ group("Devices", devices) }}
 {% endblock %}

@@ -67,14 +67,6 @@ def device(conn: sqlite3.Connection, node_id: str) -> dict[str, Any]:
     return found
 
 
-def device_messages(conn: sqlite3.Connection, node_id: str) -> list[dict[str, Any]]:
-    """The device board as :func:`board_thread` messages; a note addressed to one agent is labeled ``to <name>``."""
-    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
-    return [{"author": m["author"], "ts": m["ts"], "body": m["body"],
-             "label": f"to {names.get(m['to_agent'], m['to_agent'])}" if m["to_agent"] else None}
-            for m in device_board.recent(conn, node_id, limit=BOARD_LIMIT)]
-
-
 def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every project, each with its live tasks and the agents on them.
 
@@ -248,8 +240,8 @@ def prompt(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
     thread = p["thread"]
     if thread is None:
         thread_href = None
-    elif thread.startswith("device:"):
-        thread_href = f"/ui/devices/{quote(thread.removeprefix('device:'), safe='')}"
+    elif thread.startswith("device:"):  # a machine's device thread has no page of its own: the prompt page shows it
+        thread_href = f"/ui/prompts/{pid}#discussion"
     else:
         thread_href = f"/ui/board/{thread.removeprefix('board:')}"
     for r in p["recipients"]:
@@ -257,6 +249,25 @@ def prompt(conn: sqlite3.Connection, pid: int) -> dict[str, Any]:
             if r["task_id"] else None
         r["task_by"] = by["created_by"] if by else None
     return p | {"target_label": label, "target_item": p["target"], "target_href": href, "thread_href": thread_href}
+
+
+def prompt_discussion(conn: sqlite3.Connection, p: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """A group prompt's discussion for its page, oldest first, as :func:`board_thread` messages; None for a prompt
+    without a thread. A device prompt's is its machine's device thread from the prompt on (the agents there may
+    also talk about other things); a note addressed to one agent is labeled ``to <name>``."""
+    thread = p["thread"]
+    if thread is None:
+        return None
+    if thread.startswith("device:"):
+        names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+        rows = conn.execute("SELECT author, to_agent, body, ts FROM device_messages WHERE node_id = ? AND ts >= ? "
+                            "ORDER BY id LIMIT ?", (thread.removeprefix("device:"), p["created_at"], BOARD_LIMIT))
+        return [{"author": m["author"], "ts": m["ts"], "body": m["body"],
+                 "label": f"to {names.get(m['to_agent'], m['to_agent'])}" if m["to_agent"] else None} for m in rows]
+    try:
+        return board_thread(conn, thread.removeprefix("board:"))["messages"]
+    except store.NotFound:
+        return []
 
 
 def prompts_for(conn: sqlite3.Connection, target: str, limit: int = PANEL_PROMPTS) -> list[dict[str, Any]]:
@@ -317,41 +328,34 @@ def agent_pairs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def board_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """The Board page's thread list: project boards, task boards, other channels, device boards.
+    """The Board page's boards: ``projects`` (every project's ``general`` board) and ``tasks`` (the ``task-<id>``
+    board of every live task, and of a finished one that has posts). Other channels (a prompt's discussion,
+    coordination threads, asks) aren't boards: they are read where they belong (the prompt page, the activity feed).
 
-    Each item is ``{key, title, created_by, last_body, last_ts, avatars}`` newest first. ``last_body`` is always
-    None: agent-written snippets stay out of lists, so a row shows who spoke last and when. Device items
-    carry ``href`` (their device page) and ``node_id``.
+    Each item is ``{key, title, created_by, last_body, last_ts, avatars, project}`` (tasks add ``task_id``), newest
+    post first, boards nobody has posted on last. ``last_body`` is always None: agent-written snippets stay out of
+    lists, so a row shows who spoke last and when.
     """
     board = avatars.board(conn)
-    task_titles = {(r["project"], r["id"]): (r["title"], r["created_by"])
-                   for r in conn.execute("SELECT id, project, title, created_by FROM tasks")}
-    out: dict[str, list[dict[str, Any]]] = {"projects": [], "tasks": [], "threads": []}
-    for c in conn.execute("SELECT id, project, name, created_by FROM channels").fetchall():
+    channels = {(c["project"], c["name"]): c["id"] for c in conn.execute("SELECT id, project, name FROM channels")}
+
+    def item(project: str, channel: str, title: str, created_by: str | None) -> dict[str, Any]:
+        cid = channels.get((project, channel))
         # The channel's latest posts, one short range of messages_channel_id: when, and who (faces of the last few).
         recent = conn.execute("SELECT author, ts FROM messages WHERE channel_id = ? ORDER BY id DESC LIMIT ?",
-                              (c["id"], RECENT_AUTHORS_WINDOW)).fetchall()
+                              (cid, RECENT_AUTHORS_WINDOW)).fetchall() if cid is not None else []
         authors = dict.fromkeys(r["author"] for r in recent)
-        item = {"key": f"ch-{c['project']}~{c['name']}", "created_by": c["created_by"], "title": f"{c['project']} / {c['name']}", "last_body": None,
-                "last_ts": recent[0]["ts"] if recent else None, "project": c["project"],
+        return {"key": board_key(project, channel), "title": title, "created_by": created_by, "last_body": None,
+                "last_ts": recent[0]["ts"] if recent else None, "project": project,
                 "avatars": [board[a] for a in authors if a in board][:3]}
-        m = _TASK_CHANNEL.fullmatch(c["name"])
-        if c["name"] == "general":
-            out["projects"].append(item | {"title": c["project"]})
-        elif m and (c["project"], int(m[1])) in task_titles:
-            title, by = task_titles[(c["project"], int(m[1]))]
-            out["tasks"].append(item | {"title": f"#{m[1]} {title}", "created_by": by, "task_id": int(m[1])})
-        else:
-            out["threads"].append(item)
-    machines = devices(conn)
-    posts = device_board.last_posts(conn, [d["node_id"] for d in machines])
-    out["devices"] = []
-    for d in machines:  # every machine with a non-revoked agent, so the operator can start its board
-        last = posts.get(d["node_id"], {"ts": None, "authors": []})
-        out["devices"].append({"key": f"dev-{d['node_id']}", "title": d["name"], "last_body": None,
-                               "last_ts": last["ts"], "node_id": d["node_id"],
-                               "href": f"/ui/devices/{quote(d['node_id'], safe='')}",
-                               "avatars": [board[a] for a in last["authors"] if a in board][:3]})
+
+    out: dict[str, list[dict[str, Any]]] = {
+        "projects": [item(p["name"], "general", p["name"], None)
+                     for p in conn.execute("SELECT name FROM projects ORDER BY name")],
+        "tasks": [item(t["project"], f"task-{t['id']}", f"#{t['id']} {t['title']}", t["created_by"])
+                  | {"task_id": t["id"]}
+                  for t in conn.execute("SELECT id, project, title, state, created_by FROM tasks ORDER BY id")
+                  if t["state"] not in TERMINAL_STATES or (t["project"], f"task-{t['id']}") in channels]}
     for g in out.values():
         g.sort(key=_ts_key, reverse=True)
     return out
@@ -384,25 +388,123 @@ def _unstarted_board(conn: sqlite3.Connection, key: str) -> tuple[str, str] | No
     return (project, channel) if found else None
 
 
-def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
-    """One Board thread: ``{title, messages, can_post, project, channel, created_by}``.
+def _board_message(m: dict[str, Any]) -> dict[str, Any]:
+    return {"id": m["id"], "parent_id": m["parent_id"], "author": m["author"], "ts": m["ts"], "body": m["body"]}
 
-    Keys are ``ch-<project>~<channel>``. A project's ``general`` board and a task's ``task-<id>`` board
-    resolve before anyone has posted (empty; the first post creates the channel). Raises store.NotFound if unknown.
-    """
+
+def board_messages(conn: sqlite3.Connection, project: str, channel: str, limit: int = BOARD_LIMIT
+                   ) -> list[dict[str, Any]]:
+    """A channel's latest ``limit`` messages, oldest first, as ``{id, parent_id, author, ts, body}``."""
+    return [_board_message(m) for m in store.recent_messages(conn, project=project, channel=channel, limit=limit)]
+
+
+POST_TITLE_CHARS = 120
+POST_EXCERPT_CHARS = 240
+THREAD_LIMIT = 500  # messages on one post's thread page
+_MD_LEAD = re.compile(r"\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)*")
+
+
+def _cut(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n].rstrip() + "…"
+
+
+def post_title(body: str) -> tuple[str, str]:
+    """A post's ``(title, excerpt)`` for a board's list: its first non-blank line without leading markdown
+    markers (``#``, ``>``, list bullets), and the rest on one line, both cut short. Plain text, not markdown."""
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return "", ""
+    title = _MD_LEAD.sub("", lines[0], count=1).strip() or lines[0]
+    return _cut(title, POST_TITLE_CHARS), _cut(" ".join(lines[1:]), POST_EXCERPT_CHARS)
+
+
+def _after_title(body: str) -> str:
+    """A post's body after the line :func:`post_title` takes for its title; all of it if the title was cut."""
+    lines = body.strip().splitlines()
+    first = _MD_LEAD.sub("", lines[0], count=1).strip() if lines else ""
+    return body.strip() if len(first) > POST_TITLE_CHARS else "\n".join(lines[1:]).strip()
+
+
+def board_posts(conn: sqlite3.Connection, project: str, channel: str, limit: int = BOARD_LIMIT
+                ) -> list[dict[str, Any]]:
+    """A board's top-level posts, latest activity first (a new reply brings its post up), at most ``limit``:
+    ``{id, author, ts, body, title, excerpt, reply_count, last_ts}``, ``reply_count`` and ``last_ts`` over its
+    whole thread (``last_ts`` is the post's own ts while nobody has replied)."""
+    rows = conn.execute(
+        "SELECT m.id, m.author, m.ts, m.body, COUNT(r.id) AS reply_count, COALESCE(MAX(r.ts), m.ts) AS last_ts "
+        "FROM messages m LEFT JOIN messages r ON r.root_id = m.id "
+        "WHERE m.channel_id = (SELECT id FROM channels WHERE project = ? AND name = ?) AND m.parent_id IS NULL "
+        "GROUP BY m.id ORDER BY COALESCE(MAX(r.id), m.id) DESC LIMIT ?", (project, channel, limit)).fetchall()
+    return [dict(r) | dict(zip(("title", "excerpt"), post_title(r["body"]))) for r in rows]
+
+
+def _board(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """The board behind ``key``: ``{title, can_post, project, channel, created_by}``; store.NotFound if unknown."""
     found = _channel_for_key(conn, key)
     if found:
         project, channel, created_by = found
-        msgs = [{"author": m["author"], "ts": m["ts"], "body": m["body"]}
-                for m in store.recent_messages(conn, project=project, channel=channel, limit=BOARD_LIMIT)]
-        return {"title": f"{project} / {channel}", "messages": msgs, "can_post": True,
-                "project": project, "channel": channel, "created_by": created_by}
-    unstarted = _unstarted_board(conn, key)
-    if unstarted:
-        project, channel = unstarted
-        return {"title": f"{project} / {channel}", "messages": [], "can_post": True,
-                "project": project, "channel": channel, "created_by": None}
-    raise store.NotFound(f"no board thread {key!r}")
+    elif unstarted := _unstarted_board(conn, key):
+        (project, channel), created_by = unstarted, None
+    else:
+        raise store.NotFound(f"no board thread {key!r}")
+    return {"title": f"{project} / {channel}", "can_post": True, "project": project, "channel": channel,
+            "created_by": created_by}
+
+
+def board_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+    """One Board thread: ``{title, messages, posts, can_post, project, channel, created_by}``.
+
+    ``messages`` are its latest :data:`BOARD_LIMIT` messages, flat (:func:`board_messages`: the chat window and a
+    prompt's discussion show them so), ``posts`` its top-level posts (:func:`board_posts`). Keys are
+    ``ch-<project>~<channel>``. A project's ``general`` board and a task's ``task-<id>`` board resolve before anyone
+    has posted (empty; the first post creates the channel). Any other existing channel resolves too (a prompt's
+    discussion, a coordination thread), though the Board page doesn't list it. Raises store.NotFound if unknown.
+    """
+    b = _board(conn, key)
+    return b | {"messages": board_messages(conn, b["project"], b["channel"]),
+                "posts": board_posts(conn, b["project"], b["channel"])}
+
+
+def board_post(conn: sqlite3.Connection, key: str, post_id: int) -> dict[str, Any]:
+    """One post's thread on board ``key``: the :func:`_board` fields plus ``post``, the top-level post that
+    ``post_id`` is or replies under, with ``title`` and ``rest`` (its body after the title), ``reply_count``, ``last_ts`` and ``replies`` (oldest first,
+    each with its own ``replies`` and ``reply_count``), and ``by_id`` (every message on the thread, for a reply
+    form's quote). Past :data:`THREAD_LIMIT` messages the newest replies are left off. Raises store.NotFound if
+    the board has no message ``post_id``.
+    """
+    b = _board(conn, key)
+    row = conn.execute("SELECT m.id, m.root_id FROM messages m JOIN channels c ON c.id = m.channel_id "
+                       "WHERE m.id = ? AND c.project = ? AND c.name = ?",
+                       (post_id, b["project"], b["channel"])).fetchone()
+    if row is None:
+        raise store.NotFound(f"no post #{post_id} on this board")
+    root = row["root_id"] or row["id"]
+    rows = conn.execute("SELECT id, parent_id, author, ts, body FROM messages WHERE id = ? OR root_id = ? "
+                        "ORDER BY id LIMIT ?", (root, root, THREAD_LIMIT)).fetchall()
+    by_id = {r["id"]: _board_message(dict(r)) | {"replies": []} for r in rows}
+    for m in by_id.values():  # ids ascend, so a parent is in by_id before its replies
+        if m["id"] != root:
+            by_id.get(m["parent_id"], by_id[root])["replies"].append(m)
+
+    def tally(m: dict[str, Any]) -> int:
+        m["reply_count"] = sum(1 + tally(r) for r in m["replies"])
+        return m["reply_count"]
+
+    post = by_id[root]
+    tally(post)
+    post["title"], post["rest"] = post_title(post["body"])[0], _after_title(post["body"])
+    post["last_ts"] = max(m["ts"] for m in by_id.values())
+    return b | {"post": post, "by_id": by_id}
+
+
+def board_key(project: str, channel: str) -> str:
+    """The Board key (``ch-<project>~<channel>``) of a project's channel."""
+    return f"ch-{project}~{channel}"
+
+
+def post_href(key: str, post_id: int, focus: int | None = None) -> str:
+    """The thread page of post ``post_id`` on board ``key``, scrolled to message ``focus`` if set."""
+    return f"/ui/board/{key}/posts/{post_id}" + (f"#post-{focus}" if focus is not None else "")
 
 
 def pair_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
@@ -440,6 +542,7 @@ def pair_thread(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
 # --- Slide-in panel ---------------------------------------------------------------------------
 
 PANEL_LIMIT = 50  # messages in a panel's chat; the full page shows more
+PANEL_POSTS = 10  # a board's latest-active posts in a panel
 _PANEL_ITEM = re.compile(r"(agent|task|project|device|approval|question):(.+)")
 _ID = re.compile(r"[0-9]{1,18}")
 
@@ -448,9 +551,9 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     """What the slide-in panel shows for ``item`` (``<kind>:<id>``): ``{kind, href, ...}``.
 
     ``href`` is the item's full page. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not),
-    its pending ``approvals`` and ``questions`` and its private ``chat``; task: ``t`` and its board
-    ``messages``; project: ``project``, its live ``tasks`` and board ``messages``; device: ``d`` and
-    its board ``messages``; approval: ``a`` and its ``task``; question: ``q``, its ``task`` and how the
+    its pending ``approvals`` and ``questions`` and its private ``chat``; task: ``t`` and its board's latest-active
+    ``posts`` (:func:`board_posts`) and ``board_key``; project: ``project``, its live ``tasks``, ``posts`` and
+    ``board_key``; device: ``d``; approval: ``a`` and its ``task``; question: ``q``, its ``task`` and how the
     answer was delivered (``delivery``, :func:`answer_delivery`). Agent, task, project and device panels also carry
     ``prompt`` and ``prompts`` (:func:`_prompting`). Raises store.NotFound for a malformed or unknown item.
     """
@@ -471,20 +574,19 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     if kind == "task":
         t = tasks.get_task(conn, int(key))
         return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t,
-                "messages": store.recent_messages(conn, project=t["project"], channel=f"task-{t['id']}",
-                                                  limit=PANEL_LIMIT)} | _prompting(conn, f"task:{t['id']}")
+                "posts": board_posts(conn, t["project"], f"task-{t['id']}", limit=PANEL_POSTS),
+                "board_key": board_key(t["project"], f"task-{t['id']}")} | _prompting(conn, f"task:{t['id']}")
     if kind == "project":
         row = conn.execute("SELECT name, description FROM projects WHERE name = ?", (key,)).fetchone()
         if row is None:
             raise store.NotFound(f"no project {key!r}")
         live = next((p["tasks"] for p in project_tree(conn) if p["name"] == key), [])
         return {"kind": kind, "href": f"/ui/projects/{quote(key, safe='')}", "project": dict(row), "tasks": live,
-                "messages": store.recent_messages(conn, project=key, channel="general", limit=PANEL_LIMIT)} \
+                "posts": board_posts(conn, key, "general", limit=PANEL_POSTS), "board_key": board_key(key, "general")} \
             | _prompting(conn, item)
     if kind == "device":
         d = device(conn, key)
-        return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": d,
-                "messages": device_messages(conn, key)[-PANEL_LIMIT:]} | _prompting(conn, item)
+        return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": d} | _prompting(conn, item)
     if kind == "approval":
         a = approvals.get(conn, int(key))
         task_id = a["details"].get("task_id")
@@ -513,20 +615,20 @@ def answer_delivery(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, An
 # --- Chat window ------------------------------------------------------------------------------
 
 SNIPPET_CHARS = 200  # of the last private message in the chat window's list (the row clips it further)
-_CONVERSATION = re.compile(r"(agent|pair|board|device):(.+)")
+_CONVERSATION = re.compile(r"(agent|pair|board):(.+)")
 _PROMPT_THREAD = re.compile(r"prompt-[0-9]+")  # a group prompt's discussion channel
 
 
 def messenger(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """The chat window's list: ``{agents, pairs, groups, devices}``, each newest first.
+    """The chat window's list: ``{agents, pairs, groups}``, each newest first.
 
-    Every row has ``key`` (``agent:<id>``, ``pair:<pair-key>``, ``board:<board key>``, ``device:<node_id>``, which
-    :func:`conversation` opens), ``href`` (the full page) and ``last_ts``. agents: every non-revoked agent with
+    Every row has ``key`` (``agent:<id>``, ``pair:<pair-key>``, ``board:<board key>``, which :func:`conversation`
+    opens), ``href`` (the full page) and ``last_ts``. agents: every non-revoked agent with
     ``avatar``, ``status``, ``unread`` (its unread private messages plus its pending questions) and ``last``,
     the newest private message (agent-written when its author isn't ``human:``). pairs: :func:`agent_pairs`.
     groups: every project's board and every task's board that is live or has posts, with ``kind``, ``item``
-    (its panel), ``title``, ``created_by`` and ``members`` (avatars of the agents on it). devices: every machine
-    with a non-revoked agent, ``members`` being its agents.
+    (its panel), ``title``, ``created_by`` and ``members`` (avatars of the agents on it). A board shows
+    flat here, newest last; its threads are on its Board page.
     """
     board = avatars.board(conn)
     unread = private.unread_counts(conn)
@@ -567,14 +669,7 @@ def messenger(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
                        "title": f"#{t['id']} {t['title']}", "created_by": t["created_by"], "last_ts": posted.get(key),
                        "members": _faces(board, on_task.get(t["id"], []))})
     groups.sort(key=_ts_key, reverse=True)
-
-    machines = devices(conn)
-    posts = device_board.last_posts(conn, [d["node_id"] for d in machines])
-    devs = [{"key": f"device:{d['node_id']}", "href": f"/ui/devices/{quote(d['node_id'], safe='')}",
-             "title": d["name"], "last_ts": posts.get(d["node_id"], {}).get("ts"),
-             "members": _faces(board, [a["id"] for a in d["agents"]])} for d in machines]
-    devs.sort(key=_ts_key, reverse=True)
-    return {"agents": agents, "pairs": pairs, "groups": groups, "devices": devs}
+    return {"agents": agents, "pairs": pairs, "groups": groups}
 
 
 def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -> list[dict[str, Any]]:
@@ -587,8 +682,8 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
 
     ``action`` is where its form posts (None when read-only), ``href`` the full page and ``item`` the slide-in
     panel its header opens (None for agent-to-agent chats and other threads). agent: ``ag`` (revoked agents
-    are read-only) and its pending ``questions``; pair: read-only; board: ``created_by``; device: ``d``.
-    Agent, device and board conversations (but not a prompt's own discussion thread) carry ``prompt`` and
+    are read-only) and its pending ``questions``; pair: read-only; board: ``created_by``.
+    Agent and board conversations (but not a prompt's own discussion thread) carry ``prompt`` and
     their target's latest prompt in ``prompts`` (:func:`_prompting`). Raises store.NotFound for a malformed or
     unknown key.
     """
@@ -627,8 +722,3 @@ def conversation(conn: sqlite3.Connection, key: str) -> dict[str, Any]:
         if target is not None:
             out |= _prompting(conn, target, 1)
         return out
-    d = device(conn, ref)
-    return {"kind": kind, "key": key, "title": d["name"], "d": d, "messages": device_messages(conn, ref),
-            "action": f"/ui/devices/{quote(ref, safe='')}/notes", "href": f"/ui/devices/{quote(ref, safe='')}",
-            "item": f"device:{ref}", "members": _faces(avatars.board(conn), [a["id"] for a in d["agents"]])} \
-        | _prompting(conn, key, 1)

@@ -34,7 +34,8 @@ Use `whoami` to see your projects, `read_inbox` to receive messages, `post`
 to send them, and `board_get`/`board_put` for shared versioned documents.
 To reply to the operator privately, use `message_operator`.
 To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
-Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
+Project and task boards are threads: `post(..., reply_to=<message id>)` replies to a post.
+A prompt sent to your whole machine is discussed in its device thread: write there with `post_device`; its notes arrive in `read_inbox`.
 To show the operator a report (a Claude page you made, or a self-contained HTML page), use `publish_report`.
 When you get a prompt with several recipients, discuss it in its thread, then `claim_share` your part or `decline_share`; `prompt_status` shows who else is on it.
 {untrusted.NOTICE}
@@ -60,6 +61,7 @@ def _format_message(m: dict[str, Any]) -> str:
         channel=m["channel"],
         ts=m["ts"],
         to="you" if m.get("addressed_to_me") else None,
+        reply_to=m.get("parent_id"),
     )
 
 
@@ -142,7 +144,7 @@ def _format_prompt(p: dict[str, Any], thread: list[dict[str, Any]]) -> str:
     if th is None:
         parts.append("There is no shared thread for this prompt.")
     else:
-        where = f"{th['project']}/{th['channel']}" if th["kind"] == "channel" else "your device board"
+        where = f"{th['project']}/{th['channel']}" if th["kind"] == "channel" else "your device thread"
         parts.append(f"Thread ({where}), latest {THREAD_TAIL} messages:" if thread else f"Thread ({where}) is empty.")
         for m in thread:
             parts.append(_format_message(
@@ -172,15 +174,19 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         return json.dumps(me, indent=2)
 
     @server.tool()
-    async def post(project: str, body: str, channel: str = "general", to: str | None = None) -> str:
-        """Post a message to a project channel. Set `to` (agent name) to address one agent."""
-        r = await call(lambda c: c.post(project, body, channel=channel, to=to))
+    async def post(project: str, body: str, channel: str | None = None, to: str | None = None,
+                   reply_to: int | None = None) -> str:
+        """Post a message to a project channel (`general` unless you set `channel`; a task's board is
+        `task-<id>`). Set `to` (agent name) to address one agent. Set `reply_to` (a message id, as read_inbox
+        shows it) to reply to that post in its thread; the reply goes to the post's own channel."""
+        r = await call(lambda c: c.post(project, body, channel=channel, to=to, reply_to=reply_to))
         target = f" (to {to})" if to else ""
-        return f"Posted message #{r['id']} to {project}/{channel}{target}."
+        reply = f" as a reply to #{reply_to}" if reply_to is not None else ""
+        return f"Posted message #{r['id']} to {project}/{r.get('channel') or channel or 'general'}{reply}{target}."
 
     @server.tool()
     async def read_inbox(project: str | None = None, limit: int = 20, peek: bool = False) -> str:
-        """Fetch unread messages (the operator's private ones first, then your device board's, then your
+        """Fetch unread messages (the operator's private ones first, then your device thread's, then your
         projects') and mark them read (unless peek=true)."""
         r = await call(lambda c: c.inbox(project=project, limit=limit, peek=peek))
         if not r["messages"]:
@@ -202,11 +208,11 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def post_device(body: str, to: str | None = None) -> str:
-        """Post a note to your machine's device board, seen only by the other agents on this machine and
-        the operator. Set `to` (agent name) to address one of them."""
+        """Post a note to your machine's device thread, where a prompt sent to the whole machine is discussed.
+        Only the other agents on this machine and the operator see it. Set `to` (agent name) to address one of them."""
         r = await call(lambda c: c.post_device(body, to=to))
         target = f" (to {to})" if to else ""
-        return f"Posted note #{r['id']} to your device board{target}."
+        return f"Posted note #{r['id']} to your device thread{target}."
 
     @server.tool()
     async def ask_operator(project: str, question: str, task_id: int | None = None) -> str:

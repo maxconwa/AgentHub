@@ -425,6 +425,13 @@ MIGRATIONS: list[str] = [
     CREATE INDEX reports_project ON reports(project, created_at);
     CREATE INDEX reports_task ON reports(task_id);
     """,
+    # 21: board threads: a message may reply to an earlier one in its channel (``parent_id``); ``root_id`` is the
+    # top-level post its thread hangs from. Existing rows stay top-level posts (both NULL).
+    """
+    ALTER TABLE messages ADD COLUMN parent_id INTEGER REFERENCES messages(id);
+    ALTER TABLE messages ADD COLUMN root_id INTEGER REFERENCES messages(id);
+    CREATE INDEX messages_root_id ON messages(root_id) WHERE root_id IS NOT NULL;
+    """,
 ]
 
 

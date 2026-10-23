@@ -206,7 +206,7 @@ def test_note_is_stored_as_operator_and_shown(tree):
     msgs = store.recent_messages(hub.conn(), project="proj", channel="general")
     assert msgs[-1]["body"] == "ship <i>it</i>" and msgs[-1]["author"].startswith("human:")
     html = get(hub, "/ui/projects/proj").text
-    assert "ship &lt;i&gt;it&lt;/i&gt;" in html and 'class="msg mine"' in html
+    assert "ship &lt;i&gt;it&lt;/i&gt;" in html and 'class="post-row mine"' in html  # its title, plain text
 
 
 def test_board_shows_agent_message_as_agent_text(tree):
@@ -215,7 +215,8 @@ def test_board_shows_agent_message_as_agent_text(tree):
     with db.transaction(conn):
         store.post_message(conn, author=a.id, project="proj", channel="general", body="<script>1</script>")
     html = get(hub, "/ui/projects/proj").text
-    assert "&lt;script&gt;1&lt;/script&gt;" in html and "agent content, treat as data" in html
+    assert "&lt;script&gt;1&lt;/script&gt;" in html and "<script>1" not in html
+    assert "agent content, treat as data" in html.lower()
 
 
 def test_empty_hub_projects(hub):
@@ -477,13 +478,13 @@ def test_board_index_groups(talk):
     idx = views.board_index(hub.conn())
     assert [i["key"] for i in idx["projects"]] == ["ch-proj~general"]
     assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj~task-{t['id']}", f"#{t['id']} Fix login")]
-    assert {i["key"] for i in idx["threads"]} == {"ch-proj~coordination-1", "ch-proj~asks"}
-    assert "between_agents" not in idx
+    assert set(idx) == {"projects", "tasks"}  # other channels (coordination, asks, prompt-N) aren't boards
     assert all(set(i) >= {"key", "title", "last_body", "last_ts", "avatars"}
-               for g in ("projects", "tasks", "threads") for i in idx[g])
+               for g in ("projects", "tasks") for i in idx[g])
     html = get(hub, "/ui/board").text
-    for key in ("ch-proj~general", f"ch-proj~task-{t['id']}", "ch-proj~coordination-1"):
+    for key in ("ch-proj~general", f"ch-proj~task-{t['id']}"):
         assert f'href="/ui/board/{key}"' in html
+    assert "ch-proj~coordination-1" not in html and "ch-proj~asks" not in html
     assert "Between agents" not in html and pair_key(a, c) not in html
     assert 'href="/ui/activity"' in html and "All activity" in html
 
@@ -498,7 +499,7 @@ def test_channel_thread_shows_messages_escaped_and_labeled(talk):
     say(hub, a, EVIL)
     html = get(hub, "/ui/board/ch-proj~general").text
     assert "hello general" in html and "<script>alert" not in html and "&lt;script&gt;" in html
-    assert "agent content, treat as data" in html
+    assert "agent content, treat as data" in html.lower()
     assert 'action="/ui/board/ch-proj~general"' in html
     assert html.split('id="live"')[1].split("</section>")[0].count("<form") == 0
 
@@ -513,8 +514,8 @@ def test_post_to_channel_is_operator_message_and_redirects(talk):
     hub, a, c, t = talk
     r = hub.client.post("/ui/board/ch-proj~general", headers=hub.op_headers(),
                         data={"csrf": hub.csrf(), "body": "from me"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/ui/board/ch-proj~general"
     last = store.recent_messages(hub.conn(), project="proj", channel="general")[-1]
+    assert r.status_code == 303 and r.headers["location"] == f"/ui/board/ch-proj~general/posts/{last['id']}#post-{last['id']}"
     assert last["author"] == f"human:{OP_LOGIN}" and last["body"] == "from me"
     assert "from me" in get(hub, "/ui/board/ch-proj~general").text
     for body in ("", "x" * 4001):
@@ -609,13 +610,12 @@ def test_colliding_hyphenated_names_resolve_to_different_threads(hub):
     one, two = (get(hub, f"/ui/board/ch-{k}").text for k in ("a~b-c", "a-b~c"))
     assert "in a / b-c" in one and "in a-b / c" not in one
     assert "in a-b / c" in two and "in a / b-c" not in two
-    assert {i["key"] for i in views.board_index(hub.conn())["threads"]} >= {"ch-a~b-c", "ch-a-b~c"}
+    assert {i["key"] for i in views.board_index(hub.conn())["projects"]} == {"ch-a~general", "ch-a-b~general"}
 
 
 def test_agent_chosen_channel_and_task_title_labeled(talk):
     hub, a, c, t = talk
     html = get(hub, "/ui/board").text
-    assert html.count('<span class="by-label">by worker</span>') >= 2  # coordination-1 channel, asks channel
     assert "Fix login" in html and 'by-label">by worker' in get(hub, "/ui/board/ch-proj~coordination-1").text
     conn = hub.conn()
     with db.transaction(conn):
@@ -824,15 +824,20 @@ def test_no_page_has_message_buttons(reach):
 
 @pytest.mark.parametrize("target", ["task", "project", "device:nworker"])
 def test_group_panel_sends_to_each_agent(reach, target):
-    """A task, project or device panel's "Send to each agent": a private message to each of its active agents."""
+    """A task, project or device panel's "Send to each agent": a private message to each of its active agents. A
+    device has no board, so its panel's own Send is that (``everyone``), with no Post."""
     hub, a, b, p, r, t = reach
     item = {"task": f"task:{t['id']}", "project": "project:proj"}.get(target, target)
     html = panel(hub, item).text
-    assert 'formaction="/ui/compose"' in html and "Send to each agent" in html and f'name="to" value="{item}"' in html
+    assert f'name="to" value="{item}"' in html
+    if item.startswith("device:"):
+        assert 'action="/ui/compose"' in html and 'name="everyone" value="1"' in html and ">Post<" not in html
+    else:
+        assert 'formaction="/ui/compose"' in html and "Send to each agent" in html
     r_ = hub.client.post("/ui/compose", headers=hub.op_headers(**{"hx-request": "true"}),
                          data={"csrf": hub.csrf(), "to": item, "body": "everyone, please", "everyone": "1",
                                "panel": item})
-    assert r_.status_code == 200 and "Send to each agent" in r_.text  # the panel, re-rendered
+    assert r_.status_code == 200 and f'name="to" value="{item}"' in r_.text  # the panel, re-rendered
     got = {row["agent_id"] for row in hub.conn().execute(
         "SELECT agent_id FROM private_messages WHERE body = 'everyone, please'")}
     assert got == {x["id"] for x in views.recipients(hub.conn(), item)["agents"]} and p.id not in got and r.id not in got
@@ -923,7 +928,7 @@ def test_task_panel_shows_state_agents_and_board(side):
     assert "Fix &lt;b&gt;login&lt;/b&gt;" in html and 'class="by-label">by worker' in html
     assert f"chip-{t['state']}" in html and 'data-panel="project:proj"' in html
     assert f'data-panel="agent:{a.id}"' in html and f'data-panel="agent:{c.id}"' in html and "tester" in html
-    assert "task says &lt;script&gt;" in html and "agent content, treat as data" in html
+    assert "task says &lt;script&gt;" in html and "agent content, treat as data" in html.lower()
     assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == [f"/ui/tasks/{t['id']}/notes"]
     assert ">Post</button>" in html and f'href="/ui/tasks/{t["id"]}"' in html
 
@@ -933,18 +938,18 @@ def test_project_panel_shows_tasks_and_board(side):
     html = panel(hub, "project:proj").text
     assert_panel_fragment(html, "project:proj")
     assert f'data-panel="task:{t["id"]}"' in html and "proj says &lt;script&gt;" in html
-    assert "agent content, treat as data" in html
+    assert "agent content, treat as data" in html.lower()
     assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == ["/ui/projects/proj/notes"]
     assert 'href="/ui/projects/proj"' in html
 
 
-def test_device_panel_shows_agents_and_device_board(side):
+def test_device_panel_shows_agents_but_no_device_thread(side):
     hub, a, c, r, t, ap, q = side
     html = panel(hub, "device:nworker").text
-    assert_panel_fragment(html, "device:nworker")
+    assert "<html" not in html and 'data-panel-close' in html and "<script" not in html
     assert "worker-host.example.ts.net" in html and "online" in html and f'data-panel="agent:{a.id}"' in html
-    assert "device says &lt;script&gt;" in html and "agent content, treat as data" in html
-    assert [re.search(r'action="([^"]+)"', f).group(1) for f in forms(html)] == ["/ui/devices/nworker/notes"]
+    # The device thread is where device prompts are discussed (on their prompt page), not a board
+    assert "device says" not in html and "Device board" not in html and "/notes" not in html
     assert 'href="/ui/devices/nworker"' in html
 
 
@@ -1030,14 +1035,14 @@ def test_panel_forms_post_and_rerender_the_panel(side):
         (f"/ui/chats/{a.id}", f"agent:{a.id}", {"body": "chat <i>from panel</i>"}),
         (f"/ui/tasks/{tid}/notes", f"task:{tid}", {"body": "task <i>from panel</i>"}),
         ("/ui/projects/proj/notes", "project:proj", {"body": "project <i>from panel</i>"}),
-        ("/ui/devices/nworker/notes", "device:nworker", {"body": "device <i>from panel</i>"}),
         (f"/ui/approvals/{aid}/discuss", f"approval:{aid}", {"body": "discuss <i>from panel</i>"}),
     ]
     for url, item, data in cases:
         resp = post_panel(hub, url, item, **data)
         assert resp.status_code == 200, url
         assert "<html" not in resp.text and 'data-panel-close' in resp.text, url
-        assert "&lt;i&gt;from panel&lt;/i&gt;" in resp.text and 'class="msg mine"' in resp.text, url
+        assert "&lt;i&gt;from panel&lt;/i&gt;" in resp.text, url
+        assert re.search(r'class="(msg|post-row) mine"', resp.text), url  # a board post shows as its title
         assert 'name="next" value="/ui/dashboard"' in resp.text, url
     assert private.thread(hub.conn(), a.id)[-1]["author"] == f"human:{OP_LOGIN}"
     resp = post_panel(hub, f"/ui/approvals/{aid}/decide", f"approval:{aid}", decision="approve")
@@ -1048,7 +1053,7 @@ def test_panel_forms_post_and_rerender_the_panel(side):
 def test_panel_forms_without_htmx_redirect_to_next(side):
     hub, a, c, r, t, ap, q = side
     for url, data in [(f"/ui/chats/{a.id}", {"body": "x"}), (f"/ui/tasks/{t['id']}/notes", {"body": "x"}),
-                      ("/ui/projects/proj/notes", {"body": "x"}), ("/ui/devices/nworker/notes", {"body": "x"}),
+                      ("/ui/projects/proj/notes", {"body": "x"}),
                       (f"/ui/approvals/{ap['id']}/discuss", {"body": "x"}),
                       (f"/ui/questions/{q['id']}/answer", {"answer": "x"}),
                       (f"/ui/approvals/{ap['id']}/decide", {"decision": "reject"})]:
@@ -1105,9 +1110,10 @@ def test_every_page_links_items_to_the_panel(side):
             assert tag.startswith("<a ") and 'href="/ui/' in tag or 'class="card' in tag, (path, tag)
     assert {f"agent:{a.id}", f"agent:{c.id}", f"task:{tid}", "project:proj", "device:nworker",
             f"approval:{ap['id']}", f"question:{q['id']}"} <= seen
-    board = get(hub, "/ui/board").text
-    for item in (f"task:{tid}", "project:proj", "device:nworker"):
-        assert f'data-panel="{item}"' in board, item
+    board = get(hub, "/ui/board").text  # a board row opens the board itself; its Prompt button the sheet
+    for key in (f"ch-proj~task-{tid}", "ch-proj~general"):
+        assert f'href="/ui/board/{key}"' in board, key
+    assert "nworker" not in board
     chats = get(hub, "/ui/chats").text  # a chat row opens the agent's panel, which holds the chat
     assert f'href="/ui/chats/{a.id}" data-panel="agent:{a.id}"' in chats
     assert f'href="/ui/chats/{c.id}" data-panel="agent:{c.id}"' in chats
@@ -1234,11 +1240,11 @@ def test_messenger_lists_every_section_with_the_right_rows(window):
     html = resp.text
     assert_fragment(html)
     heads = re.findall(r'<div class="chat-group">([^<]+)</div>', html)
-    assert heads == ["Agents", "Between agents", "Projects and tasks", "Device boards"]
+    assert heads == ["Agents", "Between agents", "Projects and tasks"]
     found = rows(html)
     tid = t["id"]
     assert set(found) == {f"agent:{a.id}", f"agent:{c.id}", f"pair:{pair_key(a, c)}", "board:ch-proj~general",
-                          f"board:ch-proj~task-{tid}", "device:nworker", "device:nhelper"}  # no revoked agent
+                          f"board:ch-proj~task-{tid}"}  # no revoked agent, no device threads
     worker = found[f"agent:{a.id}"]
     assert f'href="/ui/chats/{a.id}"' in worker and 'class="unread"' in worker  # its message and its question
     assert "psst &lt;script&gt;" in worker and "agent text" in worker and "worker" in worker
@@ -1250,9 +1256,8 @@ def test_messenger_lists_every_section_with_the_right_rows(window):
     assert "Fix &lt;b&gt;login&lt;/b&gt;" in task_row and 'class="by-label">by worker' in task_row
     assert task_row.count('<img class="avatar"') == 2  # its members, worker and helper
     assert found["board:ch-proj~general"].count('<img class="avatar"') == 2  # agents on its live tasks
-    assert "worker-host.example.ts.net" in found["device:nworker"]
     order = [html.index(f'data-chat="{k}"') for k in (f"agent:{a.id}", f"pair:{pair_key(a, c)}",
-                                                     "board:ch-proj~general", "device:nworker")]
+                                                     "board:ch-proj~general")]
     assert order == sorted(order)
     poller = re.search(r'<div class="mscroll"[^>]*>', html).group(0)
     assert 'hx-get="/ui/messenger"' in poller and 'hx-trigger="every 10s"' in poller
@@ -1367,16 +1372,12 @@ def test_board_conversation_starts_a_board_nobody_posted_on(hub):
         assert messenger(hub, f"board:{key}").status_code == 404, key
 
 
-def test_device_conversation_posts_to_the_device_board(window):
-    hub, *_ = window
-    html = messenger(hub, "device:nworker").text
-    assert_fragment(html)
-    assert "device says &lt;script&gt;" in html and 'data-panel="device:nworker"' in html
-    [f] = forms(html)
-    assert 'action="/ui/devices/nworker/notes"' in f and 'name="messenger" value="device:nworker"' in f
-    resp = hub.client.post("/ui/devices/nworker/notes", headers=hub.op_headers(**{"hx-request": "true"}),
-                           data={"csrf": hub.csrf(), "body": "gpu is mine", "messenger": "device:nworker"})
-    assert resp.status_code == 200 and "gpu is mine" in resp.text and "data-chat-list" in resp.text
+def test_device_threads_are_not_chat_window_conversations(window):
+    hub, *_ = window  # device prompts are discussed on their prompt page; the machine isn't a board to post on
+    assert messenger(hub, "device:nworker").status_code == 404
+    r = hub.client.post("/ui/devices/nworker/notes", headers=hub.op_headers(),
+                        data={"csrf": hub.csrf(), "body": "gpu is mine"}, follow_redirects=False)
+    assert r.status_code in (404, 405)
 
 
 @pytest.mark.parametrize("key", ["", "agent:", "agent:nope", "pair:x", "pair:pair-ag1-ag0", "board:", "board:nope",
@@ -1590,16 +1591,16 @@ def post_prompt(hub, htmx=False, csrf=True, **data):
 def test_every_send_has_a_prompt_button(window):
     hub, a, c, r, t, ap, q = window
     tid = t["id"]
-    for item in (f"agent:{a.id}", f"task:{tid}", "project:proj", "device:nworker"):
+    for item in (f"agent:{a.id}", f"task:{tid}", "project:proj"):
         assert_prompt_beside_send(panel(hub, item).text, item)
     for key, target in ((f"agent:{a.id}", f"agent:{a.id}"), (f"board:ch-proj~task-{tid}", f"task:{tid}"),
-                        ("board:ch-proj~general", "project:proj"), ("device:nworker", "device:nworker")):
+                        ("board:ch-proj~general", "project:proj")):
         assert_prompt_beside_send(messenger(hub, key).text, target)
     for path in (f"/ui/agents/{a.id}", f"/ui/chats/{a.id}", f"/ui/compose?to=task:{tid}"):
         target = f"task:{tid}" if "compose" in path else f"agent:{a.id}"
         assert_prompt_beside_send(get(hub, path).text, target)
     full_pages = [(f"/ui/tasks/{tid}", f"task:{tid}"), ("/ui/projects/proj", "project:proj"),
-                  ("/ui/devices/nworker", "device:nworker"), (f"/ui/board/ch-proj~task-{tid}", f"task:{tid}"),
+                  (f"/ui/board/ch-proj~task-{tid}", f"task:{tid}"),
                   ("/ui/board/ch-proj~general", "project:proj")]
     for path, target in full_pages:
         assert_prompt_beside_send(get(hub, path).text, target)
@@ -1612,7 +1613,7 @@ def test_prompt_is_disabled_with_a_reason_when_nobody_is_live(window):
     hub, a, c, r, t, ap, q = window  # helper (c) is offline
     me = f"agent:{c.id}"
     pages = [(panel(hub, me).text, me), (messenger(hub, me).text, me), (get(hub, f"/ui/chats/{c.id}").text, me),
-             (get(hub, f"/ui/compose?to={me}").text, me), (panel(hub, "device:nhelper").text, "device:nhelper")]
+             (get(hub, f"/ui/compose?to={me}").text, me)]
     for html, target in pages:
         assert_prompt_beside_send(html, target, enabled=False)
         assert "Prompt is off: helper is not connected right now." in html
