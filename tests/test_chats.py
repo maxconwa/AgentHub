@@ -713,3 +713,14 @@ async def test_client_chat_methods_round_trip(dev_hub):
         assert texts[-1] == "done"
     finally:
         await c.aclose()
+
+
+def test_agent_status_can_name_a_message_delivered_to_it(trio):
+    hub, a, b, _ = trio
+    mine = op_send(hub, "agent", a.id)["id"]
+    other = op_send(hub, "agent", b.id)["id"]
+    stream(hub, a, "agent/me", [{"type": "status", "state": "queued", "message_id": mine},
+                                {"type": "status", "state": "queued", "message_id": other}])
+    rows = chats.messages(hub.conn(), "agent", a.id)[-2:]
+    assert [(r["author"], r["meta"]["state"], r["meta"].get("message_id")) for r in rows] == [
+        (a.id, "queued", mine), (a.id, "queued", None)]

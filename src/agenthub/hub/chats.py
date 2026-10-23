@@ -455,6 +455,11 @@ def stream(
             if isinstance(approval_id, int) and not isinstance(approval_id, bool) and conn.execute(
                     "SELECT 1 FROM approvals WHERE id = ? AND requester = ?", (approval_id, agent.id)).fetchone():
                 meta["approval_id"] = approval_id  # only an approval this agent asked for
+            message_id = item.get("message_id")
+            if isinstance(message_id, int) and not isinstance(message_id, bool) and conn.execute(
+                    "SELECT 1 FROM chat_deliveries WHERE message_id = ? AND agent_id = ?",
+                    (message_id, agent.id)).fetchone():
+                meta["message_id"] = message_id  # e.g. queued: which of the operator's messages waits
             if isinstance(item.get("detail"), str) and item["detail"].strip():
                 meta["detail"] = item["detail"][:MAX_DETAIL_CHARS]
             ids.append(_insert(conn, chat_row, author=agent.id, kind="status", meta=meta, device=device))
