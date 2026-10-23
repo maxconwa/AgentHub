@@ -9,10 +9,14 @@ earlier (PreToolUse hooks, deny/ask/allow rules) resolved the call, so it can
 never override agenthub's PreToolUse gate or the never-allow deny rules.
 
 Only runner sessions (``AGENTHUB_TASK_ID`` set by the runner) ask the hub. A runner
-session on an operator's prompt without a task (``AGENTHUB_PROMPT_ID`` only) has
-nothing to ask on, so the call is denied with a pointer to ``message_operator``.
-In interactive sessions the hook stays silent and Claude Code prompts the person
-at the terminal as usual.
+session without a task (an operator's prompt, ``AGENTHUB_PROMPT_ID``, or the agent's
+chat session, ``AGENTHUB_CHAT``) has nothing to ask on, so the call is denied with a
+pointer to ``message_operator``. In interactive sessions the hook stays silent and
+Claude Code prompts the person at the terminal as usual.
+
+While it waits for the operator, the session's chat (``AGENTHUB_CHAT``, e.g. ``task/12``)
+shows an ``approval_wait`` status line with the approval's id, and a ``working`` line
+once the wait is over (best effort: a hub without chat just doesn't show them).
 """
 
 from __future__ import annotations
@@ -56,6 +60,19 @@ def _default_client() -> HubClient:
     return HubClient.from_config(AgentConfig.load(), timeout=15)
 
 
+async def _status(client: HubClient, state: str, **fields: Any) -> None:
+    """A status line in this session's chat, if the runner named one; never fails the hook."""
+    kind, _, ref = os.environ.get("AGENTHUB_CHAT", "").partition("/")
+    if not kind or not ref:
+        return
+    task_id = os.environ.get("AGENTHUB_TASK_ID")
+    try:
+        await client.chat_stream(kind, ref, [{"type": "status", "state": state, **fields}],
+                                 task_id=int(task_id) if task_id and task_id.isdigit() else None)
+    except Exception:  # noqa: BLE001 - only the status line is lost
+        pass
+
+
 def _thread_summary(approval: dict[str, Any]) -> str:
     notes = [m["body"] for m in approval.get("discussion", []) if m["author"].startswith("human:")]
     if approval.get("decision_note"):
@@ -74,9 +91,14 @@ async def _ask_operator(
             task_id, tool_name, tool_input, reason=f"headless task #{task_id} needs {tool_name}"
         )
         deadline = time.monotonic() + wait_seconds
+        waited = approval["status"] == "pending"
+        if waited:
+            await _status(client, "approval_wait", approval_id=approval["id"])
         while approval["status"] == "pending" and time.monotonic() < deadline:
             await asyncio.sleep(poll)
             approval = await client.get_approval(approval["id"])
+        if waited:
+            await _status(client, "working", approval_id=approval["id"])
         if approval["status"] == "approved":
             consumed = await client.consume_tool_permission(task_id, tool_name, tool_input)
             if consumed["allowed"]:
@@ -101,7 +123,7 @@ def handle(
 ) -> dict[str, Any] | None:
     task_id = os.environ.get("AGENTHUB_TASK_ID")
     if not task_id:
-        if os.environ.get("AGENTHUB_PROMPT_ID"):  # a headless prompt session: nobody at the terminal to ask
+        if os.environ.get("AGENTHUB_PROMPT_ID") or os.environ.get("AGENTHUB_CHAT"):  # headless, no task: nobody to ask
             return _decision("deny", NO_TASK_GRANTS)
         return None  # interactive session: let Claude Code prompt as usual
     tool_name = payload.get("tool_name")

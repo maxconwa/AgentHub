@@ -9,6 +9,7 @@ limit_then_success: the first call (no --resume) ends with the subscription usag
 limit_twice_then_success: likewise, but the first resumed call hits the limit again too (two calls logged before it).
 A --resume'd call keeps that session id, unless --fork-session asks for a new one.
 hold: waits until the file $FAKE_RELEASE exists (at most 30 s), then succeeds.
+late_echo: like hold, but messages that arrived meanwhile are taken in only after the first result (each a turn).
 prompt_share: in a prompt session ($AGENTHUB_PROMPT_ID set) it reads the prompt, posts in its channel thread and
 claims a share titled "Share for $FAKE_NAME" through the hub (as the real session would through the MCP tools),
 then succeeds; any other session just succeeds.
@@ -16,12 +17,21 @@ prompt_reply: in a prompt session it answers the operator privately through the 
 then succeeds; any other session just succeeds.
 Each invocation appends {"argv", "stdin", "cwd", "session", "env", "env_names"} as a JSON line to
 FAKE_CLAUDE_LOG: ``env`` holds the AGENTHUB_* variables, ``env_names`` the names (never the values) of every
-variable it got.
+variable it got, ``stdin`` the first message's text.
+
+Input is stream-json (``--input-format stream-json``, as the runner sends it): one user message per line, stdin
+kept open. Each message is echoed back (``isReplay``) when it's taken in, as ``--replay-user-messages`` does.
+Messages that arrive before the first turn's result (e.g. while ``hold`` waits) are taken in mid-turn, after the
+tool call; later ones start a turn each, which answers "Got: <first line>" and ends with its own result. Every
+message after the first is appended to $FAKE_CLAUDE_TURNS (if set) as {"session", "text", "mid_turn"}. The process
+exits when stdin closes.
 """
 
 import json
 import os
+import queue
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -41,9 +51,64 @@ def hub(method, path, payload=None):
     return json.loads(urllib.request.urlopen(req, timeout=10).read() or b"null")
 
 
+_inbox: "queue.Queue[str | None]" = queue.Queue()
+
+
+def _read_stdin():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        content = msg["message"]["content"]
+        _inbox.put(content if isinstance(content, str) else "".join(b.get("text", "") for b in content))
+    _inbox.put(None)
+
+
+def _take_in(session, text, mid_turn):
+    emit({"type": "user", "isReplay": True, "session_id": session, "message": {"role": "user", "content": text}})
+    turns_log = os.environ.get("FAKE_CLAUDE_TURNS")
+    if turns_log:
+        with open(turns_log, "a") as fh:
+            fh.write(json.dumps({"session": session, "text": text, "mid_turn": mid_turn}) + "\n")
+
+
+def _take_in_first(session, text):
+    emit({"type": "user", "isReplay": True, "session_id": session, "message": {"role": "user", "content": text}})
+
+
+def _mid_turn(session):
+    """Messages that arrived during the first turn are taken in after its tool call."""
+    while True:
+        try:
+            text = _inbox.get_nowait()
+        except queue.Empty:
+            return
+        if text is None:
+            _inbox.put(None)
+            return
+        _take_in(session, text, True)
+        emit({"type": "assistant", "session_id": session, "message": {"content": [
+            {"type": "text", "text": "Noted mid-turn: " + text.strip().splitlines()[-1][:200]}]}})
+
+
+def _later_turns(session):
+    """Each further message is a turn of its own; the process ends when stdin closes."""
+    while True:
+        text = _inbox.get()
+        if text is None:
+            return
+        _take_in(session, text, False)
+        emit({"type": "assistant", "session_id": session, "message": {"content": [
+            {"type": "text", "text": "Got: " + text.strip().splitlines()[-1][:200]}]}})
+        emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 1,
+              "total_cost_usd": 0.03, "result": "answered"})
+
+
 def main():
     argv = sys.argv[1:]
-    prompt = sys.stdin.read()
+    threading.Thread(target=_read_stdin, daemon=True).start()
+    prompt = _inbox.get() or ""
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
     max_turns = int(argv[argv.index("--max-turns") + 1]) if "--max-turns" in argv else 10  # task sessions have none
     session = str(uuid.uuid4()) if resume is None or "--fork-session" in argv else resume
@@ -56,6 +121,7 @@ def main():
     mode = os.environ.get("FAKE_CLAUDE_MODE", "success")
 
     emit({"type": "system", "subtype": "init", "session_id": session, "tools": ["Bash"], "model": "claude-test-model"})
+    _take_in_first(session, prompt)
     emit({"type": "assistant", "session_id": session, "message": {"content": [
         {"type": "text", "text": "Looking at the code now."}]}})
     emit({"type": "assistant", "session_id": session, "message": {"content": [
@@ -63,10 +129,12 @@ def main():
 
     if mode == "sleep":
         time.sleep(60)
-    if mode == "hold":
+    if mode in ("hold", "late_echo"):
         deadline = time.monotonic() + 30
         while not os.path.exists(os.environ["FAKE_RELEASE"]) and time.monotonic() < deadline:
             time.sleep(0.05)
+    if mode != "late_echo":  # late_echo: messages from the first turn wait for its result (a text-only reply)
+        _mid_turn(session)
     if mode == "fail":
         emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": session,
               "num_turns": 1, "errors": ["boom"]})
@@ -96,6 +164,7 @@ def main():
         hub("POST", "/private", {"body": f"Reply to prompt {os.environ['AGENTHUB_PROMPT_ID']}: the build is slow."})
     emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 2,
           "total_cost_usd": 0.02, "result": "Implemented the change and ran the tests."})
+    _later_turns(session)
 
 
 if __name__ == "__main__":

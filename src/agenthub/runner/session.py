@@ -10,6 +10,16 @@ cli-reference (fetched 2026-10-21, Claude Code 2.1.306):
     ``result`` text on success.
   * ``--resume <session_id>`` continues a saved transcript; ``--max-turns`` is
     per invocation. SIGTERM exits 143 and keeps the transcript resumable.
+
+Input is stream-json with stdin kept open (``--input-format stream-json --replay-user-messages``), so the runner can
+hand a running session more user messages (:meth:`Session.deliver`). Measured on Claude Code 2.1.309 (2026-10-22):
+  * a message written mid-turn is taken in at the next tool boundary, inside the same turn: it is echoed back as a
+    ``user`` line with ``isReplay`` right after the running tool's result, and the model acts on it;
+  * a message written while the model writes a text-only reply waits for that turn's ``result`` and then starts a
+    new turn on the same process (a second ``result``); nothing is lost;
+  * with stdin open the process waits after a ``result`` and exits cleanly once stdin closes; ``num_turns`` is per
+    ``result``, ``total_cost_usd`` adds up over the process.
+So a session ends (stdin is closed) at the first ``result`` by which every message written to it has been echoed.
 The prompt is written to stdin so no flag can swallow it.
 
 Subscription only: every session's environment drops ``BILLING_ENV_VARS`` (see there), and a result
@@ -26,6 +36,7 @@ import logging
 import os
 import re
 import signal
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -152,6 +163,7 @@ class SessionResult:
     summary: str = ""
     errors: list[str] = field(default_factory=list)
     resets_at: datetime | None = None  # usage_limit only: when the limit resets (aware), if the message said
+    pause_until: datetime | None = None  # usage_limit only: when the runner goes on (set by the runner)
 
 
 def build_command(
@@ -167,7 +179,8 @@ def build_command(
     """``max_turns`` None: no turn limit (task sessions run until they're done). ``fork_session`` (with
     ``resume_session``): continue from a copy of that transcript under a new session id (``--fork-session``),
     leaving the original to its owner."""
-    cmd = [claude_bin, "-p", "--output-format", "stream-json", "--verbose",
+    cmd = [claude_bin, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+           "--replay-user-messages",
            *(["--max-turns", str(max_turns)] if max_turns is not None else []),
            "--permission-mode", permission_mode, "--append-system-prompt", system_prompt]
     if resume_session:
@@ -182,6 +195,29 @@ def _tool_summary(name: str, tool_input: Any) -> str:
         if isinstance(tool_input.get(key), str):
             return f"{name}: {tool_input[key][:200]}"
     return name
+
+
+TOOL_LINE = 300
+_FILE_TOOLS = ("Read", "Edit", "MultiEdit", "Write", "NotebookEdit")
+
+
+def tool_line(name: str, tool_input: Any) -> str:
+    """A compact chat line for one tool call: "Bash: pytest -q", "Edit: views.py", "agenthub: chat_post"."""
+    if name.startswith("mcp__"):
+        server, _, tool = name[len("mcp__"):].partition("__")
+        return f"{server}: {tool}"[:TOOL_LINE] if tool else name[:TOOL_LINE]
+    if not isinstance(tool_input, dict):
+        return name[:TOOL_LINE]
+    if name in _FILE_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if isinstance(path, str) and path:
+            return f"{name}: {path.rstrip('/').rsplit('/', 1)[-1]}"[:TOOL_LINE]
+    for key in ("command", "pattern", "query", "url", "description", "path", "file_path", "skill"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            first = value.strip().splitlines()[0]
+            return f"{name}: {first}"[:TOOL_LINE]
+    return name[:TOOL_LINE]
 
 
 def parse_line(line: str) -> list[tuple[str, Any]]:
@@ -207,12 +243,16 @@ def parse_line(line: str) -> list[tuple[str, Any]]:
         for block in (msg.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text" and block.get("text", "").strip():
-                out.append(("progress", {"kind": "text", "text": block["text"].strip()[:TEXT_SNIPPET]}))
+            if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].strip():
+                # ``text`` is the whole block (a chat shows it); task.progress keeps a TEXT_SNIPPET of it.
+                out.append(("progress", {"kind": "text", "text": block["text"].strip()}))
             elif block.get("type") == "tool_use":
-                out.append(("progress", {"kind": "tool", "text": _tool_summary(block.get("name", "?"),
-                                                                                block.get("input"))}))
+                name, tool_input = str(block.get("name") or "?"), block.get("input")
+                out.append(("progress", {"kind": "tool", "text": _tool_summary(name, tool_input),
+                                         "line": tool_line(name, tool_input)}))
         return out
+    if mtype == "user" and msg.get("isReplay"):  # a message we wrote, now taken into the conversation
+        return [("replay", None)]
     if mtype == "result":
         return [("result", msg)]
     return []
@@ -255,8 +295,18 @@ def result_from(msg: dict[str, Any] | None, *, returncode: int | None, timed_out
     )
 
 
+def user_line(text: str) -> bytes:
+    """One stream-json input message."""
+    return (json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n").encode()
+
+
 class Session:
-    """Runs claude, streams progress to ``on_progress``, enforces a wall-clock limit."""
+    """Runs claude, streams progress to ``on_progress``, enforces an optional wall-clock limit, and takes more
+    messages while it runs (:meth:`deliver`).
+
+    ``on_replay(tag)`` is called when a message written to the session is taken into the conversation: ``tag`` is
+    what :meth:`deliver` was given (None for the first prompt). ``on_turn_end(result_line)`` is called at each
+    ``result``."""
 
     def __init__(
         self,
@@ -268,16 +318,56 @@ class Session:
         timeout_seconds: float | None,
         on_progress: Callable[[dict[str, str]], Awaitable[None]],
         on_session: Callable[[str], Awaitable[None]],
+        on_replay: Callable[[Any], Awaitable[None]] | None = None,
+        on_turn_end: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         kill_grace_seconds: float = 10,
     ) -> None:
         self.cmd, self.prompt, self.cwd, self.env = cmd, prompt, cwd, env
         self.timeout_seconds = timeout_seconds
         self.on_progress, self.on_session = on_progress, on_session
+        self.on_replay, self.on_turn_end = on_replay, on_turn_end
         self.kill_grace_seconds = kill_grace_seconds
         self._proc: asyncio.subprocess.Process | None = None
         self._stopped = False
+        self._accepting = False  # whether deliver() may still write to stdin
+        self._unechoed: deque[Any] = deque()  # tags of the messages written and not yet taken in, oldest first
+        self._echoes = 0  # messages echoed back so far (0 after a result: this CLI doesn't echo)
+        self.turns = 0  # summed over this process's results
         self.model: str | None = None  # from the session's init line, once it has started
         self.effort: str | None = None  # likewise, if the init line reports one
+
+    @property
+    def accepting(self) -> bool:
+        """Whether :meth:`deliver` would take a message now."""
+        proc = self._proc
+        return (self._accepting and proc is not None and proc.returncode is None and proc.stdin is not None
+                and not proc.stdin.is_closing())
+
+    def _write(self, text: str, tag: Any) -> None:
+        assert self._proc and self._proc.stdin
+        self._proc.stdin.write(user_line(text))
+        self._unechoed.append(tag)
+
+    async def deliver(self, text: str, tag: Any = None) -> bool:
+        """Hand the running session another user message: it is taken in at the next tool boundary, or starts the
+        next turn. False when the session is no longer taking messages (it is ending): deliver it elsewhere."""
+        if not self.accepting:
+            return False
+        self._write(text, tag)
+        assert self._proc and self._proc.stdin
+        try:
+            await self._proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            if self._unechoed and self._unechoed[-1] is tag:
+                self._unechoed.pop()
+            return False
+        return True
+
+    def _close_input(self) -> None:
+        self._accepting = False
+        proc = self._proc
+        if proc is not None and proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
 
     async def run(self) -> SessionResult:
         env = session_env(self.env)
@@ -288,9 +378,10 @@ class Session:
             start_new_session=True, limit=16 * 1024 * 1024,
         )
         assert self._proc.stdin and self._proc.stdout
-        self._proc.stdin.write(self.prompt.encode())
-        await self._proc.stdin.drain()
-        self._proc.stdin.close()
+        self._write(self.prompt, None)
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            await self._proc.stdin.drain()
+        self._accepting = not self._stopped
 
         result_msg: dict[str, Any] | None = None
         session_id: str | None = None
@@ -310,8 +401,23 @@ class Session:
                         self.effort = value
                     elif kind == "progress":
                         await self.on_progress(value)
+                    elif kind == "replay":
+                        self._echoes += 1
+                        tag = self._unechoed.popleft() if self._unechoed else None
+                        if self.on_replay is not None:
+                            await self.on_replay(tag)
                     elif kind == "result":
                         result_msg = value
+                        self.turns += value.get("num_turns") or 0
+                        if value.get("is_error") or value.get("subtype") != "success":
+                            self._accepting = False  # a failed turn (or the usage limit): take nothing more
+                        if self.on_turn_end is not None:
+                            await self.on_turn_end(value)
+                        if not self._unechoed or self._echoes == 0:
+                            if self._echoes == 0 and len(self._unechoed) > 1:
+                                log.warning("this claude does not echo input; %d delivered message(s) may be lost",
+                                            len(self._unechoed) - 1)
+                            self._close_input()  # every message taken in: the session ends with this turn
 
         try:
             if self.timeout_seconds is None:  # no time limit: run until the session ends
@@ -321,12 +427,18 @@ class Session:
         except TimeoutError:
             timed_out = True
             await self.terminate()
+        finally:
+            self._accepting = False
         returncode = await self._proc.wait()
-        return result_from(result_msg, returncode=returncode, timed_out=timed_out, stopped=self._stopped,
-                           session_id=session_id)
+        result = result_from(result_msg, returncode=returncode, timed_out=timed_out, stopped=self._stopped,
+                             session_id=session_id)
+        if self.turns:
+            result.num_turns = self.turns
+        return result
 
     async def terminate(self) -> None:
         """SIGTERM the session's process group (keeps the transcript resumable), then SIGKILL."""
+        self._accepting = False
         proc = self._proc
         if proc is None or proc.returncode is not None:
             return

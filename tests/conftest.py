@@ -25,6 +25,10 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL", raising=False)
+    # Nor the runner session the suite may itself run in (an agent's task or chat session sets these).
+    for name in ("AGENTHUB_TASK_ID", "AGENTHUB_RUN_ID", "AGENTHUB_PROJECT", "AGENTHUB_PROMPT_ID", "AGENTHUB_CHAT",
+                 "AGENTHUB_PERMISSION_WAIT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 

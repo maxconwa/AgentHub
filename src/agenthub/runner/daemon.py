@@ -26,8 +26,11 @@
   nor blocks. A pause left by a previous runner process is waited out too.
 * Streams progress (assistant text snippets and tool calls) to the hub as
   ``task.progress`` events.
-* Runs the operator's prompts (``runner/prompts.py``): a pending prompt runs alone once every running session
-  has ended (drain, then run), before any new task session; a running session is never interrupted.
+* Delivers the operator's chat messages (``runner/chat.py``, since 0.3.8): into a running session mid-turn when
+  one takes it, else into the task's next session, else it wakes the agent's chat session. Every session's output
+  (text blocks, compact tool lines, status lines) streams to its chat: a task session's to the task chat.
+* Runner and hub are upgraded together: 0.3.8 retired the operator's prompts (chat replaced them), so this runner
+  no longer runs any; against an older hub it runs tasks without chat and logs that the hub needs upgrading.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ import contextlib
 import json
 import logging
 import random
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -49,16 +52,16 @@ from websockets.asyncio.client import connect as ws_connect
 from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import AgentConfig
+from agenthub.runner.chat import ChatRunner, SessionOutput, chat_guide, delivery_text
 from agenthub.runner.config import RunnerConfig, configured_effort, configured_model
-from agenthub.runner.prompts import PromptRunner, Slots
-from agenthub.runner.session import Session, SessionResult, build_command
+from agenthub.runner.session import TEXT_SNIPPET, Session, SessionResult, build_command
 
 log = logging.getLogger("agenthub.runner")
 
 CLOSE_REVOKED = 4401
 TASK_EVENTS = {"task.created", "task.transitioned", "task.assigned", "task.budget_extended",
                "task.agent_added", "task.agent_updated"}
-PROMPT_EVENTS = {"prompt.created", "prompt.updated"}
+CHAT_EVENTS = {"chat.deliver"}
 LAUNCHABLE = {"works": ("open", "claimed", "in_progress"), "reviews": ("review",)}
 RUN_STATE = {"works": "in_progress", "reviews": "review"}
 # A reviewer run that ended like this is this review round's run; the reviewer is not relaunched for it.
@@ -81,6 +84,19 @@ def limit_until(resets_at: datetime | None) -> datetime:
     return datetime.now(UTC) + timedelta(seconds=LIMIT_FALLBACK_SECONDS)
 
 
+class Slots:
+    """The runner's task session slots (``concurrency``). Chat sessions don't take one."""
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+        self._sem = asyncio.Semaphore(n)
+
+    @contextlib.asynccontextmanager
+    async def task(self) -> AsyncIterator[None]:
+        async with self._sem:
+            yield
+
+
 class Revoked(Exception):
     """The hub revoked this agent; stop everything."""
 
@@ -94,7 +110,8 @@ def ws_url(hub_url: str) -> str:
 
 
 
-def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any]) -> str:
+def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any], *, chat: bool = True) -> str:
+    """``chat``: the hub has chat (0.3.8); a 0.3.7 hub's sessions get the channel tools instead."""
     tid = task["id"]
     if me["stage"] == "reviews":
         stage = (
@@ -115,8 +132,10 @@ def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any]) -> 
         # Roles are written by the operator only (never by an agent), so they are not wrapped as untrusted.
         f"Your role on this task (written by the operator): {me['role'] or '(none given)'}\n"
         + stage
-        + "Coordinate through the agenthub MCP tools: read_inbox/post for messages, ask_agent for direct "
-        "questions, board_get/board_put for shared notes, announce intents before large edits if available.\n"
+        + (chat_guide(f"the chat of task #{tid}") if chat else "")
+        + f"Coordinate through the agenthub MCP tools: read_inbox/{'chat_post' if chat else 'post'} for messages, "
+        "ask_agent for direct questions, board_get/board_put for shared notes, announce intents before large edits "
+        "if available.\n"
         "Risky shell commands and tools outside your permissions need operator approval: follow the "
         "instructions the hooks give you.\n" + untrusted.NOTICE + "\n" + untrusted.HUMAN_ONLY
     )
@@ -196,7 +215,12 @@ class Runner:
         self.last_effort: str | None = None  # likewise for the reasoning effort
         # Working directories of the sessions running now, oldest first (dicts keep insertion order).
         self._session_dirs: dict[Session, str] = {}
-        self.prompts = PromptRunner(self)
+        self.chats = ChatRunner(self)
+        # One session at a time on a task's transcript: its task loop's, or one its chat woke.
+        self._task_locks: dict[int, asyncio.Lock] = {}
+
+    def task_lock(self, task_id: int) -> asyncio.Lock:
+        return self._task_locks.setdefault(task_id, asyncio.Lock())
 
     # --- main loop ---------------------------------------------------------------
 
@@ -240,13 +264,14 @@ class Runner:
                 raise Revoked(ws.close_reason or "revoked")
 
     def _heartbeat_frame(self) -> dict[str, Any]:
-        """Tells the hub where this runner's checkouts are, where its newest running session works, and that it
-        runs prompts (``"prompts": 1``; without it the hub doesn't wake this agent with prompts)."""
+        """Tells the hub where this runner's checkouts are, where its newest running session works, and that it takes
+        chat deliveries (``"chat": 1``). ``"prompts": 1`` stays for the hub's "runner too old" check."""
         dirs = list(self._session_dirs.values())
         model = self.last_model or configured_model(self.cfg)
         effort = self.last_effort or configured_effort(self.cfg)
         return {"type": "heartbeat", "checkouts": dict(self.cfg.projects),
-                "current_dir": dirs[-1] if dirs else None, "prompts": 1, **({"model": model} if model else {}),
+                "current_dir": dirs[-1] if dirs else None, "prompts": 1, "chat": 1,
+                **({"model": model} if model else {}),
                 **({"effort": effort} if effort else {})}
 
     async def _heartbeat(self, ws) -> None:
@@ -260,7 +285,7 @@ class Runner:
             self._wake.set()
         elif msg.get("type") == "event":
             event = msg["event"]
-            if event["type"] in TASK_EVENTS or event["type"] in PROMPT_EVENTS:
+            if event["type"] in TASK_EVENTS or event["type"] in CHAT_EVENTS:
                 self._wake.set()
 
     async def _sync_loop(self) -> None:
@@ -276,13 +301,12 @@ class Runner:
     # --- picking up work ---------------------------------------------------------
 
     async def sync(self) -> None:
-        """Start work on this agent's pending prompts, then on tasks we are a member of and not running here (the
-        launch check filters further). Prompts come first so that they hold the next slot before any task loop
-        starts."""
+        """Deliver this agent's chat messages, then start work on tasks we are a member of and not running here (the
+        launch check filters further)."""
         try:
-            await self.prompts.sync()
+            await self.chats.sync()
         except (HubError, httpx.HTTPError) as exc:
-            log.warning("could not fetch prompts: %s", exc)
+            log.warning("could not fetch chat deliveries: %s", exc)
         me = await self.client.me()
         for project in me["allowed_projects"]:
             for state in ("open", "claimed", "in_progress", "review"):
@@ -323,6 +347,8 @@ class Runner:
             log.exception("task %s failed in the runner", task_id)
             with contextlib.suppress(Exception):
                 await self.client.update_task(task_id, state="blocked", note="runner error; see runner logs")
+        finally:
+            self.chats.task_loop_ended(task_id)  # chat messages that waited for its next session
 
     async def _task_loop(self, task_id: int) -> None:
         verified = await self._verified_task(task_id)
@@ -367,7 +393,7 @@ class Runner:
                 await self._after_success(task_id, me["stage"], result)
                 return
             if result.outcome == "usage_limit":
-                await self._pause_for_limit(task_id, result.resets_at)
+                await self._pause_for_limit(task_id, result.resets_at, until=result.pause_until)
                 resume_reason = "limit"
                 continue
             if result.outcome == "stopped":
@@ -435,13 +461,23 @@ class Runner:
             prompt = resume_prompt(source, resume_reason or "continue")
         else:
             prompt = first_prompt(task)
+        cmd_prompt = prompt
         cmd = build_command(self.cfg.claude_bin, max_turns=None,  # no budget: run until done
-                            system_prompt=system_prompt(self.agent.name, task, me),
+                            system_prompt=system_prompt(self.agent.name, task, me,
+                                                        chat=self.chats.supported is not False),
                             resume_session=resume_session, extra_args=self.cfg.extra_args,
                             permission_mode=self.cfg.permission_mode)
-        async with self.slots.task():
+        async with self.slots.task(), self.task_lock(task["id"]):
+            # Chat messages for this task that waited for its next session go in with its first prompt.
+            waiting = self.chats.take_for_task(task["id"])
+            restarted = self.chats.state.handover(waiting) if waiting else None
+            prompt = "\n\n---\n\n".join([cmd_prompt] + ([restarted] if restarted else [])
+                                           + [delivery_text(d, session_task=task["id"]) for d in waiting])
             run = await self.client.start_run(task["id"])
             buffer: list[dict[str, str]] = []
+            output = SessionOutput(self.client, "task", str(task["id"]), task_id=task["id"],
+                                   flush_seconds=self.cfg.chat_flush_seconds)
+            output.status("started")
 
             async def flush() -> None:
                 if buffer:
@@ -450,7 +486,8 @@ class Runner:
                         await self.client.progress(task["id"], items, run_id=run["id"])
 
             async def on_progress(item: dict[str, str]) -> None:
-                buffer.append(item)
+                await output.on_progress(item)
+                buffer.append({"kind": item["kind"], "text": item["text"][:TEXT_SNIPPET]})
                 if len(buffer) >= 10:
                     await flush()
 
@@ -466,9 +503,11 @@ class Runner:
             session = Session(
                 cmd, prompt=prompt, cwd=project_dir, timeout_seconds=None,
                 on_progress=on_progress, on_session=on_session,
+                on_replay=output.on_replay, on_turn_end=output.on_turn_end,
                 env={
                     "AGENTHUB_TASK_ID": str(task["id"]),
                     "AGENTHUB_PROJECT": task["project"],
+                    "AGENTHUB_CHAT": f"task/{task['id']}",
                     "AGENTHUB_RUN_ID": str(run["id"]),
                     "AGENTHUB_CONFIG_DIR": str(paths.config_dir()),
                     "AGENTHUB_PERMISSION_WAIT_SECONDS": str(self.cfg.permission_wait_seconds),
@@ -476,6 +515,7 @@ class Runner:
             )
             self.work[task["id"]].session = session
             self._session_dirs[session] = str(project_dir)
+            self.chats.register(session, task_id=task["id"], project=task["project"])
             flusher = asyncio.create_task(periodic_flush())
             try:
                 result = await session.run()
@@ -485,6 +525,13 @@ class Runner:
                 flusher.cancel()
                 self.work[task["id"]].session = None
                 self._session_dirs.pop(session, None)
+                self.chats.unregister(session)
+            if result.outcome != "stopped":
+                self.chats.state.drop({d.id for d in waiting})  # taken in by this session
+            if result.outcome == "usage_limit":
+                result.pause_until = limit_until(result.resets_at)
+            output.end(result, until=result.pause_until)
+            await output.close()
             await flush()
             if me["stage"] == "reviews":  # however it ended, don't relaunch this reviewer for this round
                 self._review_rounds_done.add((task["id"], task["updated_at"]))
@@ -501,9 +548,10 @@ class Runner:
                 log.warning("could not record the end of run %s of task %s: %s", run["id"], task["id"], exc)
         return result
 
-    async def _pause_for_limit(self, task_id: int, resets_at: datetime | None) -> None:
+    async def _pause_for_limit(self, task_id: int, resets_at: datetime | None, *,
+                               until: datetime | None = None) -> None:
         """The subscription usage limit was hit: pause until it resets, without touching the task's state."""
-        until = limit_until(resets_at)
+        until = until or limit_until(resets_at)
         local = until.astimezone()
         when = f"{local:%H:%M}" if local.date() == datetime.now().astimezone().date() else f"{local:%a %H:%M}"
         # Hub or transport errors here must not block the task (e.g. removed meanwhile: the next check drops it).
@@ -514,7 +562,7 @@ class Runner:
         await self._wait_out_pause(task_id, until)
 
     async def wait_for_limit_reset(self, resets_at: datetime | None, *, what: str) -> None:
-        """Wait out the usage limit for a session that is not a task's (``what``: e.g. a prompt's)."""
+        """Wait out the usage limit for a session that is not a task run (``what``: e.g. the chat session)."""
         until = limit_until(resets_at)
         log.info("%s: usage limit reached; waiting until %s", what, until.astimezone().isoformat(timespec="minutes"))
         await wait_until(until)
@@ -536,7 +584,7 @@ class Runner:
 
     async def shutdown(self) -> None:
         self._stopping = True
-        await self.prompts.shutdown()
+        await self.chats.shutdown()
         for work in list(self.work.values()):
             if work.session:
                 await work.session.stop()
