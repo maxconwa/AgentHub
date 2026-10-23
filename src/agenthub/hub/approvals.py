@@ -21,9 +21,10 @@ from agenthub.hub import chats, events, store, task_agents, tasks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
 
-KINDS = ("command", "task_create", "task_reassign", "budget_exceeded", "agent_enrollment", "tool_permission")
+KINDS = ("command", "task_create", "task_reassign", "budget_exceeded", "agent_enrollment", "tool_permission",
+         "wake_loop")
 # What an agent may file through the generic request endpoint. task_create goes
-# through create_task; agent_enrollment is filed by the hub itself.
+# through create_task; agent_enrollment and wake_loop are filed by the hub itself.
 AGENT_REQUESTABLE = frozenset({"command", "task_reassign", "budget_exceeded", "tool_permission"})
 MAX_DISCUSSION_MESSAGES = 200
 COMMAND_APPROVAL_TTL = timedelta(hours=1)
@@ -337,6 +338,10 @@ def _apply(conn: sqlite3.Connection, approval: dict[str, Any], approve: bool, ac
         if task_agents.member(task, details["agent_id"]) is not None:
             tasks.extend_budget(conn, details["task_id"], details["agent_id"], details["limit"],
                                 details["extend_to"], actor=actor)
+    elif kind == "wake_loop":  # approve: the paused wake chain wakes agents again
+        from agenthub.hub import wakes
+
+        wakes.on_decision(conn, approval, approve, actor)
     # command, tool_permission, rejected budgets: the requester acts on the decision itself.
 
 

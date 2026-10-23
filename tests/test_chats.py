@@ -292,11 +292,18 @@ def test_agents_post_in_their_chats_and_address_one_agent(trio):
     hub, a, b, c = trio
     r = api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "I take the hub", "to": "bob"})
     assert r.status_code == 201 and r.json()["meta"] == {"to": b.id} and r.json()["author"] == a.id
-    assert api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "x", "to": "carol"}).status_code == 422
+    # carol isn't in the project: posted, but not delivered to her, and the chat says so (a wake never widens access)
+    r = api(hub, a, "POST", "/chats/project/proj/messages", json={"body": "x", "to": "carol"})
+    assert r.status_code == 201 and r.json()["wakes"] == []
+    assert r.json()["declined"] == [{"agent_id": c.id, "name": "carol", "reason": "not_in_project"}]
+    line = chats.messages(hub.conn(), "project", "proj")[-1]
+    assert line["author"] == chats.SYSTEM and line["meta"]["state"] == "wake_declined"
+    assert deliveries(hub, c) == []
     assert api(hub, c, "POST", "/chats/project/proj/messages", json={"body": "x"}).status_code == 404
     assert api(hub, a, "POST", f"/chats/agent/{b.id}/messages", json={"body": "x"}).status_code == 404
     hist = api(hub, b, "GET", "/chats/project/proj/messages").json()
-    assert hist["chat"]["kind"] == "project" and hist["messages"][-1]["body"] == "I take the hub"
+    texts = [m["body"] for m in hist["messages"] if m["kind"] == "text"]
+    assert hist["chat"]["kind"] == "project" and texts[-2:] == ["I take the hub", "x"]
 
 
 def test_private_endpoint_writes_to_the_agents_own_chat(trio):
@@ -322,10 +329,10 @@ def test_inbox_delivers_operator_messages_and_mail_from_group_chats(trio):
     assert peek["messages"][2]["addressed_to_me"] is True and peek["messages"][1]["chat"] == f"task:{t['id']}"
     stop = api(hub, a, "GET", "/inbox", params={"addressed_only": True}).json()
     assert [m["body"] for m in stop["messages"]] == ["for you only", "for the task", "b's note"]
-    assert len(deliveries(hub, a)) == 2  # peeking delivered nothing
+    assert len(deliveries(hub, a)) == 4  # peeking delivered nothing (b's two are deliveries too, since 0.3.9.1)
     two = api(hub, a, "GET", "/inbox", params={"limit": 2}).json()
     assert two["more"] is True and [m["kind"] for m in two["messages"]] == ["private", "operator"]
-    assert deliveries(hub, a) == []  # read through the inbox: the runner's claim now gets 409
+    assert len(deliveries(hub, a)) == 2  # read through the inbox: the runner's claim now gets 409
     rest = api(hub, a, "GET", "/inbox").json()
     assert [m["body"] for m in rest["messages"]] == ["b's note", "general chatter"] and not rest["more"]
     assert api(hub, a, "GET", "/inbox").json()["messages"] == []
@@ -379,7 +386,7 @@ def test_only_operator_requests_in_project_chats_can_be_taken(trio):
     for m in (op_send(hub, "agent", a.id), op_send(hub, "task", str(t["id"]))):
         assert api(hub, a, "POST", f"/chats/requests/{m['id']}/take", json={"title": "x"}).status_code == 422
     agent_msg = api(hub, b, "POST", "/chats/project/proj/messages", json={"body": "take this"}).json()
-    assert api(hub, a, "POST", f"/chats/requests/{agent_msg['id']}/take", json={"title": "x"}).status_code == 404
+    assert api(hub, a, "POST", f"/chats/requests/{agent_msg['id']}/take", json={"title": "x"}).status_code == 422
     assert api(hub, a, "POST", "/chats/requests/99999/take", json={"title": "x"}).status_code == 404
     req = op_send(hub, "project", "proj")
     conn = hub.conn()
@@ -480,8 +487,8 @@ async def test_bus_sends_the_operator_full_rows_and_agents_ids(trio):
                for f in chat_frames)
     assert not [f for f in op.sent if f["type"] == "event" and f["event_type"].startswith("chat.")]
     a_events = [f["event"] for f in sa.sent]
-    assert [e["type"] for e in a_events] == ["chat.deliver", "chat.message"]
-    assert a_events[0]["data"]["message_id"] == msg["id"] and a_events[1]["data"]["addressed_to_me"] is True
+    assert [e["type"] for e in a_events] == ["chat.deliver", "chat.deliver"]  # b's message is delivered to a too
+    assert a_events[0]["data"]["message_id"] == msg["id"] and a_events[1]["data"]["message_id"] == msg["id"] + 1
     assert SECRET not in json.dumps(sa.sent) + json.dumps(sb.sent)
     assert [f["event"]["type"] for f in sb.sent] == ["chat.deliver"]  # not its own post, no tool rows
     assert sc.sent == []
@@ -626,7 +633,7 @@ def test_stop_hook_counts_operator_chat_messages_without_their_text(trio):
     text = summarize(mail)
     assert "2 unread messages from the operator" in text and "1 unread message addressed to you, from: bob" in text
     assert SECRET not in text
-    assert len(deliveries(hub, a)) == 2  # the hook only peeks
+    assert len(deliveries(hub, a)) == 3  # the hook only peeks (bob's message is a delivery too)
 
 
 def test_text_addressed_to_another_agent_is_not_mail(trio):

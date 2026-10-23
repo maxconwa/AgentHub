@@ -50,6 +50,23 @@ def _from_dict[T](cls: type[T], data: dict[str, Any]) -> T:
     return cls(**data)
 
 
+DEFAULT_WAKE_LOOP_LIMIT = 20
+MAX_WAKE_LOOP_LIMIT = 10_000
+
+
+def check_wakes(wakes: Any) -> None:
+    """The [wakes] table: only loop_limit, a whole number from 0 (off) to MAX_WAKE_LOOP_LIMIT."""
+    if not isinstance(wakes, dict):
+        raise ValueError("wakes must be a table, e.g. [wakes] loop_limit = 20")
+    unknown = set(wakes) - {"loop_limit"}
+    if unknown:
+        raise ValueError(f"unknown [wakes] keys: {', '.join(sorted(unknown))}")
+    limit = wakes.get("loop_limit", DEFAULT_WAKE_LOOP_LIMIT)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= MAX_WAKE_LOOP_LIMIT:
+        raise ValueError(f"[wakes] loop_limit must be 0 (off) or a whole number of wakes up to "
+                         f"{MAX_WAKE_LOOP_LIMIT}, not {limit!r}")
+
+
 @dataclass
 class HubConfig:
     bind_host: str = "127.0.0.1"
@@ -88,6 +105,14 @@ class HubConfig:
     # operator (the Tailscale policy alone decides who can), agents on those devices included. The actor is the
     # device's own login, else its operator_devices login, else the first operator.
     tailnet_operators: bool = False
+    # [wakes] (0.3.9.1): loop_limit = N pauses a chain of agents waking agents after more than N wakes with nothing
+    # landing (a task made, moved, finished or reviewed, or a request declined) and asks the operator; 0 turns it
+    # off. A 0.3.9.0 hub rejects this table: remove it from hub.toml before rolling back.
+    wakes: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def wake_loop_limit(self) -> int:
+        return self.wakes.get("loop_limit", DEFAULT_WAKE_LOOP_LIMIT)
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:
@@ -105,6 +130,7 @@ class HubConfig:
         for node, login in cfg.operator_devices.items():
             if login not in cfg.operators:
                 raise ValueError(f"operator_devices: {node} maps to {login!r}, which is not in operators")
+        check_wakes(cfg.wakes)
         return cfg
 
     def save(self, path: Path | None = None) -> Path:

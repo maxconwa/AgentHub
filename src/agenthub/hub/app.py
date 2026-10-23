@@ -23,7 +23,7 @@ from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
     approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, store,
-    task_agents, tasks,
+    task_agents, tasks, wakes,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -91,6 +91,7 @@ class HubState:
     def __post_init__(self) -> None:
         cfg = self.config
         self.agent_limiter = RateLimiter(cfg.agent_rate_per_second, cfg.agent_rate_burst)
+        wakes.configure(cfg.wake_loop_limit)
         per_minute = cfg.enroll_rate_per_minute
         self.enroll_limiter = RateLimiter(per_minute / 60, max(1, int(per_minute)))
         self.enroll_global_limiter = RateLimiter(4 * per_minute / 60, max(1, int(4 * per_minute)))
@@ -202,6 +203,7 @@ class RunEndRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=128)
     num_turns: int | None = Field(default=None, ge=0)
     cost_usd: float | None = Field(default=None, ge=0)
+    chain_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(default=None, max_length=100)
 
 
 class RunSessionRequest(BaseModel):
@@ -262,6 +264,12 @@ class ChatRunRequest(BaseModel):
     cost_usd: float | None = Field(default=None, ge=0)
     project: str | None = Field(default=None, max_length=64)
     task_id: int | None = None
+    # the wake chains of the messages the session took in (0.3.9.1)
+    chain_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(default=None, max_length=100)
+
+
+class DeclineRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class DeliveryClaimRequest(BaseModel):
@@ -385,12 +393,13 @@ def create_app(state: HubState) -> FastAPI:
     from agenthub.hub import dashboard
 
     app.include_router(dashboard.build_router())
+    app.include_router(wakes.build_router())  # operator-only JSON under /ui/api
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)
     async def store_error(request: Request, exc: store.StoreError):
         status = {store.NotFound: 404, store.Conflict: 409, store.Invalid: 422, store.Forbidden: 403}
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(status.get(type(exc), 400), str(exc))
         body: dict[str, Any] = {"detail": str(exc)}
         if isinstance(exc, store.Conflict):
@@ -433,7 +442,8 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/chats/deliveries")
     def pending_deliveries(caller: Caller, conn: Conn) -> dict[str, Any]:
-        """The operator's messages the caller's runner hasn't given to a session yet, oldest first."""
+        """The messages (the operator's and other agents') the caller's runner hasn't given to a session yet, oldest
+        first. ``wake`` says whether one may start a session (False: only into a running one, or it waits)."""
         return {"deliveries": chats.pending_deliveries(conn, caller.agent)}
 
     @app.post(f"{api}/chats/deliveries/{{delivery_id}}")
@@ -461,8 +471,13 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/chats/{{kind}}/{{ref}}/messages", status_code=201)
     def chat_post(kind: str, ref: str, body: ChatPostRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """Write in a chat; the message is delivered to its recipients, which may wake them (0.3.9.1). Each agent it
+        wakes costs a token of the caller's rate limit: over it, nothing is posted (429)."""
         with db.transaction(conn):
-            return chats.post(conn, caller.agent, kind, ref, body.body, to=body.to, device=caller.device.name)
+            found = chats.post(conn, caller.agent, kind, ref, body.body, to=body.to, device=caller.device.name)
+            if waking := sum(w["wake"] for w in found["wakes"]):  # raising here rolls the post back
+                state.agent_limiter.check(caller.agent.id, "wakes", cost=waking)
+            return found
 
     @app.post(f"{api}/chats/{{kind}}/{{ref}}/stream", status_code=201)
     def chat_stream(kind: str, ref: str, body: ChatStreamRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -477,13 +492,19 @@ def create_app(state: HubState) -> FastAPI:
         with db.transaction(conn):
             return chats.record_run(conn, caller.agent, kind, ref, outcome=body.outcome, seconds=body.seconds,
                                     session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
-                                    project=body.project, task_id=body.task_id)
+                                    project=body.project, task_id=body.task_id, chain_ids=body.chain_ids)
 
     @app.post(f"{api}/chats/requests/{{message_id}}/take", status_code=201)
     def take_task(message_id: int, body: TakeTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
         with db.transaction(conn):
             return chats.take_task(conn, caller.agent, message_id, title=body.title, body=body.body,
                                    device=caller.device.name)
+
+    @app.post(f"{api}/chats/requests/{{message_id}}/decline", status_code=201)
+    def decline_request(message_id: int, body: DeclineRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """Decline another agent's message delivered to the caller; the reason shows in its chat."""
+        with db.transaction(conn):
+            return chats.decline(conn, caller.agent, message_id, reason=body.reason, device=caller.device.name)
 
     @app.post(f"{api}/chats/requests/{{message_id}}/sit-out", status_code=201)
     def sit_out(message_id: int, body: SitOutRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -513,8 +534,9 @@ def create_app(state: HubState) -> FastAPI:
     ) -> dict[str, Any]:
         """Unread mail, all of it counting toward ``limit``, in this order: the operator's chat messages not yet given
         to a session (reading them delivers them), private messages 0.3.7 left unread, the caller's device board
-        (these three whatever ``project`` is), what agents and the hub wrote in the caller's task and project chats,
-        and channel messages 0.3.7 left unread."""
+        (these three whatever ``project`` is), other agents' messages delivered to the caller (0.3.9.1; reading
+        delivers them too), what agents and the hub wrote in the caller's task and project chats, and channel
+        messages 0.3.7 left unread."""
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
         mark = not (peek or addressed_only)
         agent = caller.agent
@@ -524,6 +546,8 @@ def create_app(state: HubState) -> FastAPI:
                                                                                          limit=n)],
             lambda n, m: [_device_entry(x) for x in device_board.unread_for_agent(
                 conn, agent, mark_read=m, limit=n, addressed_only=addressed_only)],
+            lambda n, m: chats.operator_mail(conn, agent, limit=n, mark_read=m, addressed_only=addressed_only,
+                                             projects=projects if project else None, from_agents=True),
             lambda n, m: chats.chat_mail(conn, agent, projects=projects, limit=n, mark_read=m,
                                          addressed_only=addressed_only),
             lambda n, m: store.read_inbox(conn, agent, projects=projects, limit=n, mark_read=m,
@@ -717,9 +741,11 @@ def create_app(state: HubState) -> FastAPI:
     def end_run(task_id: int, run_id: int, body: RunEndRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
         with db.transaction(conn):
             visible_task(caller, conn, task_id)
-            return tasks.end_run(conn, task_id, run_id, caller.agent, outcome=body.outcome,
-                                 session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
-                                 device=caller.device.name)
+            found = tasks.end_run(conn, task_id, run_id, caller.agent, outcome=body.outcome,
+                                  session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
+                                  device=caller.device.name)
+            wakes.store_run_chains(conn, "task_runs", run_id, body.chain_ids)
+            return found
 
     @app.post(f"{api}/tasks/{{task_id}}/progress", status_code=201)
     def progress(task_id: int, body: ProgressRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -953,7 +979,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(exc.status_code, str(exc.detail))
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
@@ -961,7 +987,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(422, "; ".join(str(e.get("msg")) for e in exc.errors()))
         return JSONResponse({"detail": jsonable(exc.errors())}, status_code=422)
 

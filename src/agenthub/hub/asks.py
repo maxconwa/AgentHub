@@ -58,6 +58,8 @@ def create(
     target = store.find_agent(conn, to)
     if target.id == asker.id:
         raise Invalid("cannot ask yourself")
+    if target.id not in chats.members(conn, "project", project):  # an ask stays inside the project
+        raise Invalid(f"agent {to!r} is not in this chat")
     now = datetime.now(UTC)
     expires = now + timedelta(seconds=timeout_seconds)
     cur = conn.execute(
@@ -66,7 +68,6 @@ def create(
         (project, asker.id, target.id, question, now_iso(now), now_iso(expires)),
     )
     ask_id = cur.lastrowid
-    # chats.post validates that the target is an active member of the project.
     chats.post(
         conn, asker, "project", project, to=target.id, device=device, meta={"ask_id": ask_id},
         max_chars=chats.MAX_BODY_CHARS + 200,

@@ -236,9 +236,10 @@ def test_a_rolled_back_hub_still_fills_name_key(tmp_path, monkeypatch):
     a downgrade and an upgrade again."""
     path = tmp_path / "hub.sqlite3"
     db.init_db(path).close()
+    newest = len(db.MIGRATIONS)
     monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:22])
     conn = db.init_db(path)  # what a rolled-back 0.3.8 hub does at start: leaves the newer schema alone
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 23
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == newest
     conn.execute("INSERT INTO projects (name, description, created_at) VALUES ('legacy', '', 'x')")
     assert conn.execute("SELECT name_key FROM projects WHERE name = 'legacy'").fetchone()[0] == "legacy"
     conn.execute("UPDATE projects SET name = 'Legacy2' WHERE name = 'legacy'")

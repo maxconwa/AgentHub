@@ -66,8 +66,8 @@ def test_bus_pushes_events_and_closes_on_revoke(tmp_path):
             assert conn.receive_json()["type"] == "hello"
             live.post("/api/v1/chats/project/proj/messages", json={"body": "hi b", "to": "b"}, headers=a.headers)
             msg = conn.receive_json()
-            assert msg["event"]["type"] == "chat.message"
-            assert msg["event"]["data"]["addressed_to_me"] is True
+            assert msg["event"]["type"] == "chat.deliver"  # an agent's message to b is delivered to it (0.3.9.1)
+            assert msg["event"]["data"]["agent_id"] == b.id and msg["event"]["data"]["delivery_id"]
             assert "body" not in json.dumps(msg["event"]["data"])  # notifications carry no content
             hub.set_status(b, "revoked")  # written straight to the DB, like the operator CLI
             with pytest.raises(WebSocketDisconnect) as info:

@@ -43,7 +43,7 @@ from agenthub.hub.store import (
     Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent, require_project_name,
 )
 
-KINDS = ("agent", "task", "project")
+KINDS = ("agent", "task", "project", "dm")
 MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's message; the operator's have no limit
 MAX_LINE_CHARS = 300
 MAX_TOOL_LINES = 200  # kept per tools row; meta.count has the true total
@@ -80,7 +80,31 @@ def _resolve(conn: sqlite3.Connection, kind: str, ref: str) -> tuple[str, str | 
     if kind == "project":
         ref = require_project_name(conn, ref)
         return ref, ref, f"project {ref}"
+    if kind == "dm":
+        ids = ref.split(":")
+        found = [get_agent(conn, i) for i in ids] if len(ids) == 2 and ids[0] != ids[1] else []
+        if len(found) != 2 or None in found:
+            raise NotFound(f"no direct chat {ref!r}")
+        key = pair_key(ids[0], ids[1])
+        return key, None, chat_title(conn, "dm", key)
     raise NotFound(f"no chat kind {kind!r}")
+
+
+def pair_key(a: str, b: str) -> str:
+    """The ref of the direct chat between agents ``a`` and ``b``: their ids, sorted, joined by a colon."""
+    return ":".join(sorted((a, b)))
+
+
+def chat_title(conn: sqlite3.Connection, kind: str, ref: str) -> str:
+    """How the operator's views name a chat: an agent's name, ``task #N``, ``project P``, ``a ↔ b``."""
+    if kind == "task":
+        return f"task #{ref}"
+    if kind == "project":
+        return f"project {ref}"
+    found = _names(conn, ref.split(":") if kind == "dm" else [ref])
+    if kind == "dm":
+        return " ↔ ".join(sorted(found.get(i, i) for i in ref.split(":")))
+    return found.get(ref, ref)
 
 
 def _ensure(conn: sqlite3.Connection, kind: str, ref: str, project: str | None) -> int:
@@ -107,6 +131,9 @@ def _chat_by_id(conn: sqlite3.Connection, chat_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+chat_row = _chat_by_id
+
+
 def members(conn: sqlite3.Connection, kind: str, ref: str, *, active_only: bool = True) -> list[str]:
     """The agents in a chat (not the operator): the agent; the task's members; the project's allowed agents.
     Revoked (and, with ``active_only``, pending) agents are left out."""
@@ -115,6 +142,12 @@ def members(conn: sqlite3.Connection, kind: str, ref: str, *, active_only: bool 
     if kind == "agent":
         row = conn.execute(f"SELECT id FROM agents WHERE id = ? AND status IN ({marks})", (ref, *statuses)).fetchone()
         return [row["id"]] if row else []
+    if kind == "dm":
+        ids = ref.split(":")
+        rows = conn.execute(f"SELECT id FROM agents WHERE id IN (?, ?) AND status IN ({marks})",
+                            (*ids[:2], *statuses) if len(ids) == 2 else ("", "", *statuses))
+        found = {r["id"] for r in rows}
+        return [i for i in ids if i in found]
     if kind == "task":
         rows = conn.execute(f"SELECT ta.agent_id FROM task_agents ta JOIN agents a ON a.id = ta.agent_id "
                             f"WHERE ta.task_id = ? AND a.status IN ({marks}) ORDER BY ta.added_at, ta.rowid",
@@ -140,13 +173,7 @@ def overview(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         "SUM(CASE WHEN m.id > c.operator_read_id AND m.author NOT LIKE 'human:%' "
         "AND m.kind IN ('text', 'took_task', 'sit_out', 'approval', 'question') THEN 1 ELSE 0 END) AS unread "
         "FROM chats c JOIN chat_messages m ON m.chat_id = c.id GROUP BY c.id ORDER BY last_ts DESC, c.id DESC")
-    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
-    out = []
-    for r in rows:
-        title = (names.get(r["ref"], r["ref"]) if r["kind"] == "agent"
-                 else f"task #{r['ref']}" if r["kind"] == "task" else f"project {r['ref']}")
-        out.append(dict(r) | {"title": title})
-    return out
+    return [dict(r) | {"title": chat_title(conn, r["kind"], r["ref"])} for r in rows]
 
 
 def mark_read(conn: sqlite3.Connection, chat_id: int, upto_id: int) -> None:
@@ -180,13 +207,15 @@ def _rows(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, A
         row = dict(r)
         row["meta"] = json.loads(row["meta"])
         out.append(row)
-    operator = [m["id"] for m in out if m["kind"] == "text" and _is_operator(m["author"])]
-    if operator:
+    # Who the operator's messages, and (0.3.9.1) agents' messages and decline notices, were delivered to.
+    operator = {m["id"] for m in out if m["kind"] == "text" and _is_operator(m["author"])}
+    texts = [m["id"] for m in out if m["kind"] in ("text", "sit_out")]
+    if texts:
         found: dict[int, list[dict[str, Any]]] = {}
         for d in conn.execute(
-                "SELECT d.message_id, d.agent_id, a.name, d.status, d.mode, d.decision, d.task_id, d.note "
-                f"FROM chat_deliveries d JOIN agents a ON a.id = d.agent_id WHERE d.message_id IN "
-                f"({','.join('?' * len(operator))}) ORDER BY d.id", operator):
+                "SELECT d.message_id, d.agent_id, a.name, d.status, d.mode, d.decision, d.task_id, d.note, "
+                "d.chain_id FROM chat_deliveries d JOIN agents a ON a.id = d.agent_id WHERE d.message_id IN "
+                f"({','.join('?' * len(texts))}) ORDER BY d.id", texts):
             found.setdefault(d["message_id"], []).append({k: d[k] for k in d.keys() if k != "message_id"})
         for m in out:
             if m["id"] in found or m["id"] in operator:
@@ -248,8 +277,8 @@ def _insert(
     if meta.get("source"):
         extra["source"] = meta["source"]
     # What agents write in task and project chats is searchable (search_history) by the agents in that project;
-    # an agent's own chat with the operator never is.
-    index = body if chat_row["kind"] != "agent" and kind in ("text", "sit_out") else None
+    # an agent's own chat with the operator and a direct chat between two agents never are.
+    index = body if chat_row["kind"] in ("task", "project") and kind in ("text", "sit_out") else None
     _emit(conn, "chat.message", chat_row, cur.lastrowid, kind, actor=author, device=device, index_text=index,
           **extra)
     return cur.lastrowid
@@ -351,17 +380,36 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
         if agent.project(ref) is None:
             raise NotFound(f"no chat project/{ref} you are in")
         return chat(conn, "project", agent.project(ref))
+    if kind == "dm":
+        return chat(conn, "dm", pair_key(agent.id, _dm_peer(conn, agent, ref).id))
     raise NotFound(f"no chat kind {kind!r}")
 
 
+def _dm_peer(conn: sqlite3.Connection, agent: Agent, ref: str) -> Agent:
+    """The other agent of ``agent``'s direct chat ``ref``: its name or id, or the chat's pair key. Any agent may have
+    a direct chat with any other (projects don't matter); nobody else may read it but the operator."""
+    ids = str(ref).split(":")
+    if len(ids) == 2:  # the pair key, as the hub hands it out; only one of the pair may use it
+        if agent.id not in ids or ids[0] == ids[1]:
+            raise NotFound(f"no chat dm/{ref} you are in")
+        ref = ids[1] if ids[0] == agent.id else ids[0]
+    try:
+        peer = find_agent(conn, ref)
+    except NotFound:
+        raise NotFound(f"no agent {ref!r} to write to") from None
+    if peer.id == agent.id:
+        raise Invalid("a direct chat is with another agent, not yourself")
+    return peer
+
+
 def parse_chat(spec: str) -> tuple[str, str]:
-    """``me`` / ``agent``, ``task:<id>``, ``project:<name>`` (as agents name chats) -> ``(kind, ref)``."""
+    """``me`` / ``agent``, ``task:<id>``, ``project:<name>``, ``dm:<agent>`` (as agents name chats) -> ``(kind, ref)``."""
     spec = spec.strip()
     if spec in ("me", "agent", "operator"):
         return "agent", "me"
     kind, sep, ref = spec.partition(":")
     if not sep or kind not in KINDS or not ref:
-        raise Invalid(f"name a chat as 'me', 'task:<id>' or 'project:<name>', not {spec!r}")
+        raise Invalid(f"name a chat as 'me', 'task:<id>', 'project:<name>' or 'dm:<agent>', not {spec!r}")
     return kind, ref
 
 
@@ -369,21 +417,110 @@ def post(
     conn: sqlite3.Connection, agent: Agent, kind: str, ref: str, body: str, *, to: str | None = None,
     device: str | None = None, meta: dict[str, Any] | None = None, max_chars: int = MAX_BODY_CHARS,
 ) -> dict[str, Any]:
-    """``agent`` writes in a chat it is in; ``to`` (an agent in the chat) addresses one agent. ``meta`` and
-    ``max_chars`` are for the hub's own callers (asks)."""
+    """``agent`` writes in a chat it is in; ``to`` addresses one agent. ``meta`` and ``max_chars`` are for the hub's
+    own callers (asks, a reviewer's send-back).
+
+    Agents wake agents (0.3.9.1): the message is delivered to its recipients the way the operator's is (a pending
+    ``chat_deliveries`` row and a ``chat.deliver`` event each), in a wake chain (:mod:`wakes`). Its recipients are
+    ``to``, else the agents it @mentions, else (a direct chat's other agent, or) everyone else in the chat; never
+    the author, never a pending or revoked agent, and in a task chat never an agent no longer allowed into the
+    task's project. Whoever it can't reach that way is reported in the chat (a ``wake_declined`` status line)
+    rather than woken: a wake never widens access. An addressed message (``to``, a mention, a direct chat) may wake
+    an idle recipient; a task or project chat message addressed to nobody reaches everyone (into a running session,
+    or read_inbox) but wakes nobody, so the chat's chatter doesn't start sessions. The result is the message with
+    ``chain_id``, ``wakes`` (``[{agent_id, name, delivery_id, wake}]``) and ``declined`` (``[{agent_id, name,
+    reason}]``)."""
     _check_body(body, max_chars)
     chat_row = _member_chat(conn, agent, kind, ref)
+    if chat_row["kind"] == "dm":
+        for agent_id in chat_row["ref"].split(":"):
+            peer = get_agent(conn, agent_id)
+            if peer is not None and peer.status == "revoked":
+                raise Forbidden(f"agent {peer.name!r} is revoked; your direct chat with it is read-only")
+    in_chat = members(conn, chat_row["kind"], chat_row["ref"], active_only=False)
     meta = dict(meta or {})
+    declined: list[tuple[Agent, str]] = []
     if to is not None:
         target = find_agent(conn, to)
-        if target.id not in members(conn, chat_row["kind"], chat_row["ref"]):
-            raise Invalid(f"agent {to!r} is not in this chat")
+        if chat_row["kind"] in ("agent", "dm") and target.id not in in_chat:
+            raise Invalid(f"agent {to!r} is not in this chat" + (
+                "; write to another agent with chat='dm:<name>'" if chat_row["kind"] == "agent" else ""))
         meta["to"] = target.id
+        if target.id not in in_chat or target.status != "active":
+            declined.append((target, target.status if target.status != "active" else _outside(chat_row, target)))
     if mentioned := _mentions(conn, chat_row, body, author=agent.id):
         meta["mentions"] = mentioned
     _close_stretches(conn, chat_row, author=agent.id)
-    return get_message(conn, _insert(conn, chat_row, author=agent.id, kind="text", body=body, meta=meta,
-                                     device=device))
+    message_id = _insert(conn, chat_row, author=agent.id, kind="text", body=body, meta=meta, device=device)
+    if to is not None:
+        wanted = [] if declined else [meta["to"]]
+    elif mentioned:
+        wanted = mentioned
+    else:
+        wanted = [i for i in in_chat if i != agent.id]
+    recipients: list[Agent] = []
+    for agent_id in wanted:
+        if agent_id == agent.id:
+            continue
+        target = get_agent(conn, agent_id)
+        if target is None or target.status != "active":
+            if target is not None and to is None and chat_row["kind"] == "dm":
+                declined.append((target, target.status))  # the one agent a direct message is for
+            continue
+        if chat_row["kind"] == "task" and target.project(chat_row["project"]) is None:
+            declined.append((target, "not_in_project"))
+            continue
+        recipients.append(target)
+    for target, reason in declined:
+        hub_status(conn, chat_row, {"state": "wake_declined", "agent_id": target.id, "agent_name": target.name,
+                                    "waker": agent.id, "waker_name": agent.name, "message_id": message_id,
+                                    "reason": reason})
+    found = get_message(conn, message_id)
+    found["chain_id"], found["wakes"], found["broadcast"] = None, [], False
+    found["declined"] = [{"agent_id": t.id, "name": t.name, "reason": r} for t, r in declined]
+    if not recipients:
+        return found
+    from agenthub.hub import wakes
+
+    chain_id = wakes.chain_for(conn, agent)
+    broadcast = to is None and not mentioned and chat_row["kind"] in ("task", "project")
+    ts = now_iso()
+    waking = 0
+    for target in recipients:
+        wake = not broadcast and wakes.may_wake(conn, target.id, chain_id)
+        waking += wake
+        cur = conn.execute("INSERT INTO chat_deliveries (message_id, agent_id, status, created_at, chain_id, wake) "
+                           "VALUES (?, ?, 'pending', ?, ?, ?)",
+                           (message_id, target.id, ts, chain_id, int(not broadcast)))
+        found["wakes"].append({"agent_id": target.id, "name": target.name, "delivery_id": cur.lastrowid,
+                               "wake": wake})
+        announce_delivery(conn, chat_row["id"], message_id, cur.lastrowid, target.id, actor=agent.id)
+    found["chain_id"], found["broadcast"] = chain_id, broadcast
+    if wakes.counted(conn, chain_id, waking, chat_row=chat_row, author=agent):
+        for w in found["wakes"]:  # this message took the chain over the loop limit: it wakes nobody
+            w["wake"] = False
+        found["loop_paused"] = True
+    return found
+
+
+def _outside(chat_row: dict[str, Any], target: Agent) -> str:
+    """Why ``target`` (active, not in the chat) isn't woken there: it has no access to the chat's project, or it
+    may use the project but isn't on the task."""
+    if chat_row["project"] is not None and target.project(chat_row["project"]) is None:
+        return "not_in_project"
+    return "not_in_chat"
+
+
+def hub_status(conn: sqlite3.Connection, chat_row: dict[str, Any], meta: dict[str, Any]) -> int:
+    """A status line only the hub writes (a wake, a wake declined, a loop paused or resumed)."""
+    return _insert(conn, chat_row, author=SYSTEM, kind="status", meta=meta)
+
+
+def announce_delivery(conn: sqlite3.Connection, chat_id: int, message_id: int, delivery_id: int, agent_id: str, *,
+                      actor: str = SYSTEM) -> None:
+    """The ``chat.deliver`` event that tells an agent's runner a message waits for it."""
+    _emit(conn, "chat.deliver", _chat_by_id(conn, chat_id), message_id, "text", actor=actor,
+          delivery_id=delivery_id, agent_id=agent_id)
 
 
 def post_as_hub(conn: sqlite3.Connection, kind: str, ref: str, body: str, *, to: str | None = None,
@@ -514,11 +651,12 @@ MAX_RUN_SECONDS = 7 * 24 * 3600
 def record_run(
     conn: sqlite3.Connection, agent: Agent, kind: str, ref: str, *, outcome: str, seconds: float,
     session_id: str | None = None, num_turns: int | None = None, cost_usd: float | None = None,
-    project: str | None = None, task_id: int | None = None,
+    project: str | None = None, task_id: int | None = None, chain_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """``agent``'s runner ran one session for a chat it is in; it ended now, after ``seconds`` (the hub's clock places
     it). Shown on the Usage page. It counts in the chat's project; an agent chat's session counts in ``project`` if
-    ``agent`` may see that project, and on ``task_id`` if ``agent`` is on that task (a task chat's on its task)."""
+    ``agent`` may see that project, and on ``task_id`` if ``agent`` is on that task (a task chat's on its task).
+    ``chain_ids``: the wake chains of the messages the session took in (0.3.9.1)."""
     if not isinstance(outcome, str) or not _OUTCOME_RE.fullmatch(outcome):
         raise Invalid("outcome must be a word like success, error or usage_limit (a-z, 0-9, _)")
     chat_row = _member_chat(conn, agent, kind, ref)
@@ -538,6 +676,9 @@ def record_run(
         "num_turns, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (chat_row["id"], agent.id, project, task_id, session_id, now_iso(started), now_iso(now), outcome, num_turns,
          cost_usd))
+    from agenthub.hub import wakes
+
+    wakes.store_run_chains(conn, "chat_runs", cur.lastrowid, chain_ids)
     return {"id": cur.lastrowid}
 
 
@@ -545,31 +686,48 @@ def record_run(
 
 
 def _delivery_rows(conn: sqlite3.Connection, where: str, params: list[Any]) -> list[dict[str, Any]]:
+    from agenthub.hub.wakes import WAKE_SQL
+
     rows = conn.execute(
         "SELECT d.id, d.message_id, d.status, d.mode, d.decision, d.task_id AS decision_task_id, d.created_at, "
-        "d.agent_id, m.author, m.body, m.created_at AS ts, m.meta, c.id AS chat_id, c.kind AS chat_kind, "
-        "c.ref AS chat_ref, "
-        "c.project FROM chat_deliveries d JOIN chat_messages m ON m.id = d.message_id "
-        "JOIN chats c ON c.id = m.chat_id " + where, params).fetchall()
+        "d.agent_id, d.chain_id, m.author, wa.name AS author_name, m.kind AS msg_kind, m.body, "
+        f"m.created_at AS ts, m.meta, ({WAKE_SQL}) AS may_wake, c.id AS chat_id, c.kind AS chat_kind, "
+        "c.ref AS chat_ref, c.project FROM chat_deliveries d JOIN chat_messages m ON m.id = d.message_id "
+        "JOIN chats c ON c.id = m.chat_id LEFT JOIN agents wa ON wa.id = m.author " + where, params).fetchall()
     out = []
     for r in rows:
         meta = json.loads(r["meta"])
-        title = (f"task #{r['chat_ref']}" if r["chat_kind"] == "task"
-                 else f"project {r['chat_ref']}" if r["chat_kind"] == "project" else "your chat with the operator")
+        chat_info: dict[str, Any] = {
+            "id": r["chat_id"], "kind": r["chat_kind"], "ref": r["chat_ref"], "project": r["project"],
+            "task_id": int(r["chat_ref"]) if r["chat_kind"] == "task" else None}
+        if r["chat_kind"] == "dm":  # the other agent, as this delivery's agent sees the chat
+            ids = r["chat_ref"].split(":")
+            peer = ids[1] if ids[0] == r["agent_id"] else ids[0]
+            peer_name = _names(conn, [peer]).get(peer, peer)
+            chat_info |= {"with": {"agent_id": peer, "name": peer_name}, "title": f"your direct chat with {peer_name}"}
+        else:
+            chat_info["title"] = (f"task #{r['chat_ref']}" if r["chat_kind"] == "task" else
+                                  f"project {r['chat_ref']}" if r["chat_kind"] == "project" else
+                                  "your chat with the operator")
+        declines = meta.get("request_id") if r["msg_kind"] == "sit_out" and meta.get("declined") else None
+        body = f"(declined your request #{declines}) {r['body']}" if declines is not None else r["body"]
         out.append({"id": r["id"], "message_id": r["message_id"], "status": r["status"], "mode": r["mode"],
-                    "decision": r["decision"], "task_id": r["decision_task_id"],
-                    "chat": {"id": r["chat_id"], "kind": r["chat_kind"], "ref": r["chat_ref"],
-                             "project": r["project"],
-                             "task_id": int(r["chat_ref"]) if r["chat_kind"] == "task" else None, "title": title},
-                    "author": r["author"], "author_name": None, "body": r["body"],
-                    "reply_to": meta.get("reply_to"), "mentioned": r["agent_id"] in meta.get("mentions", ()),
-                    # The hub sets the author of every delivered message from the operator's identity.
-                    "verified": _is_operator(r["author"]), "ts": r["ts"]})
+                    "decision": r["decision"], "task_id": r["decision_task_id"], "chat": chat_info,
+                    "author": r["author"], "author_name": None if _is_operator(r["author"]) else r["author_name"],
+                    "body": body, "reply_to": meta.get("reply_to"),
+                    "mentioned": r["agent_id"] in meta.get("mentions", ()),
+                    # The hub sets the author of every delivered message: the operator's identity, or the agent
+                    # whose token posted it. Only the operator's is verified; an agent's is a request, not an order.
+                    "verified": _is_operator(r["author"]), "ts": r["ts"],
+                    "chain_id": r["chain_id"], "wake": bool(r["may_wake"]), "declines": declines,
+                    # to this agent: the operator's (always), or an agent's with `to` it, mentioning it, or direct
+                    "addressed": _is_operator(r["author"]) or r["chat_kind"] == "dm" or meta.get("to") == r["agent_id"]
+                    or r["agent_id"] in meta.get("mentions", ())})
     return out
 
 
 def pending_deliveries(conn: sqlite3.Connection, agent: Agent, limit: int | None = None) -> list[dict[str, Any]]:
-    """The operator's messages ``agent`` hasn't been given yet, oldest first."""
+    """The messages (the operator's, and other agents') ``agent`` hasn't been given yet, oldest first."""
     sql, params = "WHERE d.agent_id = ? AND d.status = 'pending' ORDER BY d.id", [agent.id]
     if limit is not None:
         sql += " LIMIT ?"
@@ -594,6 +752,11 @@ def claim_delivery(
     if mode not in CLAIM_MODES:
         raise Invalid(f"mode must be one of {', '.join(CLAIM_MODES)}")
     found = get_delivery(conn, delivery_id, agent)
+    if mode == "woke" and not found["wake"] and found["status"] == "pending":
+        # Paused (this agent's or the hub's wakes, or a looping chain) or a notice: it may go into a running
+        # session or wait, but starts nothing. Conflict, so the runner leaves it.
+        raise Conflict(f"delivery {delivery_id} may not wake this agent (wakes are paused, or it is a notice)",
+                       mode=None, wake=False)
     cur = conn.execute("UPDATE chat_deliveries SET status = 'delivered', mode = ?, note = ?, delivered_at = ? "
                        "WHERE id = ? AND agent_id = ? AND status = 'pending'",
                        (mode, note[:MAX_DETAIL_CHARS], now_iso(), delivery_id, agent.id))
@@ -605,6 +768,13 @@ def claim_delivery(
         if mode == "failed" and note.strip():
             meta["detail"] = note[:MAX_DETAIL_CHARS]
         _insert(conn, chat_row, author=agent.id if mode == "failed" else SYSTEM, kind="status", meta=meta)
+    elif mode == "woke" and not _is_operator(found["author"]):  # "hub-reviewer woke hub-builder-1 (task #27)"
+        line: dict[str, Any] = {"state": "woke", "agent_id": agent.id, "agent_name": agent.name,
+                                "waker": found["author"], "waker_name": found["author_name"],
+                                "message_id": found["message_id"], "chain_id": found["chain_id"]}
+        if chat_row["kind"] == "task":
+            line["task_id"] = int(chat_row["ref"])
+        hub_status(conn, chat_row, line)
     _touch(conn, found["message_id"], actor=agent.id)
     return get_delivery(conn, delivery_id, agent)
 
@@ -634,21 +804,46 @@ def _agent_chat_ids(conn: sqlite3.Connection, agent: Agent, projects: list[str] 
     return [r["id"] for r in rows]
 
 
-def operator_mail(conn: sqlite3.Connection, agent: Agent, *, limit: int, mark_read: bool) -> list[dict[str, Any]]:
-    """The operator's messages not yet delivered to ``agent`` as inbox entries, oldest first: ``kind`` ``private``
-    from its own chat, ``operator`` from a task or project chat. Reading them (``mark_read``) delivers them (mode
-    ``inbox``), so the runner won't give them to a session again."""
+def operator_mail(conn: sqlite3.Connection, agent: Agent, *, limit: int, mark_read: bool,
+                  addressed_only: bool = False, projects: list[str] | None = None,
+                  from_agents: bool = False) -> list[dict[str, Any]]:
+    """The operator's messages not yet delivered to ``agent`` as inbox entries, oldest first (``kind`` ``private``
+    from its own chat, ``operator`` from a task or project chat); with ``from_agents``, other agents' instead
+    (``chat``, from a task, project or direct chat; 0.3.9.1). Reading them (``mark_read``) delivers them (mode
+    ``inbox``), so the runner won't give them to a session again. For agents' messages, ``addressed_only`` leaves
+    out those addressed to nobody, and ``projects`` those in task and project chats of other projects."""
     if limit <= 0:
         return []
-    found = pending_deliveries(conn, agent, limit=limit)
+
+    def wanted(d: dict[str, Any]) -> bool:
+        if _is_operator(d["author"]):
+            return not from_agents
+        return from_agents and (not addressed_only or d["addressed"]) and (
+            projects is None or d["chat"]["project"] is None or d["chat"]["project"] in projects)
+
+    found = [d for d in pending_deliveries(conn, agent) if wanted(d)][:limit]
     if mark_read:
         _deliver_by_inbox(conn, agent, found)
-    return [{"id": d["message_id"], "kind": "private" if d["chat"]["kind"] == "agent" else "operator",
-             "delivery_id": d["id"], "chat": _spec(d["chat"]["kind"], d["chat"]["ref"]),
-             "project": d["chat"]["project"], "channel": None, "author": d["author"], "author_name": None,
-             "to_agent": agent.id, "body": d["body"], "ts": d["ts"], "addressed_to_me": True,
-             "mentioned": d["mentioned"], "msg_kind": "text"}
+    return [{"id": d["message_id"], "kind": _mail_kind(d), "delivery_id": d["id"],
+             "chat": _delivery_spec(d), "project": d["chat"]["project"], "channel": None, "author": d["author"],
+             "author_name": d["author_name"], "to_agent": agent.id if d["addressed"] else None, "body": d["body"],
+             "ts": d["ts"],
+             "addressed_to_me": d["addressed"], "mentioned": d["mentioned"],
+             "msg_kind": "decline" if d["declines"] is not None else "text", "declines": d["declines"]}
             for d in found]
+
+
+def _mail_kind(d: dict[str, Any]) -> str:
+    """``private``/``operator``: the operator's (in its own chat / a group chat); ``chat``: another agent's."""
+    if not _is_operator(d["author"]):
+        return "chat"
+    return "private" if d["chat"]["kind"] == "agent" else "operator"
+
+
+def _delivery_spec(d: dict[str, Any]) -> str:
+    if d["chat"]["kind"] == "dm":
+        return f"dm:{d['chat']['with']['name']}"
+    return _spec(d["chat"]["kind"], d["chat"]["ref"])
 
 
 def chat_mail(
@@ -702,15 +897,19 @@ def _chat_mail(conn: sqlite3.Connection, agent: Agent, chat_ids: list[int], limi
         f"WHERE m.chat_id IN ({marks}) AND m.id > COALESCE(k.last_read_id, 0) AND m.author != ? "
         f"AND m.author NOT LIKE 'human:%' AND m.legacy IS NULL AND m.kind IN ({kinds}) "
         f"AND json_extract(m.meta, '$.source') IS NULL {addressed}"
+        # an agent's message delivered to this agent (0.3.9.1) comes as a delivery, not twice
+        "AND NOT EXISTS (SELECT 1 FROM chat_deliveries dd WHERE dd.message_id = m.id AND dd.agent_id = ?) "
         "ORDER BY m.id LIMIT ?",
         [agent.id, *chat_ids, agent.id, *MAIL_KINDS,
-         *([agent.id, agent.id] if addressed_only else [agent.id, agent.id, agent.id]), limit]).fetchall()
+         *([agent.id, agent.id] if addressed_only else [agent.id, agent.id, agent.id]), agent.id, limit]).fetchall()
 
 
 def _mail_body(r: sqlite3.Row, meta: dict[str, Any]) -> str:
     """What an inbox entry says: the text, or (written by the hub) a took-task line, or the sit-out reason."""
     if r["kind"] == "took_task":
         return f"(took task #{meta.get('task_id')} for the operator's request #{meta.get('request_id')})"
+    if r["kind"] == "sit_out" and meta.get("declined"):
+        return f"(declined request #{meta.get('request_id')}) {r['body']}"
     if r["kind"] == "sit_out":
         return f"(sits out the operator's request #{meta.get('request_id')}) {r['body']}"
     return r["body"]
@@ -788,6 +987,40 @@ def sit_out(conn: sqlite3.Connection, agent: Agent, request_id: int, *, reason: 
     return get_message(conn, message_id)
 
 
+def decline(conn: sqlite3.Connection, agent: Agent, message_id: int, *, reason: str,
+            device: str | None = None) -> dict[str, Any]:
+    """``agent`` won't act on another agent's message ``message_id`` (delivered to it) and says why: the reason shows
+    in that chat (a ``sit_out`` row with ``meta.declined``) and reaches the requester as a notice that doesn't wake
+    it. Once per message. The operator's messages aren't declined this way (a project request has sit_out)."""
+    _check_body(reason, MAX_DETAIL_CHARS * 4)
+    row = conn.execute(
+        "SELECT d.id, d.decision, d.chain_id, m.author, m.chat_id FROM chat_deliveries d "
+        "JOIN chat_messages m ON m.id = d.message_id WHERE d.message_id = ? AND d.agent_id = ?",
+        (message_id, agent.id)).fetchone()
+    if row is None:
+        raise NotFound(f"no message #{message_id} was delivered to you")
+    if _is_operator(row["author"]):
+        raise Invalid(f"message #{message_id} is the operator's, not another agent's request; tell the operator in "
+                      "the chat instead (for a request in a project chat, use sit_out)")
+    if row["decision"] is not None:
+        raise Conflict(f"you already answered request #{message_id}")
+    chat_row = _chat_by_id(conn, row["chat_id"])
+    _decide(conn, dict(row), "sat_out", None)
+    _close_stretches(conn, chat_row, author=agent.id)
+    requester = row["author"]
+    notice_id = _insert(conn, chat_row, author=agent.id, kind="sit_out", body=reason, device=device,
+                        meta={"request_id": message_id, "declined": True, "to": requester})
+    if requester in members(conn, chat_row["kind"], chat_row["ref"]):  # the requester learns why, unwoken
+        cur = conn.execute("INSERT INTO chat_deliveries (message_id, agent_id, status, created_at, chain_id, wake) "
+                           "VALUES (?, ?, 'pending', ?, ?, 0)", (notice_id, requester, now_iso(), row["chain_id"]))
+        announce_delivery(conn, chat_row["id"], notice_id, cur.lastrowid, requester, actor=agent.id)
+    events.emit(conn, type="chat.declined", actor=agent.id, project=chat_row["project"], device=device,
+                payload={"chat_id": chat_row["id"], "message_id": notice_id, "request_id": message_id,
+                         "agent_id": requester})
+    _touch(conn, message_id, actor=agent.id)
+    return get_message(conn, notice_id)
+
+
 # --- cards -------------------------------------------------------------------------------------------------------
 
 
@@ -802,8 +1035,12 @@ def _card_chat(conn: sqlite3.Connection, task_id: Any, agent_id: str) -> dict[st
 
 
 def approval_card(conn: sqlite3.Connection, approval: dict[str, Any]) -> int | None:
-    """A new approval's card, in its task's chat or its requester's chat."""
-    chat_row = _card_chat(conn, approval["details"].get("task_id"), approval["requester"])
+    """A new approval's card, in its task's chat or its requester's chat (a wake loop's: the chat it tripped in)."""
+    chat_id = approval["details"].get("chat_id") if approval["kind"] == "wake_loop" else None
+    if isinstance(chat_id, int) and conn.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone():
+        chat_row: dict[str, Any] | None = _chat_by_id(conn, chat_id)
+    else:
+        chat_row = _card_chat(conn, approval["details"].get("task_id"), approval["requester"])
     if chat_row is None:
         return None
     return _insert(conn, chat_row, author=approval["requester"], kind="approval",

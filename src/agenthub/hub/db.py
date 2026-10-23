@@ -518,6 +518,81 @@ MIGRATIONS: list[str] = [
     CREATE TRIGGER agents_name_key_update AFTER UPDATE OF name ON agents
         BEGIN UPDATE agents SET name_key = lower(NEW.name) WHERE rowid = NEW.rowid; END;
     """,
+    # 24: agents wake agents (0.3.9.1). chats and approvals are rebuilt only to widen a CHECK (agent-to-agent 'dm'
+    # chats, 'wake_loop' approvals; same columns, every row copied, as migration 3 did); the rest is new columns
+    # and tables. 0.3.9.0 runs on this database and ignores all of it.
+    """
+    CREATE TABLE chats_v24 (
+        id               INTEGER PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('agent', 'task', 'project', 'dm')),
+        ref              TEXT NOT NULL,
+        project          TEXT REFERENCES projects(name),
+        session_id       TEXT,
+        operator_read_id INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        UNIQUE (kind, ref)
+    );
+    INSERT INTO chats_v24 (id, kind, ref, project, session_id, operator_read_id, created_at)
+        SELECT id, kind, ref, project, session_id, operator_read_id, created_at FROM chats;
+    DROP TABLE chats;
+    ALTER TABLE chats_v24 RENAME TO chats;
+
+    CREATE TABLE approvals_v24 (
+        id            INTEGER PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK (kind IN ('command', 'task_create', 'task_reassign',
+                                                    'budget_exceeded', 'agent_enrollment',
+                                                    'tool_permission', 'wake_loop')),
+        project       TEXT REFERENCES projects(name),
+        requester     TEXT NOT NULL,
+        details       TEXT NOT NULL,
+        reason        TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        decided_by    TEXT,
+        decided_at    TEXT,
+        decision_note TEXT,
+        created_at    TEXT NOT NULL,
+        command_key   TEXT,
+        consumed_at   TEXT
+    );
+    INSERT INTO approvals_v24 (id, kind, project, requester, details, reason, status, decided_by, decided_at,
+                               decision_note, created_at, command_key, consumed_at)
+        SELECT id, kind, project, requester, details, reason, status, decided_by, decided_at, decision_note,
+               created_at, command_key, consumed_at FROM approvals;
+    DROP TABLE approvals;
+    ALTER TABLE approvals_v24 RENAME TO approvals;
+    CREATE INDEX approvals_status ON approvals(status, id);
+    CREATE INDEX approvals_command_key ON approvals(command_key, status);
+
+    -- an agent's message: the wake chain it belongs to; wake = 0 for a notice that never wakes (a decline)
+    ALTER TABLE chat_deliveries ADD COLUMN chain_id TEXT;
+    ALTER TABLE chat_deliveries ADD COLUMN wake INTEGER NOT NULL DEFAULT 1;
+    CREATE INDEX chat_deliveries_chain ON chat_deliveries(chain_id) WHERE chain_id IS NOT NULL;
+    ALTER TABLE agents ADD COLUMN wakes_paused INTEGER NOT NULL DEFAULT 0;
+    -- the wake chains a session took in, as the runner reports them (JSON list)
+    ALTER TABLE chat_runs ADD COLUMN chain_ids TEXT;
+    ALTER TABLE task_runs ADD COLUMN chain_ids TEXT;
+
+    CREATE TABLE wake_chains (
+        id          TEXT PRIMARY KEY,
+        started_by  TEXT NOT NULL,
+        started_at  TEXT NOT NULL,
+        wakes       INTEGER NOT NULL DEFAULT 0,  -- since it last landed
+        total       INTEGER NOT NULL DEFAULT 0,
+        landed_at   TEXT,
+        status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paused')),
+        paused_at   TEXT,
+        approval_id INTEGER
+    );
+    CREATE INDEX wake_chains_status ON wake_chains(status);
+
+    -- hub-wide switches the operator sets from the dashboard (wakes_paused)
+    CREATE TABLE hub_settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 
