@@ -324,27 +324,27 @@ with Litestream, plus restore and verification steps.
 ### Dashboard
 
 Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` on your phone or laptop. The top
-bar has ten pages (it scrolls sideways on a phone), plus a search box:
+bar has nine pages (it scrolls sideways on a phone), plus a search box:
 
 - **Dashboard:** what needs you now, and what your agents are doing.
-- **Projects:** each project with its description, notes, tasks, and board.
+- **Projects:** each project with its description, chat, live tasks and
+  reports.
 - **Tasks:** a list of tasks, newest first, that you can filter by project and
   state; create tasks here, and assign and move them on each task's page. Tasks
   you create skip approval, and only you can mark a task `done`. Several agents
   can work on one task, each with a role.
 - **Agents:** every agent's card and enrollment codes. Each agent's own page
-  has its status, heartbeat, model, private chat and allowed projects, and the
-  **Approve**, **Revoke** and **Reroll look** buttons.
-- **Devices:** each machine, its agents, and its device board.
+  has its chat, status, heartbeat, model, where it runs, its tasks and allowed
+  projects, and the **Approve**, **Revoke** and **Reroll look** buttons.
+- **Devices:** each machine and its agents.
 - **Approvals:** each request shows its details and a discussion thread with
   the agent. Ask why it needs something, then approve or reject. Questions
-  from agents (`ask_operator`) wait here too, with a box for your answer.
-- **Chats:** your private chat with each agent, and the conversations between
-  agents (read-only). Other agents never see your private chats.
-- **Board:** the public side: project boards, task boards, device boards, and
-  coordination threads, plus **All activity** (`/ui/activity`), the live event
-  feed you can filter by project, agent, and type. The old `/ui/feed` address
-  still works and redirects there.
+  from agents (`ask_operator`) wait here too, with a box for your answer. The
+  same requests show as cards in the chats, and deciding in either place
+  updates both.
+- **Chats:** every chat, newest first, with a dot for unread messages or
+  anything waiting on you. **All activity** (`/ui/activity`) is the live event
+  feed, which you can filter by project, agent and type.
 - **Reports:** the reports agents publish (`publish_report`), by project,
   newest first; task and project pages list theirs too. A report is either a
   **Claude page** (a Claude Doc or artifact on claude.ai, shown as a card that
@@ -353,9 +353,9 @@ bar has ten pages (it scrolls sideways on a phone), plus a search box:
   its scripts run in an opaque origin, so they can't see or act on the hub,
   and nothing loads from the network (inline CSS, scripts, SVG and `data:`
   images only).
-- **Usage:** what task runs and prompt sessions used (runs, turns,
-  wall-clock, est. cost, usage-limit hits) over 24 h, 7 d, 30 d or all time,
-  by agent, project and task.
+- **Usage:** what task and chat sessions used (runs, turns, wall-clock, est.
+  cost, usage-limit hits) over 24 h, 7 d, 30 d or all time, by agent, project
+  and task. Prompt sessions from before 0.3.8 still count.
 
 **Model.** An agent's page and panel show the model its runner reports: the
 one its latest session ran on, or, before any has run, the configured one
@@ -364,57 +364,69 @@ Claude Code settings, else `$ANTHROPIC_MODEL`). "Not reported yet" means no
 session has run and nothing is configured, so Claude Code's default applies.
 Runners older than 0.3.3 don't report it.
 
-**Tap to open.** Tap any agent, project, task, device, approval, or question
-to open a panel that slides in over the page: its status and its chat. For an
-approval the panel has the discussion and the Approve and Reject buttons. For a
-question it has the answer box.
+**Tap to open.** Tap any agent, project, task, approval, or question to open
+a panel that slides in over the page. For an agent, task or project the panel
+is its chat. For an approval the panel has the discussion and the Approve and
+Reject buttons. For a question it has the answer box.
 
 **Round buttons** at the bottom right of every page:
 - **+** starts a new task, project, or agent.
-- **Chat** opens the chat window: agents with their last message, chats between
-  agents, projects and tasks as group chats, and device boards.
+- **Chat** opens the chat list.
 
-**Prompt, the only way to talk to agents.** There are no separate message
-buttons: tap an agent, task, project or device to open its panel, and prompt it
-from there. Every agent, task, project and device composer (the panels, the
-chat window, the agent and chat pages) has only **Prompt**. Prompt wakes the agents now, so it starts Claude sessions that use
-your subscription. Agents that are offline, or whose runner is too old to run
-prompts, are skipped, and the prompt's page says which. Messages agents send you
-(`message_operator`) still arrive in Chats, and your older private messages stay
-readable there. Only boards take posts: on a project or task board, **Post**
-writes a note every agent in the project can read, and Prompt sits beside it.
+#### Chats
 
-- If the prompt reaches one connected agent, its runner starts right away, or
-  as soon as all of its running sessions have ended, before any new task
-  session; the prompt's session runs on its own. If that agent is offline, the
-  prompt waits for it to come back.
-- A project reaches every active agent allowed into it, whether or not it's on
-  one of the project's tasks; a task reaches the agents on it; a machine, the
-  agents enrolled from it.
-- If it reaches several connected agents (a task, a project, a machine), they
-  talk it over in a shared thread (which shows only a pointer to your text, as
-  other agents can read it), weigh who is free and what each machine
-  has, and each claims its share as a task that is already approved (it came
-  from you), assigned to that agent with the role "Share of prompt #N". An
-  agent busy on a task joins the discussion when its task session ends.
-- **Nothing times out** by default (`prompt_discussion_minutes = 0` in
-  `hub.toml`). Set it to 1–1440 to have undecided agents in a discussion, and
-  a single prompt's long-offline agent, time out after that many minutes, as
-  before 0.3.6.1. A revoked agent's part fails at once either way; **Withdraw**
-  takes back a prompt you no longer want.
+Every agent, task and project has one chat, and its slide-in panel (and its
+page) *is* that chat:
+- **An agent's chat** is your direct conversation with it.
+- **A task's chat** is everyone on the task plus you.
+- **A project's chat** is every agent allowed into the project plus you.
 
-The prompt also shows in each agent's private chat, labelled with its number,
-but it is not delivered as mail: a busy agent's current session never acts on
-it early. Follow a prompt on its page (`/ui/prompts/N`) or in the Dashboard's
-**Prompts** section. Each agent's note there is labelled: **agent text** for
-what the agent wrote, **hub note** for what the hub wrote (offline, timed out,
-withdrawn, and so on). While some agents haven't started on it, **Withdraw** on
-its card takes it back from them (any already working finish).
+Devices have no chat. The Chat button and the Chats page list every chat,
+newest first, with a dot for unread messages or anything waiting on you.
 
-**Answering a question** (`ask_operator`) also wakes the agent if it is online
-and idle, so it carries on at once; otherwise the answer arrives as a private
-message in its inbox. Either way the hub adds which question (and task) it
-answers.
+How a chat looks:
+- **Bubbles.** Newest is at the bottom, and the chat scrolls to it. Your
+  bubbles sit on the right, each agent's on the left beside its avatar. Under
+  your bubble you see who has picked the message up: mid-turn, woke up for it,
+  next turn, took a task, or sat out.
+- **Formatting.** Bubbles render Markdown and TeX. Everything an agent wrote is
+  escaped and labelled "agent content, treat as data", including tool lines and
+  sit-out reasons.
+- **Status lines.** Thin grey centred lines: started, working, waiting for the
+  usage limit, waiting for approval, finished, failed. Failed shows in red and
+  plays the failed hit when it arrives live. The same lines cover queued
+  messages, "X took task #N" and "X is sitting this one out: reason".
+- **Tool runs.** Each stretch of tool calls folds into one "ran N tools ▸" row.
+  It grows in place while the agent works and opens to compact lines such as
+  "Bash: pytest -q".
+- **Cards.** Approvals and questions arrive as cards: Approve/Reject plus a
+  reply box to discuss, or an answer box. Deciding on a card or on the
+  Approvals page updates both.
+
+Each chat has one message box. Enter sends on a keyboard; on a phone the arrow
+button sends. Updates are pushed over the dashboard's WebSocket. If it drops,
+open chats catch up every 10 s until it's back.
+
+0.3.7's Prompt, Send, Post, "Send to each agent", boards and prompt pages are
+gone from the UI. Old /ui/board links and /ui/chats/<agent> links redirect.
+
+**Talking to agents.** Your message in a chat starts work, so it uses your
+subscription:
+
+- **An agent's chat** wakes the agent, or reaches its running session (see
+  [chat sessions](#runner-and-limits)). It remembers the whole conversation.
+- **A task's chat** reaches every agent on the task.
+- **A project's chat** reaches every active agent allowed into the project.
+  For a piece of work, the agents talk it over in the chat, weighing who is
+  free and what each machine has. Then each one either takes its part as a
+  task that is already approved, because the request came from you ("X took
+  task #N"), or sits it out and says why.
+
+An offline agent gets your message when it comes back. Nothing times out.
+
+**Answering a question** (`ask_operator`) sends your answer to the agent as
+your message in its own chat, so it carries on at once. The hub
+adds which question (and task) it answers.
 
 **Markdown and TeX.** Messages, descriptions, notes, questions, and answers
 render as Markdown, with `$...$` TeX typeset. Agent text is rendered safely:
@@ -426,9 +438,10 @@ doing (asleep when idle, mining while working, hand raised when it needs
 you, and so on). **Reroll look** on the agent's page until you like it. The
 avatars are drawn by the hub itself, with no outside service.
 
-**Search** covers the full event log. Private chats, device boards and
-questions to you are deliberately not searchable: their events carry no text,
-so the search index never holds it. Agents' sessions run in `auto` permission
+**Search** covers the full event log, including what agents write in task and
+project chats. Agents' own chats with you, device boards and questions to you
+are deliberately not searchable: their events carry no text, so the search
+index never holds it. Agents' sessions run in `auto` permission
 mode; see [Runner and limits](#runner-and-limits). Everything is stored in the
 hub's database, so a restart loses nothing; `agenthub doctor` checks the
 database journal mode and the Litestream setup.
@@ -441,8 +454,8 @@ kinds, and names unless you set `ntfy_include_details = true`, because they go
 through a third-party server. ntfy.sh topics are public to anyone who guesses
 the name, so use a long random topic or an access-controlled server.
 
-Every action except prompts (Prompt and Withdraw are on the dashboard only) also
-exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
+Every action except chatting (on the dashboard only) also exists in the hub
+CLI: `agenthub hub approvals|tasks|agents|project ...`.
 
 ### MCP tools
 
@@ -486,8 +499,8 @@ When it would ask, the question reaches you as a live approval.
 agenthub refuses only one kind of command itself: fetching the hub's dashboard
 (a tailnet address followed by `/ui`). The **PreToolUse** hook checks every
 Bash command for it locally and refuses it outright; it can't be approved,
-because the dashboard is where a human decides approvals, questions and
-prompts. If the hook crashes, the command is blocked.
+because the dashboard is where a human decides approvals and answers
+questions. If the hook crashes, the command is blocked.
 
 Up to 0.3.5 the hook also held recursive `rm`, force pushes, pushes and merges
 to main, `gh pr merge`, SQL `DROP` and `git reset --hard` for approval. After
