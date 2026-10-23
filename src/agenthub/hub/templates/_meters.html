@@ -1,0 +1,61 @@
+{#- Device usage meters (views.device_meters). A bar is an inline SVG whose fill width is the percentage, drawn by the
+    server (the CSP allows no inline styles, and it works without JS); the page's live region redraws it. Each meter
+    is role=meter with its value as text beside the bar, so the colour (amber from 75 %, red from 90 %, with a "high"
+    word) is never the only cue. Stale samples are dimmed and say how old they are. -#}
+
+{% macro bar(m) -%}
+<span class="meter-bar" aria-hidden="true"><svg viewBox="0 0 100 1" preserveAspectRatio="none" focusable="false"><rect class="meter-fill" width="{{ m.pct }}" height="1"/></svg></span>
+{%- endmacro %}
+
+{% macro meter(m, name, compact=False) -%}
+<div class="meter lvl-{{ m.level }}{{ ' compact' if compact }}" role="meter" aria-label="{{ name }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ m.pct }}" aria-valuetext="{{ m.value }}{{ ', ' ~ m.detail if m.detail }}{{ ', high' if m.level == 'high' }}">
+  <span class="meter-label">{{ m.label }}</span>
+  {{ bar(m) }}
+  <span class="meter-value">{{ m.value }}{% if m.level == 'high' %} <span class="meter-flag" title="high">{{ '▲' if compact else 'high' }}</span>{% endif %}</span>
+  {%- if not compact %}
+  <span class="meter-detail">{{ m.detail }}</span>
+  {%- if m.spark %}
+  <svg class="spark" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="{{ name }}, last {{ m.spark.n }} readings: {{ m.spark.lo }} to {{ m.spark.hi }}"><title>Last {{ m.spark.n }} readings: {{ m.spark.lo }} to {{ m.spark.hi }}</title><polyline points="{{ m.spark.points }}" vector-effect="non-scaling-stroke"/></svg>
+  {%- endif %}
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{% macro no_data(label, why, compact=False) -%}
+<div class="meter none{{ ' compact' if compact }}"><span class="meter-label">{{ label }}</span><span class="meter-bar" aria-hidden="true"></span><span class="meter-value">{{ why }}</span></div>
+{%- endmacro %}
+
+{#- The compact block on a /ui/devices card: CPU, RAM and a VRAM row per GPU (views.COMPACT_GPUS), no sparklines. -#}
+{% macro usage_compact(u, d) -%}
+{% if not u %}<p class="small-line usage-none">No usage data yet{% if d.online %}: its runner may be older than 0.3.10{% endif %}.</p>
+{%- else %}
+<div class="usage{{ ' stale' if u.stale }}">
+  {{ meter(u.cpu, d.name ~ ' CPU', True) if u.cpu else no_data('CPU', 'no data', True) }}
+  {{ meter(u.mem, d.name ~ ' RAM', True) if u.mem else no_data('RAM', 'no data', True) }}
+  {% for m in u.vram %}{{ meter(m, d.name ~ ' ' ~ m.label ~ (' ' ~ m.name if m.name), True) }}
+  {% else %}{{ no_data('VRAM', 'no GPU', True) }}{% endfor %}
+  <p class="small-line usage-age">{% if u.stale %}stale: {% endif %}sampled {{ ago(u.ts) }}</p>
+</div>
+{%- endif %}
+{%- endmacro %}
+
+{#- The full meters on /ui/devices/<id> (and its panel): CPU, RAM, one VRAM bar per GPU, each with a sparkline. -#}
+{% macro usage_full(u, d) -%}
+{% if not u %}<p class="empty usage-none">No usage data yet. A runner on 0.3.10 or later sends CPU, RAM and VRAM with its heartbeat.</p>
+{%- else %}
+<div class="usage full{{ ' stale' if u.stale }}">
+  <p class="small-line usage-age">{% if u.stale %}<strong>Stale:</strong> {% endif %}sampled {{ ago(u.ts) }}{% if u.stale %}; the device stopped reporting{% endif %}</p>
+  {{ meter(u.cpu, 'CPU') if u.cpu else no_data('CPU', 'no data') }}
+  {{ meter(u.mem, 'RAM') if u.mem else no_data('RAM', 'no data') }}
+  {% for g in u.gpus %}
+  {% set gname = 'VRAM, ' ~ g.gpu ~ (' ' ~ g.name if g.name) %}
+  <div class="gpu">
+    <p class="small-line gpu-name">{{ g.gpu }}{% if g.name %} · {{ g.name }}{% endif %}{% if g.util %} · {{ g.util }} busy{% endif %}</p>
+    {{ meter(g, gname) }}
+  </div>
+  {% else %}
+  {{ no_data('VRAM', 'no GPU') }}
+  {% endfor %}
+</div>
+{%- endif %}
+{%- endmacro %}

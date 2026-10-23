@@ -238,6 +238,51 @@ header.top nav::-webkit-scrollbar { display: none; }
 .device-agents .name { overflow-wrap: anywhere; }
 .device-name { min-width: 0; overflow-wrap: anywhere; }
 
+/* Usage meters (_meters.html): the fill is an SVG rect sized by the server. Its colour carries severity (accent,
+   amber from 75 %, red from 90 %) and the track is a light step of the same colour; the value is always text too. */
+.usage { display: grid; gap: 8px; }
+.usage.full { gap: 12px; }
+.meter { --meter: var(--accent); display: grid; gap: 2px 12px; align-items: center;
+  grid-template-columns: 4.5rem minmax(120px, 1fr) 5rem 8.5rem 120px; grid-template-areas: "label bar value detail spark"; }
+.meter.lvl-warn { --meter: var(--warn); }
+.meter.lvl-high { --meter: var(--bad); }
+.meter-label { grid-area: label; font-weight: 600; }
+.meter-bar { grid-area: bar; display: block; height: 10px; border-radius: 5px; overflow: hidden;
+  background: color-mix(in srgb, var(--meter) 18%, var(--surface)); }
+.meter-bar svg { display: block; width: 100%; height: 100%; }
+.meter-fill { fill: var(--meter); }
+.meter-value { grid-area: value; justify-self: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.meter-flag { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.meter-detail { grid-area: detail; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.spark { grid-area: spark; justify-self: end; width: 120px; height: 24px; overflow: visible; }
+.spark polyline { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.drawer .meter { grid-template-columns: 1fr auto; grid-template-areas: "label value" "bar bar" "detail spark"; }
+@media (max-width: 640px) {
+  .meter { grid-template-columns: 1fr auto; grid-template-areas: "label value" "bar bar" "detail spark"; }
+}
+.meter.compact { grid-template-columns: 4rem 1fr 3.4rem; grid-template-areas: "label bar value"; gap: 2px 8px;
+  font-size: 0.85rem; }
+.meter.compact .meter-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter.compact .meter-bar { height: 6px; border-radius: 3px; }
+.meter.compact .meter-flag { font-size: 0.7rem; }
+.meter.none { --meter: var(--line); color: var(--muted); }
+.meter.none .meter-label { font-weight: 400; }
+.usage.stale .meter { --meter: var(--muted); opacity: 0.55; }
+.usage-age { margin: 0; }
+.usage.full .usage-age strong { color: var(--warn); }
+.gpu { display: grid; gap: 2px; }
+.gpu-name { margin: 0; overflow-wrap: anywhere; }
+.broadcast textarea { margin: 0 0 6px; }
+.broadcast-recipients { margin: 6px 0 0; padding-left: 1.2rem; }
+.ok-line { color: var(--ok); margin: 8px 0 0; }
+.broadcast-log { list-style: none; display: grid; gap: 10px; }
+.broadcast-log li + li { border-top: 1px solid var(--line); padding-top: 10px; }
+.broadcast-log p { margin: 0; }
+@media (forced-colors: active) {
+  .meter-bar { border: 1px solid CanvasText; }
+  .meter-fill { fill: Highlight; }
+}
+
 /* Chats */
 .chat-group { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
   font-weight: 700; margin: 14px 8px 2px; }

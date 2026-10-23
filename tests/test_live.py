@@ -49,14 +49,14 @@ def site(hub):
 
 def live_pages(ids, agent):
     return ["/ui/dashboard", "/ui/projects", "/ui/tasks", "/ui/agents", "/ui/devices", "/ui/approvals", "/ui/chats",
-            "/ui/usage", "/ui/reports"]
+            "/ui/usage", "/ui/reports", f"/ui/devices/{ids['node']}"]  # a device's page: its usage meters (0.3.10)
 
 
 def still_pages(ids, agent):
     # The agent, task and project pages hold their chat, which the socket keeps live (no 10 s refresh).
     return ["/ui/activity", "/ui/search?q=push", f"/ui/approvals/{ids['approval']}",
             f"/ui/questions/{ids['question']}", "/ui/projects/proj", f"/ui/tasks/{ids['task']}",
-            f"/ui/agents/{agent.id}", f"/ui/devices/{ids['node']}"]
+            f"/ui/agents/{agent.id}"]
 
 
 def test_only_pages_with_a_live_block_poll(site):

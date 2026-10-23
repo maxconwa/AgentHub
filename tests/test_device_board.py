@@ -242,17 +242,18 @@ def test_revoked_only_device_has_no_page(hub):
 
 
 def test_device_page_shows_its_agents_and_no_board(box):
-    """Devices have no chat in 0.3.8: the page lists the machine's agents (each opens its panel), and the board
-    stays the agents' own (post_device)."""
+    """The page lists the machine's agents (each opens its panel), and the board stays the agents' own (post_device):
+    the page's one form is the operator's broadcast box (0.3.10), not a board composer."""
     hub, alice, bob, carol = box
     post(hub, alice, "only for the agents")
     r = get(hub, f"/ui/devices/{BOX}")
     assert r.status_code == 200 and "script-src 'self'" in r.headers["content-security-policy"]
     html = r.text
-    assert BOX_NAME in html and "carol" not in html and "Devices have no chat" in html
+    assert BOX_NAME in html and "carol" not in html and "Message all agents on this device" in html
     for item in (f"agent:{alice.id}", f"agent:{bob.id}"):
         assert f'data-panel="{item}"' in html, item
-    assert "only for the agents" not in html and "<textarea" not in html and "/notes" not in html
+    assert "only for the agents" not in html and html.count("<textarea") == 1 and "/notes" not in html
+    assert f'action="/ui/devices/{BOX}/broadcast"' in html
     r = hub.client.post(f"/ui/devices/{BOX}/notes", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "x"})
     assert r.status_code in (404, 405)
 

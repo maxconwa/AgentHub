@@ -48,6 +48,23 @@
   }
   if (window.htmx) htmx.onLoad(restoreDetails);
 
+  // A hidden tab skips its live-region polls (the device meters and the rest); the next one after it shows again
+  // catches up, so coming back to the tab redraws at once.
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    if (document.hidden && evt.detail.elt && evt.detail.elt.id === "live") evt.preventDefault();
+  });
+  document.addEventListener("visibilitychange", function () {
+    var live = document.getElementById("live");
+    if (!document.hidden && live && window.htmx) htmx.ajax("GET", live.getAttribute("hx-get"), {source: live});
+  });
+
+  // The device page's broadcast box empties once the hub has taken the message (a refusal keeps the text).
+  document.addEventListener("htmx:afterRequest", function (evt) {
+    var form = evt.detail.elt;
+    if (!form || !form.matches || !form.matches(".broadcast form") || !evt.detail.successful) return;
+    if (form.parentNode.querySelector("#broadcast-result .ok-line")) form.reset();
+  });
+
   // Failed: an item that can fail carries data-fail-key (and data-failed while failed; see fail_attrs in
   // _macros.html). When a swap brings in a key failed that this page last showed not failed, the new element plays
   // .failed-new once. A key first seen already failed (on page load, say) only shows its red edge.

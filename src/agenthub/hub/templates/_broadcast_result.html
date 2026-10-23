@@ -1,0 +1,14 @@
+{#- What a device broadcast did: `sent` and `woke` counts, `recipients` (broadcasts.send's, with HTMX only), or
+    `error` (the hub's reason it didn't go). -#}
+{% if error %}
+<p class="error" role="alert">Not sent: {{ error }}</p>
+{% else %}
+<p class="ok-line">Sent to {{ sent }} agent{{ 's' if sent != 1 }}, woke {{ woke }}.</p>
+{% if recipients %}
+<ul class="broadcast-recipients small-line">
+  {% for r in recipients %}
+  <li>{{ r.name }}: {% if not r.delivered %}not delivered{% elif r.woke %}woken{% else %}delivered{% endif %}{% if r.reason %} ({{ r.reason | replace('_', ' ') }}){% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}

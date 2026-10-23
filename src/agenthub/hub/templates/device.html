@@ -1,11 +1,17 @@
 {% extends "base.html" %}
+{% set has_live = true %}
 {% from "_macros.html" import chip, avatar, open_attrs %}
+{% from "_meters.html" import usage_full with context %}
 {% block title %}{{ d.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/devices">← Devices</a></p>
 <h1><span class="device-name">{{ d.name }}</span>
   <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></h1>
 <p class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</p>
+{% endblock %}
+{% block live %}
+<h2>Usage</h2>
+<section class="panel" aria-label="Usage">{{ usage_full(d.meters, d) }}</section>
 <h2>Agents</h2>
 <ul class="device-agents panel">
   {% for a in d.agents %}
@@ -13,5 +19,17 @@
     <span class="small-line">{{ 'connected' if a.connected else 'not connected' }}</span></li>
   {% endfor %}
 </ul>
-<p class="small-line">Devices have no chat: message an agent on it from its chat.</p>
+{% if broadcasts %}
+<h2>Sent to this device</h2>
+<ul class="panel broadcast-log">
+  {% for m in broadcasts %}
+  <li><p class="small-line">{{ ago(m.ts) }}</p>
+    <p class="summary">{{ m.body | truncate(240) }}</p>
+    <p class="small-line">{% for x in m.deliveries %}{{ x.name }}: {{ x.mode or x.status }}{{ ' · ' if not loop.last }}{% else %}reached nobody{% endfor %}</p></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
+{% block after_live %}
+{% include "_broadcast.html" %}
 {% endblock %}

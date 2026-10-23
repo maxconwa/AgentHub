@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
@@ -370,12 +370,27 @@ def render_new(request: Request, operator: Operator, conn: sqlite3.Connection, i
                   agents=[a for a in store.list_agents(conn) if a["status"] == "active"])
 
 
+RECENT_BROADCASTS = 5  # the operator's messages to all of a device's agents that its page lists
+
+
+def with_meters(d: dict[str, Any], *, history: bool = True) -> dict[str, Any]:
+    """A views.devices entry plus ``meters`` (views.device_meters) from its latest stats sample, with sparklines over
+    the hub's recent samples when ``history``. An offline device's sample counts as stale too."""
+    from agenthub.hub import device_stats  # it imports this module's operator checks
+
+    past = device_stats.history(d["node_id"]) if history else []
+    stale = bool(d.get("stats_stale")) or not d["online"]
+    return {**d, "meters": views.device_meters(d.get("stats"), past, stale=stale)}
+
+
 def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection, item: str, next: str) -> HTMLResponse:
     """The slide-in panel fragment for ``item``; its forms post back with ``panel`` and ``next``. An agent's, task's or
     project's panel is its chat (``c``, :func:`views.chat`)."""
     if item in NEW_FORMS:
         return render_new(request, operator, conn, item, next)
     data = views.panel(conn, item)
+    if data["kind"] == "device":
+        data["d"] = with_meters(data["d"])
     if data.get("c") and same_origin(request):  # the operator is looking at this chat now
         seen(conn, data["c"])
     return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next),
@@ -811,12 +826,42 @@ def build_router() -> APIRouter:
 
     @router.get("/devices", response_class=HTMLResponse)
     def devices_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "devices.html", conn, nav="devices", devices=views.devices(conn))
+        devices = [with_meters(d, history=False) for d in views.devices(conn)]
+        return render(request, operator, "devices.html", conn, nav="devices", devices=devices)
 
     @router.get("/devices/{node_id}", response_class=HTMLResponse)
-    def device_page(node_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        device = views.device(conn, node_id)
-        return render(request, operator, "device.html", conn, nav="devices", d=device)
+    def device_page(node_id: str, request: Request, operator: Op, conn: Conn,
+                    sent: Annotated[int | None, Query(ge=0)] = None,
+                    woke: Annotated[int | None, Query(ge=0)] = None) -> HTMLResponse:
+        """A device's meters, agents and the operator's last few messages to all of them (broadcasts.recent, with how
+        each reached each agent). ``sent``/``woke``: what the broadcast just posted did (its PRG redirect)."""
+        from agenthub.hub import broadcasts  # it imports this module's operator checks
+
+        device = with_meters(views.device(conn, node_id))
+        recent = [m for m in broadcasts.recent(conn, node_id, limit=RECENT_BROADCASTS)["messages"] if "deliveries" in m]
+        return render(request, operator, "device.html", conn, nav="devices", d=device, sent=sent, woke=woke or 0,
+                      broadcasts=recent[::-1], live_url=f"/ui/devices/{quote(node_id, safe='')}")
+
+    @router.post("/devices/{node_id}/broadcast")
+    def device_broadcast(node_id: str, request: Request, operator: PostOp, conn: Conn,
+                         body: Annotated[str, Form()] = "") -> Response:
+        """Message all agents on this device (broadcasts.send; also POST /ui/api/devices/{node_id}/broadcast). With
+        HTMX the reply is the result line (a refusal included, as its text); a plain form comes back to the page."""
+        from agenthub.hub import broadcasts  # it imports this module's operator checks
+
+        page = f"/ui/devices/{quote(node_id, safe='')}"
+        try:
+            with db.transaction(conn):
+                result = broadcasts.send(conn, node_id, body, actor=operator.actor)
+        except (store.NotFound, store.Conflict, store.Invalid) as exc:
+            if not request.headers.get("hx-request"):
+                raise
+            return render(request, operator, "_broadcast_result.html", conn, error=str(exc))
+        if request.headers.get("hx-request"):
+            return render(request, operator, "_broadcast_result.html", conn, error=None, sent=result["sent"],
+                          woke=result["woke"], recipients=result["recipients"])
+        return RedirectResponse(f"{page}?{urlencode({'sent': result['sent'], 'woke': result['woke']})}",
+                                status_code=303, headers=SECURITY_HEADERS)
 
     # agents -------------------------------------------------------------------------
 

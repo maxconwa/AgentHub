@@ -383,7 +383,14 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
 - **Agents:** every agent's card and enrollment codes. Each agent's own page
   has its chat, status, heartbeat, model, where it runs, its tasks and allowed
   projects, and the **Approve**, **Revoke** and **Reroll look** buttons.
-- **Devices:** each machine and its agents.
+- **Devices:** each machine and its agents, with small CPU, RAM and VRAM
+  bars (0.3.10). A machine's own page shows the full meters: CPU, RAM, and
+  one VRAM bar per GPU, each with used of total and a sparkline of recent
+  readings. The meters refresh every 10 s, and they dim and say how old the
+  reading is once the machine stops reporting. Bars turn amber from 75 % and
+  red from 90 %, marked "high". The same page has the **Message all agents on
+  this device** box and lists your last few messages to the machine, with how
+  each agent got each one.
 - **Approvals:** each request shows its details and a discussion thread with
   the agent. Ask why it needs something, then approve or reject. Questions
   from agents (`ask_operator`) wait here too, with a box for your answer. The
