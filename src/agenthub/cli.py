@@ -244,6 +244,21 @@ def agents_revoke(agent: str) -> None:
     typer.echo(f"revoked {a.name} ({a.id})")
 
 
+@agents_app.command("rename")
+def agents_rename(agent: str, new_name: str) -> None:
+    """Respell an agent's name in other case (e.g. lowercase before rolling back to 0.3.8). Its id and token stay."""
+    from agenthub.hub import db, store
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            old = store.find_agent(conn, agent).name
+            a = store.rename_agent(conn, agent, new_name, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    typer.echo(f"renamed {old} to {a.name} ({a.id}); set name = \"{a.name}\" in that agent's agent.toml")
+
+
 @agents_app.command("projects")
 def agents_projects(agent: str, projects: str) -> None:
     """Set an agent's allowed projects (comma-separated)."""
@@ -345,6 +360,22 @@ def project_add(name: str, description: str = "") -> None:
     except store.StoreError as exc:
         _fail(str(exc))
     typer.echo(f"{'created' if created else 'exists'}: {stored}")
+
+
+@project_app.command("rename")
+def project_rename(name: str, new_name: str) -> None:
+    """Respell a project's name in other case everywhere (e.g. lowercase before rolling back to 0.3.8)."""
+    from agenthub.hub import db, store
+
+    conn = _hub_conn()
+    try:
+        with db.transaction(conn):
+            old = store.require_project_name(conn, name)
+            new = store.rename_project(conn, name, new_name, actor=_local_operator())
+    except store.StoreError as exc:
+        _fail(str(exc))
+    hint = "; a runner older than 0.3.9.0 needs its runner.toml [projects] key spelled the same way"
+    typer.echo(f"renamed project {old} to {new}" + (hint if old != new else ""))
 
 
 @project_app.command("list")

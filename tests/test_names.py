@@ -243,3 +243,64 @@ def test_a_rolled_back_hub_still_fills_name_key(tmp_path, monkeypatch):
     assert conn.execute("SELECT name_key FROM projects WHERE name = 'legacy'").fetchone()[0] == "legacy"
     conn.execute("UPDATE projects SET name = 'Legacy2' WHERE name = 'legacy'")
     assert conn.execute("SELECT name_key FROM projects WHERE name = 'Legacy2'").fetchone()[0] == "legacy2"
+
+
+# --- respelling a name in other case (before rolling back to 0.3.8) --------------------------------------------------
+
+
+def test_a_project_is_respelled_everywhere_it_is_named(hub):
+    a = hub.enroll("alice", projects=("Golem",))
+    conn = hub.conn()
+    with db.transaction(conn):
+        t = tasks.create_task(conn, actor=OPERATOR, project="Golem", title="t")
+        chats.send(conn, "project", "Golem", "hello", OPERATOR)
+        chats.send(conn, "task", str(t["id"]), "on it", OPERATOR)
+        store.create_enrollment(conn, created_by=OPERATOR, projects=["Golem"])
+        conn.execute("UPDATE agents SET checkouts = '{\"Golem\":\"/src/g\"}' WHERE id = ?", (a.id,))
+    with db.transaction(conn):
+        assert store.rename_project(conn, "GOLEM", "golem", actor=OPERATOR) == "golem"
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert [p["name"] for p in store.list_projects(conn) if p["name"] != "proj"] == ["golem"]
+    assert tasks.get_task(conn, t["id"])["project"] == "golem"
+    assert {(r["kind"], r["ref"], r["project"]) for r in conn.execute("SELECT kind, ref, project FROM chats")} >= {
+        ("project", "golem", "golem"), ("task", str(t["id"]), "golem")}
+    assert store.find_agent(conn, a.id).allowed_projects == ("golem",)
+    assert conn.execute("SELECT checkouts FROM agents WHERE id = ?", (a.id,)).fetchone()[0] == '{"golem":"/src/g"}'
+    assert all("Golem" not in r[0] for r in conn.execute("SELECT allowed_projects FROM enrollments"))
+    # what the hub did before the rename still reads, and an agent's calls work under the new spelling
+    assert [m["body"] for m in api(hub, a, "GET", "/chats/project/golem/messages").json()["messages"]
+            if m["kind"] == "text"] == ["hello"]
+    assert api(hub, a, "GET", "/projects/golem/tasks").json()["tasks"][0]["id"] == t["id"]
+    renamed = conn.execute("SELECT payload FROM events WHERE type = 'project.renamed'").fetchone()[0]
+    assert renamed == '{"from":"Golem","to":"golem"}'
+
+
+def test_a_rename_only_changes_case(hub):
+    hub.enroll("Alice", projects=("Golem",))
+    conn = hub.conn()
+    for call in (lambda: store.rename_project(conn, "Golem", "golem2", actor=OPERATOR),
+                 lambda: store.rename_agent(conn, "alice", "bob", actor=OPERATOR),
+                 lambda: store.rename_agent(conn, "alice", "al ice", actor=OPERATOR)):
+        with pytest.raises(store.Invalid), db.transaction(conn):
+            call()
+    with db.transaction(conn):
+        a = store.rename_agent(conn, "ALICE", "alice", actor=OPERATOR)
+    assert a.name == "alice" and conn.execute("SELECT name_key FROM agents").fetchone()[0] == "alice"
+
+
+def test_cli_respells_agents_and_projects(tmp_path):
+    from agenthub.cli import _hub_conn
+    from agenthub.hub.store import Device
+
+    runner = CliRunner()
+    runner.invoke(cli_app, ["hub", "init", "--no-systemd"])
+    code = runner.invoke(cli_app, ["hub", "enroll", "--projects", "Golem"]).stdout.strip().splitlines()[0]
+    conn = _hub_conn()
+    with db.transaction(conn):
+        store.redeem_enrollment(conn, code=code, name="Hub-Builder-1", device=Device("n1", "host", "100.64.0.9"))
+    r = runner.invoke(cli_app, ["hub", "agents", "rename", "hub-builder-1", "hub-builder-1"])
+    assert r.exit_code == 0 and r.output.startswith("renamed Hub-Builder-1 to hub-builder-1"), r.output
+    r = runner.invoke(cli_app, ["hub", "project", "rename", "golem", "golem"])
+    assert r.exit_code == 0 and r.output.startswith("renamed project Golem to golem"), r.output
+    assert runner.invoke(cli_app, ["hub", "project", "rename", "golem", "other"]).exit_code == 1
+    assert runner.invoke(cli_app, ["hub", "agents", "list"]).output.split()[1] == "hub-builder-1"

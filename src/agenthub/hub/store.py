@@ -165,6 +165,47 @@ def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name")]
 
 
+def _check_recase(kind: str, old: str, new: str) -> None:
+    """A rename only changes case (``Golem`` to ``golem``), so the slug, and everything outside the hub named by it
+    (runner units, config folders, branches, runner.toml keys), stays the same."""
+    check_name(kind, new)
+    if not names.same(old, new):
+        raise Invalid(f"a {kind} can only be renamed to the same name in other case ({old!r} to {old.lower()!r}, "
+                      f"not {new!r})")
+
+
+def rename_project(conn: sqlite3.Connection, project: str, new: str, *, actor: str) -> str:
+    """Respell a project's name in other case everywhere it is named (its tasks, chats, boards, the agents allowed
+    into it, ...), e.g. lowercase before rolling back to a hub that doesn't take capitals. Events are append-only:
+    the ones from before keep the old spelling. Returns the new name."""
+    old = require_project_name(conn, project)
+    _check_recase("project", old, new)
+    if new == old:
+        return old
+    conn.execute("PRAGMA defer_foreign_keys = ON")  # the rows naming it change in this transaction, then it
+    conn.execute("UPDATE projects SET name = ? WHERE name = ?", (new, old))
+    for r in conn.execute("SELECT m.name AS tbl, f.\"from\" AS col FROM sqlite_master m, "
+                          "pragma_foreign_key_list(m.name) f WHERE m.type = 'table' AND f.\"table\" = 'projects'"
+                          ).fetchall():
+        conn.execute(f"UPDATE {r['tbl']} SET {r['col']} = ? WHERE {r['col']} = ?", (new, old))
+    conn.execute("UPDATE chats SET ref = ? WHERE kind = 'project' AND ref = ?", (new, old))
+    conn.execute("UPDATE prompts SET target = ? WHERE target = ?", (f"project:{new}", f"project:{old}"))
+    for table, column in (("agents", "allowed_projects"), ("enrollments", "allowed_projects")):
+        for r in conn.execute(f"SELECT rowid, {column} FROM {table}").fetchall():
+            listed = json.loads(r[column])
+            if old in listed:
+                conn.execute(f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
+                             (json.dumps([new if p == old else p for p in listed]), r["rowid"]))
+    for r in conn.execute("SELECT id, checkouts FROM agents WHERE checkouts IS NOT NULL").fetchall():
+        checkouts = json.loads(r["checkouts"] or "{}")
+        if old in checkouts:
+            checkouts = {new if k == old else k: v for k, v in checkouts.items()}
+            conn.execute("UPDATE agents SET checkouts = ? WHERE id = ?",
+                         (json.dumps(checkouts, separators=(",", ":")), r["id"]))
+    events.emit(conn, type="project.renamed", actor=actor, project=new, payload={"from": old, "to": new})
+    return new
+
+
 # --- agents and enrollment ----------------------------------------------------
 
 
@@ -309,6 +350,18 @@ def set_agent_status(conn: sqlite3.Connection, id_or_name: str, status: str, *, 
             "WHERE ta.agent_id = ? AND ta.stage = 'works' AND t.state = 'in_progress'", (agent.id,)
         ).fetchall():
             task_agents.maybe_advance(conn, r["task_id"], actor=actor)
+    return find_agent(conn, agent.id)
+
+
+def rename_agent(conn: sqlite3.Connection, id_or_name: str, new: str, *, actor: str) -> Agent:
+    """Respell an agent's name in other case (its id, token and everything keyed on its id stay), e.g. lowercase
+    before rolling back to a hub that doesn't take capitals."""
+    agent = find_agent(conn, id_or_name)
+    _check_recase("agent", agent.name, new)
+    if new != agent.name:
+        conn.execute("UPDATE agents SET name = ? WHERE id = ?", (new, agent.id))
+        events.emit(conn, type="agent.renamed", actor=actor,
+                    payload={"agent_id": agent.id, "from": agent.name, "to": new})
     return find_agent(conn, agent.id)
 
 
