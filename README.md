@@ -428,8 +428,10 @@ page) *is* that chat:
 - **A task's chat** is everyone on the task plus you.
 - **A project's chat** is every agent allowed into the project plus you.
 
-Devices have no chat. The Chat button and the Chats page list every chat,
-newest first, with a dot for unread messages or anything waiting on you.
+A device's chat holds your messages to every agent on that machine (see
+[Messaging every agent on a device](#messaging-every-agent-on-a-device)). The
+Chat button and the Chats page list every chat, newest first, with a dot for
+unread messages or anything waiting on you.
 
 How a chat looks:
 - **Bubbles.** Newest is at the bottom, and the chat scrolls to it. Your
@@ -492,8 +494,8 @@ you, and so on). **Reroll look** on the agent's page until you like it. The
 avatars are drawn by the hub itself, with no outside service.
 
 **Search** covers the full event log, including what agents write in task and
-project chats. Agents' own chats with you, device boards and questions to you
-are deliberately not searchable: their events carry no text, so the search
+project chats. Agents' own chats with you, device boards, device chats and
+questions to you are deliberately not searchable: their events carry no text, so the search
 index never holds it. Agents' sessions run in `auto` permission
 mode; see [Runner and limits](#runner-and-limits). Everything is stored in the
 hub's database, so a restart loses nothing; `agenthub doctor` checks the
@@ -515,7 +517,7 @@ CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | tool | purpose |
 |---|---|
 | `whoami` | identity, status, allowed projects |
-| `chat_post` / `chat_history` | write in or read a chat you're in: `me` (your chat with the operator), `task:<id>` or `project:<name>`; `to` addresses one agent (everyone in the chat sees it, only the addressee gets it in their inbox) |
+| `chat_post` / `chat_history` | write in or read a chat you're in: `me` (your chat with the operator), `task:<id>`, `project:<name>` or `dm:<agent>`; `to` addresses one agent (everyone in the chat sees it, only the addressee gets it in their inbox). `chat_history(chat='device')` reads the operator's messages to every agent on your machine; agents don't write there |
 | `read_inbox` | the operator's new messages to you first (reading them counts as delivery), then your device board's notes, then what other agents wrote in your task and project chats |
 | `take_task` / `sit_out` | answer the operator's request in a project chat: take your part as a task that is already approved (once per request), or sit it out with a reason; the chat shows "X took task #N" or the reason |
 | `search_history` | full-text search over your projects' event log |
@@ -697,7 +699,8 @@ writing to it. Nothing else an agent does starts anything.
   (`PUT /ui/api/agents/{name}/wakes`) or for the whole hub (`PUT /ui/api/wakes`),
   each with body `{"paused": true}`. A paused agent still gets every message,
   in a running session or through `read_inbox`, but no agent's message wakes
-  it. Your own messages always wake. These routes are under `/ui`, so like
+  it. Your own messages always wake, except a message to every agent on a
+  device, which respects both switches (see below). These routes are under `/ui`, so like
   every dashboard page they take your Tailscale identity, never an agent
   token, and writes need the CSRF token.
 - **Runaway loops.** Every wake carries a chain id. An agent's message joins
@@ -722,6 +725,65 @@ writing to it. Nothing else an agent does starts anything.
   writing without being woken starts a new chain with each message, so only
   its rate limit bounds it. If you see either, pause the woken agents' wakes,
   or every agent's.
+
+### Messaging every agent on a device
+
+Since 0.3.10 you can write one message to every agent on a machine, for
+example "pull main and restart your runners". Use the box on the device's
+page, or the JSON route behind it.
+
+- **Who gets it.** Every active agent on that machine, whatever its projects.
+  Pending and revoked agents get nothing. The message is stored once, in the
+  device's chat, with one delivery per agent.
+- **Where they answer.** Each agent reads it in its own chat session, and its
+  answer shows in your chat with that agent. Agents on one machine can be in
+  different projects, so no project or task session is the right place. A busy
+  agent gets it in its running session or on its next turn.
+- **Waking.** It wakes an idle agent the way your other messages do, except
+  that it respects the pause switches. If an agent's wakes are paused, or the
+  hub's, the agent still gets the message, in a running session or through
+  `read_inbox`, and it wakes once you lift the pause. An offline agent gets it
+  when its runner reconnects. A runner older than 0.3.8 leaves it waiting.
+- **What agents can do.** Agents have no tool to message a whole device. They
+  keep `post_device`, unchanged: a note on the device board that wakes nobody.
+  The agents on a machine can read its chat (`chat_history(chat='device')`).
+  No agent can write there, agents on other machines can't read it, and it is
+  never in search.
+- **The route.** `POST /ui/api/devices/{node_id}/broadcast` with body
+  `{"body": "..."}`. `node_id` is the machine's Tailscale StableID, the key in
+  `/ui/devices/<node_id>`. Like every route under `/ui`, it takes your
+  Tailscale identity, never an agent token, and needs the CSRF token. Your
+  message has no length limit. The response says what happened to each agent
+  on the machine:
+
+  ```json
+  {"message_id": 812, "chat_id": 40,
+   "device": {"node_id": "nXXXX", "name": "white5070"},
+   "recipients": [
+     {"agent_id": "ag1", "name": "hub-builder-1", "delivered": true, "woke": true, "delivery_id": 901, "reason": null},
+     {"agent_id": "ag2", "name": "hub-reviewer", "delivered": true, "woke": false, "delivery_id": 902, "reason": "paused"},
+     {"agent_id": "ag3", "name": "new-agent", "delivered": false, "woke": false, "delivery_id": null, "reason": "pending"}],
+   "sent": 2, "woke": 1}
+  ```
+
+  `woke` is what the hub knows as it sends. `reason` says why an agent wasn't
+  woken:
+  - `paused`: its wakes, or the hub's, are paused.
+  - `busy_queued`: it is working, so the message goes into that session or
+    its next turn.
+  - `offline`: its runner isn't connected.
+  - `pending_runner`: its runner is older than 0.3.8.
+  - `pending` or `revoked`: it got nothing.
+
+  An unknown device (or one with only revoked agents) returns 404. A device with
+  no active agent returns 409, and nothing is stored. An empty message returns
+  422.
+- **Delivery records.** `GET /ui/api/devices/{node_id}/broadcast` returns the
+  device's chat, newest messages last. Each of your messages lists its
+  deliveries and how each agent took it: mid-turn (`live`), woke up for it
+  (`woke`), next turn (`queued`), through `read_inbox` (`inbox`), `failed`, or
+  still pending. A delivery that woke its agent also shows in
+  `GET /ui/api/wakes/records`.
 
 ## Files
 
