@@ -153,17 +153,17 @@ _DECLINE_WORDS = {"not_in_project": "has no access to this chat's project", "not
 
 def _hub_status(meta: dict[str, Any], names: dict[str, str]) -> str:
     """A status line the hub wrote (agent ids and names, numbers and fixed words only, so it is plain text)."""
-    def who(agent_id: Any) -> str:
-        return str(names.get(agent_id, agent_id))
+    def who(key: str) -> str:  # the hub wrote the names with the ids (an agent outside the chat isn't in names)
+        agent_id = meta.get(key)
+        return str(names.get(agent_id) or meta.get("agent_name" if key == "agent_id" else f"{key}_name") or agent_id)
 
     state, chain = meta.get("state"), meta.get("chain_id")
     if state == "woke":
         where = f" (task #{meta['task_id']})" if isinstance(meta.get("task_id"), int) else ""
-        return f"{who(meta.get('waker'))} woke {who(meta.get('agent_id'))}{where} with message #{meta.get('message_id')}"
+        return f"{who('waker')} woke {who('agent_id')}{where} with message #{meta.get('message_id')}"
     if state == "wake_declined":
         why = _DECLINE_WORDS.get(meta.get("reason"), "can't be woken here")
-        return (f"{who(meta.get('waker'))}'s message #{meta.get('message_id')} did not wake "
-                f"{who(meta.get('agent_id'))}: it {why}")
+        return f"{who('waker')}'s message #{meta.get('message_id')} did not wake {who('agent_id')}: it {why}"
     if state == "loop_paused":
         return (f"wake chain {chain} paused after {meta.get('wakes')} wakes with nothing landing (limit "
                 f"{meta.get('limit')}); the operator decides on approval #{meta.get('approval_id')}")

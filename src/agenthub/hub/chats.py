@@ -103,7 +103,7 @@ def chat_title(conn: sqlite3.Connection, kind: str, ref: str) -> str:
         return f"project {ref}"
     found = _names(conn, ref.split(":") if kind == "dm" else [ref])
     if kind == "dm":
-        return " ↔ ".join(found.get(i, i) for i in ref.split(":"))
+        return " ↔ ".join(sorted(found.get(i, i) for i in ref.split(":")))
     return found.get(ref, ref)
 
 
@@ -472,8 +472,9 @@ def post(
             continue
         recipients.append(target)
     for target, reason in declined:
-        hub_status(conn, chat_row, {"state": "wake_declined", "agent_id": target.id, "waker": agent.id,
-                                    "message_id": message_id, "reason": reason})
+        hub_status(conn, chat_row, {"state": "wake_declined", "agent_id": target.id, "agent_name": target.name,
+                                    "waker": agent.id, "waker_name": agent.name, "message_id": message_id,
+                                    "reason": reason})
     found = get_message(conn, message_id)
     found["chain_id"], found["wakes"], found["broadcast"] = None, [], False
     found["declined"] = [{"agent_id": t.id, "name": t.name, "reason": r} for t, r in declined]
@@ -768,7 +769,8 @@ def claim_delivery(
             meta["detail"] = note[:MAX_DETAIL_CHARS]
         _insert(conn, chat_row, author=agent.id if mode == "failed" else SYSTEM, kind="status", meta=meta)
     elif mode == "woke" and not _is_operator(found["author"]):  # "hub-reviewer woke hub-builder-1 (task #27)"
-        line: dict[str, Any] = {"state": "woke", "agent_id": agent.id, "waker": found["author"],
+        line: dict[str, Any] = {"state": "woke", "agent_id": agent.id, "agent_name": agent.name,
+                                "waker": found["author"], "waker_name": found["author_name"],
                                 "message_id": found["message_id"], "chain_id": found["chain_id"]}
         if chat_row["kind"] == "task":
             line["task_id"] = int(chat_row["ref"])
