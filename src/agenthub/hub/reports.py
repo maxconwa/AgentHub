@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from agenthub.hub import events, tasks
 from agenthub.hub.db import now_iso
-from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
+from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, require_project_name
 
 MAX_TITLE_CHARS = 200
 MAX_SUMMARY_CHARS = 4000
@@ -139,10 +139,9 @@ def publish(
 ) -> dict[str, Any]:
     """Publish a report, or (``report_id``) replace one ``agent`` published: its title, summary and page (a link
     or HTML); its task too when ``task_id`` is given. Returns the report without its HTML."""
-    if project not in agent.allowed_projects:
+    if agent.project(project) is None:
         raise Forbidden(f"no access to project {project!r}")
-    if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone():
-        raise NotFound(f"no project {project!r}")
+    project = require_project_name(conn, project)
     title = title.strip()
     if not title or len(title) > MAX_TITLE_CHARS:
         raise Invalid(f"a report title must be 1 to {MAX_TITLE_CHARS} characters")

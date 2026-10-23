@@ -80,5 +80,5 @@ def test_channels_are_retired_but_their_unread_messages_still_arrive(hub):
 
 def test_message_size_limit(hub):
     a = hub.enroll("a")
-    assert post(hub, a, "x" * 16_001).status_code == 422
+    assert post(hub, a, "x" * (64 * 1024 + 1)).status_code == 422  # an agent's message: at most 64 KiB
     assert post(hub, a, "").status_code == 422

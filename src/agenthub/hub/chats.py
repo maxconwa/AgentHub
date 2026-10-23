@@ -36,18 +36,21 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from agenthub.hub import events
+from agenthub import names
+from agenthub.hub import events, limits
 from agenthub.hub.db import now_iso
-from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent
+from agenthub.hub.store import (
+    Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent, require_project_name,
+)
 
 KINDS = ("agent", "task", "project")
-MAX_BODY_CHARS = 16_000
+MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's message; the operator's have no limit
 MAX_LINE_CHARS = 300
 MAX_TOOL_LINES = 200  # kept per tools row; meta.count has the true total
 MAX_DETAIL_CHARS = 500
 MAX_STREAM_ITEMS = 50
 MAX_TITLE_CHARS = 200
-MAX_TASK_BODY_CHARS = 16_000
+MAX_TASK_BODY_CHARS = limits.AGENT_TEXT_CHARS
 STATES = ("started", "working", "usage_limit", "approval_wait", "finished", "failed", "queued")
 CLAIM_MODES = ("live", "queued", "woke", "failed")
 SYSTEM = "system:hub"
@@ -75,8 +78,7 @@ def _resolve(conn: sqlite3.Connection, kind: str, ref: str) -> tuple[str, str | 
             raise NotFound(f"no task {ref}")
         return str(row["id"]), row["project"], f"task #{row['id']}"
     if kind == "project":
-        if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (ref,)).fetchone():
-            raise NotFound(f"no project {ref!r}")
+        ref = require_project_name(conn, ref)
         return ref, ref, f"project {ref}"
     raise NotFound(f"no chat kind {kind!r}")
 
@@ -241,6 +243,8 @@ def _insert(
                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                        (chat_row["id"], author, kind, body, json.dumps(meta, separators=(",", ":")), legacy, ts, ts))
     extra: dict[str, Any] = {"to": meta["to"]} if meta.get("to") else {}
+    if meta.get("mentions"):  # agent ids, like ``to``
+        extra["mentions"] = meta["mentions"]
     if meta.get("source"):
         extra["source"] = meta["source"]
     # What agents write in task and project chats is searchable (search_history) by the agents in that project;
@@ -265,8 +269,21 @@ def _touch(conn: sqlite3.Connection, message_id: int, *, actor: str) -> None:
     _emit(conn, "chat.updated", _chat_by_id(conn, row["chat_id"]), message_id, row["kind"], actor=actor)
 
 
-def _check_body(body: str, limit: int = MAX_BODY_CHARS) -> str:
-    if not isinstance(body, str) or not body.strip() or len(body) > limit:
+def _mentions(conn: sqlite3.Connection, chat_row: dict[str, Any], body: str, *, author: str) -> list[str]:
+    """The ids of the chat's agents ``body`` @mentions (names ignore case; the text keeps them as written), not the
+    author's own."""
+    wanted = {names.key(n) for n in names.mentions(body)}
+    if not wanted:
+        return []
+    found = _names(conn, members(conn, chat_row["kind"], chat_row["ref"]))
+    return [i for i, n in found.items() if names.key(n) in wanted and i != author]
+
+
+def _check_body(body: str, limit: int | None = MAX_BODY_CHARS) -> str:
+    """Text that isn't blank and (``limit`` None: the operator's, which has no limit) at most ``limit`` characters."""
+    if not isinstance(body, str) or not body.strip():
+        raise Invalid("a chat message can't be empty")
+    if limit is not None and len(body) > limit:
         raise Invalid(f"a chat message must be 1 to {limit} characters")
     return body
 
@@ -293,7 +310,7 @@ def send(
     chat (read-only); a chat with no live agent still keeps the message."""
     if not _is_operator(actor):
         raise Forbidden("only a human operator can send operator messages")
-    _check_body(body)
+    _check_body(body, None)
     if kind == "agent":
         agent = find_agent(conn, ref)
         if agent.status == "revoked":
@@ -305,6 +322,8 @@ def send(
                             (reply_to, chat_row["id"])).fetchone():
             raise NotFound(f"no message {reply_to} in this chat")
         meta["reply_to"] = reply_to
+    if mentioned := _mentions(conn, chat_row, body, author=actor):
+        meta["mentions"] = mentioned
     _close_stretches(conn, chat_row)  # tool calls after this message start a new stretch below it
     message_id = _insert(conn, chat_row, author=actor, kind="text", body=body, meta=meta)
     ts = now_iso()
@@ -320,7 +339,7 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
     """A chat ``agent`` is in (its own, ``me``; a task it is on; a project it may use). NotFound for any other, so an
     agent learns nothing about chats it isn't in."""
     if kind == "agent":
-        if ref not in ("me", agent.id, agent.name):
+        if ref not in ("me", agent.id) and not names.same(ref, agent.name):
             raise NotFound(f"no chat agent/{ref}")
         return chat(conn, "agent", agent.id)
     if kind == "task":
@@ -329,9 +348,9 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
             raise NotFound(f"no chat task/{ref} you are in")
         return chat(conn, "task", ref)
     if kind == "project":
-        if ref not in agent.allowed_projects:
+        if agent.project(ref) is None:
             raise NotFound(f"no chat project/{ref} you are in")
-        return chat(conn, "project", ref)
+        return chat(conn, "project", agent.project(ref))
     raise NotFound(f"no chat kind {kind!r}")
 
 
@@ -360,6 +379,8 @@ def post(
         if target.id not in members(conn, chat_row["kind"], chat_row["ref"]):
             raise Invalid(f"agent {to!r} is not in this chat")
         meta["to"] = target.id
+    if mentioned := _mentions(conn, chat_row, body, author=agent.id):
+        meta["mentions"] = mentioned
     _close_stretches(conn, chat_row, author=agent.id)
     return get_message(conn, _insert(conn, chat_row, author=agent.id, kind="text", body=body, meta=meta,
                                      device=device))
@@ -508,9 +529,8 @@ def record_run(
         task_id = None
     if chat_row["project"] is not None:
         project = chat_row["project"]
-    elif project is not None:
-        known = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
-        project = project if known and project in agent.allowed_projects else None
+    else:
+        project = agent.project(project)
     now = datetime.now(UTC)
     started = now - timedelta(seconds=min(max(seconds, 0.0), MAX_RUN_SECONDS))
     cur = conn.execute(
@@ -527,11 +547,13 @@ def record_run(
 def _delivery_rows(conn: sqlite3.Connection, where: str, params: list[Any]) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT d.id, d.message_id, d.status, d.mode, d.decision, d.task_id AS decision_task_id, d.created_at, "
-        "m.author, m.body, m.created_at AS ts, m.meta, c.id AS chat_id, c.kind AS chat_kind, c.ref AS chat_ref, "
+        "d.agent_id, m.author, m.body, m.created_at AS ts, m.meta, c.id AS chat_id, c.kind AS chat_kind, "
+        "c.ref AS chat_ref, "
         "c.project FROM chat_deliveries d JOIN chat_messages m ON m.id = d.message_id "
         "JOIN chats c ON c.id = m.chat_id " + where, params).fetchall()
     out = []
     for r in rows:
+        meta = json.loads(r["meta"])
         title = (f"task #{r['chat_ref']}" if r["chat_kind"] == "task"
                  else f"project {r['chat_ref']}" if r["chat_kind"] == "project" else "your chat with the operator")
         out.append({"id": r["id"], "message_id": r["message_id"], "status": r["status"], "mode": r["mode"],
@@ -540,7 +562,7 @@ def _delivery_rows(conn: sqlite3.Connection, where: str, params: list[Any]) -> l
                              "project": r["project"],
                              "task_id": int(r["chat_ref"]) if r["chat_kind"] == "task" else None, "title": title},
                     "author": r["author"], "author_name": None, "body": r["body"],
-                    "reply_to": json.loads(r["meta"]).get("reply_to"),
+                    "reply_to": meta.get("reply_to"), "mentioned": r["agent_id"] in meta.get("mentions", ()),
                     # The hub sets the author of every delivered message from the operator's identity.
                     "verified": _is_operator(r["author"]), "ts": r["ts"]})
     return out
@@ -624,7 +646,8 @@ def operator_mail(conn: sqlite3.Connection, agent: Agent, *, limit: int, mark_re
     return [{"id": d["message_id"], "kind": "private" if d["chat"]["kind"] == "agent" else "operator",
              "delivery_id": d["id"], "chat": _spec(d["chat"]["kind"], d["chat"]["ref"]),
              "project": d["chat"]["project"], "channel": None, "author": d["author"], "author_name": None,
-             "to_agent": agent.id, "body": d["body"], "ts": d["ts"], "addressed_to_me": True, "msg_kind": "text"}
+             "to_agent": agent.id, "body": d["body"], "ts": d["ts"], "addressed_to_me": True,
+             "mentioned": d["mentioned"], "msg_kind": "text"}
             for d in found]
 
 
@@ -643,10 +666,12 @@ def chat_mail(
     entries = []
     for r in rows:
         meta = json.loads(r["meta"])
+        mentioned = agent.id in meta.get("mentions", ())
         entries.append({"id": r["id"], "kind": "chat", "chat": _spec(r["chat_kind"], r["chat_ref"]),
                         "project": r["project"], "channel": None, "author": r["author"],
                         "author_name": r["author_name"], "to_agent": meta.get("to"), "body": _mail_body(r, meta),
-                        "ts": r["ts"], "addressed_to_me": meta.get("to") == agent.id, "msg_kind": r["kind"]})
+                        "ts": r["ts"], "addressed_to_me": meta.get("to") == agent.id or mentioned,
+                        "mentioned": mentioned, "msg_kind": r["kind"]})
     if mark_read and rows and not addressed_only:
         latest: dict[int, int] = {}
         for r in rows:
@@ -662,11 +687,12 @@ def _chat_mail(conn: sqlite3.Connection, agent: Agent, chat_ids: list[int], limi
                addressed_only: bool) -> list[sqlite3.Row]:
     marks = ",".join("?" * len(chat_ids))
     kinds = ",".join("?" * len(MAIL_KINDS))
-    # Text addressed to another agent stays visible in the chat but isn't this agent's mail (as with 0.3.7's `to`).
-    # addressed_only binds one agent id (`to` must be this agent); otherwise two: a row without `to` counts as
-    # addressed to this agent (COALESCE(to, me) = me), and a row with `to` only when it is this agent.
-    addressed = ("AND json_extract(m.meta, '$.to') = ? " if addressed_only
-                 else "AND COALESCE(json_extract(m.meta, '$.to'), ?) = ? ")
+    # Text addressed to another agent stays visible in the chat but isn't this agent's mail (as with 0.3.7's `to`),
+    # unless it @mentions this agent. addressed_only: `to` is this agent, or it is mentioned; otherwise a row without
+    # `to` counts as addressed to this agent (COALESCE(to, me) = me), and a row with `to` only when it is this agent.
+    mentioned = "EXISTS (SELECT 1 FROM json_each(m.meta, '$.mentions') j WHERE j.value = ?)"
+    addressed = (f"AND (json_extract(m.meta, '$.to') = ? OR {mentioned}) " if addressed_only
+                 else f"AND (COALESCE(json_extract(m.meta, '$.to'), ?) = ? OR {mentioned}) ")
     # A session's live narration (meta.source 'session') is for the operator to watch, not mail: only what an agent
     # posts on purpose (chat_post, took a task, sat out) and the hub's addressed notes reach other agents.
     return conn.execute(
@@ -677,8 +703,8 @@ def _chat_mail(conn: sqlite3.Connection, agent: Agent, chat_ids: list[int], limi
         f"AND m.author NOT LIKE 'human:%' AND m.legacy IS NULL AND m.kind IN ({kinds}) "
         f"AND json_extract(m.meta, '$.source') IS NULL {addressed}"
         "ORDER BY m.id LIMIT ?",
-        [agent.id, *chat_ids, agent.id, *MAIL_KINDS, *([agent.id] if addressed_only else [agent.id, agent.id]),
-         limit]).fetchall()
+        [agent.id, *chat_ids, agent.id, *MAIL_KINDS,
+         *([agent.id, agent.id] if addressed_only else [agent.id, agent.id, agent.id]), limit]).fetchall()
 
 
 def _mail_body(r: sqlite3.Row, meta: dict[str, Any]) -> str:

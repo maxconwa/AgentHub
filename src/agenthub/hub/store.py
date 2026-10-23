@@ -14,13 +14,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from agenthub import security
+from agenthub import names, security
 from agenthub.hub import avatar_art, events
 from agenthub.hub.db import now_iso
 
 ENROLLMENT_TTL = timedelta(minutes=15)
 
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+NAME_RE = names.NAME_RE
 BOARD_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 
@@ -70,6 +70,12 @@ class Agent:
     def actor(self) -> str:
         return self.id
 
+    def project(self, name: str | None) -> str | None:
+        """The allowed project called ``name`` (ignoring case), by its stored name; None if not allowed."""
+        if not isinstance(name, str):
+            return None
+        return next((p for p in self.allowed_projects if names.same(p, name)), None)
+
     def public(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -81,8 +87,9 @@ class Agent:
 
 
 def check_name(kind: str, name: str) -> str:
-    if not NAME_RE.fullmatch(name):
-        raise Invalid(f"invalid {kind} name {name!r}: use lowercase letters, digits, '-', '_' (max 64)")
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        raise Invalid(f"invalid {kind} name {name!r}: use letters, digits, '-', '_' (max 64), starting with a letter "
+                      "or digit")
     return name
 
 
@@ -95,33 +102,108 @@ def check_board_key(key: str) -> str:
 # --- projects -----------------------------------------------------------------
 
 
+def project_name(conn: sqlite3.Connection, name: str) -> str | None:
+    """The project's name as stored, looked up ignoring case; None if there is no such project."""
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        return None
+    row = conn.execute("SELECT name FROM projects WHERE name_key = ?", (names.key(name),)).fetchone()
+    return row["name"] if row else None
+
+
+def require_project_name(conn: sqlite3.Connection, name: str) -> str:
+    """:func:`project_name`, or NotFound."""
+    found = project_name(conn, name)
+    if found is None:
+        raise NotFound(f"no project {name!r}")
+    return found
+
+
 def ensure_project(conn: sqlite3.Connection, name: str, *, actor: str, description: str = "") -> bool:
-    """Create the project if missing. Returns True if it was created."""
+    """Create the project if no project has this name (ignoring case). Returns True if it was created."""
+    return _ensure_project(conn, name, actor=actor, description=description)[1]
+
+
+def _ensure_project(conn: sqlite3.Connection, name: str, *, actor: str, description: str = "") -> tuple[str, bool]:
+    """``(the project's stored name, whether it was just created)``."""
     check_name("project", name)
     cur = conn.execute(
-        "INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-        (name, description, now_iso()),
+        "INSERT INTO projects (name, name_key, description, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        (name, names.key(name), description, now_iso()),
     )
     if cur.rowcount:
         events.emit(conn, type="project.created", actor=actor, project=name, payload={"description": description})
-        return True
-    return False
+        return name, True
+    return require_project_name(conn, name), False
 
 
-MAX_DESCRIPTION_CHARS = 4000
+def create_project(conn: sqlite3.Connection, name: str, *, actor: str, description: str = "") -> str:
+    """A new project; Conflict if one with this name (ignoring case) exists."""
+    stored, created = _ensure_project(conn, name, actor=actor, description=description)
+    if not created:
+        raise Conflict(f"project {stored!r} already exists" + ("" if stored == name else " (names ignore case)"))
+    return stored
+
+
+def ensure_projects(conn: sqlite3.Connection, projects: list[str], *, actor: str) -> list[str]:
+    """Each project, made if missing, by its stored name (so ``Golem`` given for ``golem`` becomes ``golem``), once."""
+    out: list[str] = []
+    for p in projects:
+        stored = _ensure_project(conn, p, actor=actor)[0]
+        if stored not in out:
+            out.append(stored)
+    return out
 
 
 def set_project_description(conn: sqlite3.Connection, project: str, description: str, *, actor: str) -> None:
-    if len(description) > MAX_DESCRIPTION_CHARS:
-        raise Invalid(f"description must be at most {MAX_DESCRIPTION_CHARS} characters")
-    cur = conn.execute("UPDATE projects SET description = ? WHERE name = ?", (description, project))
-    if not cur.rowcount:
-        raise NotFound(f"no project {project!r}")
+    """The operator's description of a project (no length limit)."""
+    project = require_project_name(conn, project)
+    conn.execute("UPDATE projects SET description = ? WHERE name = ?", (description, project))
     events.emit(conn, type="project.updated", actor=actor, project=project, payload={"description_changed": True})
 
 
 def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name")]
+    return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name COLLATE NOCASE, name")]
+
+
+def _check_recase(kind: str, old: str, new: str) -> None:
+    """A rename only changes case (``Golem`` to ``golem``), so the slug, and everything outside the hub named by it
+    (runner units, config folders, branches, runner.toml keys), stays the same."""
+    check_name(kind, new)
+    if not names.same(old, new):
+        raise Invalid(f"a {kind} can only be renamed to the same name in other case ({old!r} to {old.lower()!r}, "
+                      f"not {new!r})")
+
+
+def rename_project(conn: sqlite3.Connection, project: str, new: str, *, actor: str) -> str:
+    """Respell a project's name in other case everywhere it is named (its tasks, chats, boards, the agents allowed
+    into it, ...), e.g. lowercase before rolling back to a hub that doesn't take capitals. Events are append-only:
+    the ones from before keep the old spelling. Returns the new name."""
+    old = require_project_name(conn, project)
+    _check_recase("project", old, new)
+    if new == old:
+        return old
+    conn.execute("PRAGMA defer_foreign_keys = ON")  # the rows naming it change in this transaction, then it
+    conn.execute("UPDATE projects SET name = ? WHERE name = ?", (new, old))
+    for r in conn.execute("SELECT m.name AS tbl, f.\"from\" AS col FROM sqlite_master m, "
+                          "pragma_foreign_key_list(m.name) f WHERE m.type = 'table' AND f.\"table\" = 'projects'"
+                          ).fetchall():
+        conn.execute(f"UPDATE {r['tbl']} SET {r['col']} = ? WHERE {r['col']} = ?", (new, old))
+    conn.execute("UPDATE chats SET ref = ? WHERE kind = 'project' AND ref = ?", (new, old))
+    conn.execute("UPDATE prompts SET target = ? WHERE target = ?", (f"project:{new}", f"project:{old}"))
+    for table, column in (("agents", "allowed_projects"), ("enrollments", "allowed_projects")):
+        for r in conn.execute(f"SELECT rowid, {column} FROM {table}").fetchall():
+            listed = json.loads(r[column])
+            if old in listed:
+                conn.execute(f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
+                             (json.dumps([new if p == old else p for p in listed]), r["rowid"]))
+    for r in conn.execute("SELECT id, checkouts FROM agents WHERE checkouts IS NOT NULL").fetchall():
+        checkouts = json.loads(r["checkouts"] or "{}")
+        if old in checkouts:
+            checkouts = {new if k == old else k: v for k, v in checkouts.items()}
+            conn.execute("UPDATE agents SET checkouts = ? WHERE id = ?",
+                         (json.dumps(checkouts, separators=(",", ":")), r["id"]))
+    events.emit(conn, type="project.renamed", actor=actor, project=new, payload={"from": old, "to": new})
+    return new
 
 
 # --- agents and enrollment ----------------------------------------------------
@@ -146,7 +228,9 @@ def get_agent(conn: sqlite3.Connection, agent_id: str) -> Agent | None:
 
 
 def find_agent(conn: sqlite3.Connection, id_or_name: str) -> Agent:
-    row = conn.execute("SELECT * FROM agents WHERE id = ? OR name = ?", (id_or_name, id_or_name)).fetchone()
+    """An agent by id, or by name ignoring case."""
+    row = conn.execute("SELECT * FROM agents WHERE id = ?", (id_or_name,)).fetchone() or conn.execute(
+        "SELECT * FROM agents WHERE name_key = ?", (names.key(str(id_or_name)),)).fetchone()
     if not row:
         raise NotFound(f"no agent {id_or_name!r}")
     return _row_to_agent(row)
@@ -172,8 +256,7 @@ def create_enrollment(
 ) -> str:
     """Create a one-time enrollment code. Only its hash is stored."""
     now = now or datetime.now(UTC)
-    for p in projects:
-        ensure_project(conn, p, actor=created_by)
+    projects = ensure_projects(conn, projects, actor=created_by)
     code = security.new_enrollment_code()
     expires = now + ENROLLMENT_TTL
     conn.execute(
@@ -215,15 +298,19 @@ def redeem_enrollment(
     if row is None:
         # Deliberately one message for unknown, used, and expired codes.
         raise Forbidden("invalid or expired enrollment code")
-    if conn.execute("SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone():
-        raise Conflict(f"agent name {name!r} is already taken")
+    taken = conn.execute("SELECT name FROM agents WHERE name_key = ?", (names.key(name),)).fetchone()
+    if taken:
+        raise Conflict(f"agent name {name!r} is already taken"
+                       + ("" if taken["name"] == name else f" (by {taken['name']!r}; names ignore case)"))
     token = security.new_token(agent_id)
     conn.execute(
-        "INSERT INTO agents (id, name, device_name, device_ip, device_node_id, token_hash, status, "
-        "allowed_projects, created_at, avatar_version, avatar_seed) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+        "INSERT INTO agents (id, name, name_key, device_name, device_ip, device_node_id, token_hash, status, "
+        "allowed_projects, created_at, avatar_version, avatar_seed) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
         (
             agent_id,
             name,
+            names.key(name),
             device.name,
             device.ip,
             device.node_id,
@@ -266,10 +353,21 @@ def set_agent_status(conn: sqlite3.Connection, id_or_name: str, status: str, *, 
     return find_agent(conn, agent.id)
 
 
+def rename_agent(conn: sqlite3.Connection, id_or_name: str, new: str, *, actor: str) -> Agent:
+    """Respell an agent's name in other case (its id, token and everything keyed on its id stay), e.g. lowercase
+    before rolling back to a hub that doesn't take capitals."""
+    agent = find_agent(conn, id_or_name)
+    _check_recase("agent", agent.name, new)
+    if new != agent.name:
+        conn.execute("UPDATE agents SET name = ? WHERE id = ?", (new, agent.id))
+        events.emit(conn, type="agent.renamed", actor=actor,
+                    payload={"agent_id": agent.id, "from": agent.name, "to": new})
+    return find_agent(conn, agent.id)
+
+
 def set_agent_projects(conn: sqlite3.Connection, id_or_name: str, projects: list[str], *, actor: str) -> Agent:
     agent = find_agent(conn, id_or_name)
-    for p in projects:
-        ensure_project(conn, p, actor=actor)
+    projects = ensure_projects(conn, projects, actor=actor)
     conn.execute("UPDATE agents SET allowed_projects = ? WHERE id = ?", (json.dumps(projects), agent.id))
     events.emit(conn, type="agent.projects_changed", actor=actor,
                 payload={"agent_id": agent.id, "projects": projects})

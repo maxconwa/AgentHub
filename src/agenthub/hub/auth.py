@@ -93,7 +93,8 @@ async def any_agent(request: Request, conn: sqlite3.Connection = Depends(get_con
 
 
 def require_project(caller: AgentCaller, project: str) -> str:
-    """Agents may only touch projects the operator granted them."""
-    if project not in caller.agent.allowed_projects:
+    """Agents may only touch projects the operator granted them. The project's name as stored (names ignore case)."""
+    found = caller.agent.project(project)
+    if found is None:
         raise HTTPException(403, f"agent has no access to project {project!r}")
-    return project
+    return found

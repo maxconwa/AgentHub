@@ -31,6 +31,7 @@ from agenthub.hub import (
 )
 from agenthub.hub.auth import get_conn
 from agenthub.hub.bus import CLOSE_FORBIDDEN
+from agenthub.hub.limits import LargeFormRoute
 from agenthub.hub.operator import Operator, authenticate_operator, check_csrf, check_same_origin, csrf_token
 
 HERE = Path(__file__).parent
@@ -381,7 +382,7 @@ def operator_moves(state: str) -> list[str]:
 # --- routes ------------------------------------------------------------------------
 
 def build_router() -> APIRouter:
-    router = APIRouter(prefix="/ui")
+    router = APIRouter(prefix="/ui", route_class=LargeFormRoute)  # the operator's text has no length limit
 
     @router.get("")
     @router.get("/")
@@ -408,7 +409,7 @@ def build_router() -> APIRouter:
     @router.post("/projects")
     def project_create(request: Request, operator: PostOp, conn: Conn,
                        name: Annotated[str, Form(max_length=64)],
-                       description: Annotated[str, Form(max_length=store.MAX_DESCRIPTION_CHARS)] = "",
+                       description: Annotated[str, Form()] = "",
                        panel: PanelField = "", next: NextField = "") -> Response:
         with db.transaction(conn):
             if not store.ensure_project(conn, name, actor=operator.actor, description=description):

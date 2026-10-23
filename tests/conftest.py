@@ -110,8 +110,8 @@ class Hub:
         return agent
 
 
-def make_hub(tmp_path, *, insecure_dev: bool = False) -> Hub:
-    cfg = HubConfig(db_path=str(tmp_path / "data" / "hub.sqlite3"), operators=[OP_LOGIN])
+def make_hub(tmp_path, *, insecure_dev: bool = False, **config) -> Hub:
+    cfg = HubConfig(db_path=str(tmp_path / "data" / "hub.sqlite3"), operators=[OP_LOGIN], **config)
     db.init_db(cfg.db_path).close()
     whois = FakeWhois()
     whois.add_user(OP_IP, "nphone", OP_LOGIN)

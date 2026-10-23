@@ -445,13 +445,11 @@ def test_a_runner_fails_a_prompt_that_was_too_old_when_it_picked_it_up(trio):
     assert api(hub, a, "POST", f"/{fresh['id']}/finish", json={"ok": False, "stale": True}).status_code == 409
 
 
-def test_long_private_copy_is_truncated_with_a_pointer(trio):
+def test_long_private_copy_is_the_whole_prompt(trio):
     hub, a, b, c = trio
     online(hub, a)
     p = create(hub, f"agent:{a.id}", body="q" * 8000)
-    body = private.thread(hub.conn(), a.id)[0]["body"]
-    assert len(body) <= private.MAX_BODY_CHARS and body.startswith(f"Prompt #{p['id']}: ")
-    assert f"prompt_status with prompt_id={p['id']}" in body
+    assert private.thread(hub.conn(), a.id)[0]["body"] == f"Prompt #{p['id']}: " + "q" * 8000
 
 
 def test_events_carry_no_body(trio):
@@ -660,7 +658,7 @@ def test_claim_validates_title_and_body(group):
     hub, a, b, c, p = group
     assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "   "}).status_code == 422
     assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x" * 201}).status_code == 422
-    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "body": "b" * 16001}).status_code == 422
+    assert api(hub, a, "POST", f"/{p['id']}/claim", json={"title": "x", "body": "b" * (tasks.MAX_BODY_CHARS + 1)}).status_code == 422
     assert prompts.get(hub.conn(), p["id"])["recipients"][0]["status"] == "pending"
 
 

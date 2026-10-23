@@ -226,7 +226,7 @@ def test_task_list_shows_roles_newest_first_and_filters(busy):
     hub, a, b, ap, t = busy
     conn = hub.conn()
     with db.transaction(conn):
-        conn.execute("INSERT INTO projects VALUES ('other', '', 'x')")
+        conn.execute("INSERT INTO projects (name, description, created_at) VALUES ('other', '', 'x')")
         t2 = tasks.create_task(conn, actor=OPERATOR, project="other", title="Second", state="open")
         tasks.transition(conn, t2["id"], "cancelled", actor=OPERATOR, role="operator", note="")
     html = get(hub, "/ui/tasks").text
@@ -256,7 +256,7 @@ def test_task_description_edit_is_escaped_and_emits_event(busy):
     hub, a, b, ap, t = busy
     url = f"/ui/tasks/{t['id']}/description"
     assert hub.client.post(url, headers=hub.op_headers(), data={"title": "x"}).status_code == 403
-    for bad in ({"title": ""}, {"title": "x" * 201}, {"title": "x", "body": "y" * 16001}):
+    for bad in ({"title": ""}, {"title": "x" * 201}):  # the operator's description has no length limit
         assert hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), **bad}).status_code == 422
     r = hub.client.post(url, headers=hub.op_headers(), follow_redirects=False,
                         data={"csrf": hub.csrf(), "title": "<b>T</b>", "body": "<i>B</i>"})
@@ -1019,14 +1019,17 @@ def test_new_project_is_created_with_csrf_and_duplicates_are_409(hub):
     r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "description": "again"})
     assert r.status_code == 409
     assert hub.conn().execute("SELECT description FROM projects WHERE name = 'mobile-app'").fetchone()[0] == data["description"]
-    for bad in ("Mobile", "-x", "a b", "x" * 65, ""):
+    assert hub.client.post("/ui/projects", headers=hub.op_headers(),  # names are unique ignoring case
+                           data={**data, "name": "Mobile-App"}).status_code == 409
+    for bad in ("-x", "a b", "x" * 65, "", "caf\u00e9"):
         assert hub.client.post("/ui/projects", headers=hub.op_headers(),
                                data={**data, "name": bad}).status_code == 422, bad
     r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={"name": "no-csrf"})
     assert r.status_code == 403
-    long = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "name": "long", "description": "x" * 4001})
-    assert long.status_code == 422
-    assert {p["name"] for p in store.list_projects(hub.conn())} == {"mobile-app"}
+    # the operator's description has no length limit
+    long = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "name": "long", "description": "x" * 70_000})
+    assert long.status_code == 200
+    assert {p["name"] for p in store.list_projects(hub.conn())} == {"mobile-app", "long"}
 
 
 def test_new_project_from_the_panel_shows_its_panel(hub):
