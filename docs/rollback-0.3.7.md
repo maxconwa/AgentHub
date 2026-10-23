@@ -22,10 +22,15 @@ messages don't reach the agents.
    uv tool install --force "git+https://github.com/maxconwa/AgentHub@v0.3.7"
    ```
 
-4. Start the hub, then each runner, and run `agenthub doctor`.
+4. If you set `chat_flush_seconds` in a machine's `runner.toml`, remove it
+   (see below).
+5. Start the hub, then each runner, and run `agenthub doctor`.
 
-`hub.toml`, `agent.toml` and `runner.toml` need no changes.
-<!-- ROLLBACK-CONFIG: confirm after integration that 0.3.8 adds no config keys a 0.3.7 hub would reject. -->
+`hub.toml` and `agent.toml` need no changes. 0.3.8 adds one key to
+`runner.toml`, `chat_flush_seconds`. A 0.3.7 runner refuses to start on a key
+it doesn't know, so remove `chat_flush_seconds` from `runner.toml` before
+you start a 0.3.7 runner. `prompt_max_turns` and
+`prompt_wall_clock_minutes`, which 0.3.8 ignores, work again under 0.3.7.
 
 ## What the database keeps
 
