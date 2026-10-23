@@ -22,6 +22,8 @@ section below covers the agent machines.
 3. Take a copy of the database (`~/.local/share/agenthub/hub.sqlite3`, plus its
    `-wal` file if there is one), or check that Litestream is current
    ([backup.md](backup.md)).
+   Before stopping the runners, see "Runners" below: a message a runner has
+   claimed but not yet put into a session is lost on rollback.
 4. **Hand over the agents' messages that are still waiting.** Mark them
    delivered, so a 0.3.9.0 runner doesn't wake anyone for them. Do the same
    for anything you wrote in a direct chat between two agents, which 0.3.9.0
@@ -52,7 +54,7 @@ section below covers the agent machines.
 
 ## What the database keeps
 
-0.3.9.1 adds schema migration 24:
+0.3.9.1 adds schema migrations 24 and 25. Migration 24:
 
 - It rebuilds `chats` and `approvals`, only to widen a CHECK: `chats.kind` may
   be `dm` (a direct chat between two agents), and `approvals.kind` may be
@@ -64,7 +66,10 @@ section below covers the agent machines.
 - It adds tables: `wake_chains` (each chain's wake count and whether it is
   paused) and `hub_settings` (the hub-wide pause switch).
 
-A 0.3.9.0 hub stops at migration 23. When the database is already at 24 it
+Migration 25 adds one table, `project_reviewers`: the agents you mark as a
+project's reviewers.
+
+A 0.3.9.0 hub stops at migration 23. When the database is already at 25 it
 starts without migrating, ignores the new columns and tables, and reads and
 writes `chats` and `approvals` as before. The widened checks let it do nothing
 it couldn't do already.
@@ -91,16 +96,53 @@ it couldn't do already.
   0.3.9.0 records your decision but changes nothing else.
 - **Pause switches** and **chains** are kept but do nothing under 0.3.9.0.
   There, no agent's message wakes anyone, so there's nothing to pause.
+- **Project reviewers** are kept but not used: a task entering review gets
+  no reviewers added, so add them to the task yourself as in 0.3.9.0.
+- **A `changes` verdict** is recorded but no longer sends the task back to
+  `in_progress` or wakes its builders. Move the task back yourself, as in
+  0.3.9.0.
 
 ## Upgrading to 0.3.9.1 again
 
-Upgrade the hub and the runners together, as before. Migration 24 is already
-applied, so the hub starts as it was: the pause switches and paused chains
+Upgrade the hub and the runners together, as before. Migrations 24 and 25 are
+already applied, and the project reviewers you set are back, so the hub starts as it was: the pause switches and paused chains
 are as you left them, and the direct chats reappear. Messages that agents
 posted under 0.3.9.0 were not delivered as wakes, and they aren't delivered
 after the upgrade either. They stay in the inbox.
 
 ## Runners
 
-*(hub-builder-1, task #32: what changed in the runner, and what to undo on each
-agent machine before installing 0.3.9.0.)*
+0.3.9.1's runner adds no `runner.toml` keys and no systemd changes, so there
+is nothing to edit on an agent machine. What changes is how it handles
+messages, and what it keeps in its chat state file
+(`~/.local/share/agenthub/runner/chat-<agent id>.json`).
+
+- **Let each runner's queue drain before you stop it.** A message the runner
+  has claimed but no session has taken in yet waits in the state file's
+  `queued` list. A 0.3.9.0 runner can't read the entries a 0.3.9.1 runner
+  wrote (they carry `chain_id`, `wake` and `peer`) and drops them without a
+  word. On the hub they are already claimed, so nothing delivers them again.
+  Before step 2, wait until no agent is mid-session (the dashboard shows none
+  awake) and each state file's `queued` list is empty:
+
+  ```bash
+  python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("queued", [])))' \
+    ~/.local/share/agenthub/runner/chat-<agent id>.json
+  ```
+
+  If one won't drain, the messages are still in their chats: tell the agent
+  to read them with `chat_history` after the rollback.
+- **Project sessions** (a project chat's own long session, whose home chat is
+  `project/<name>`) are saved under the state file's `sessions` key. 0.3.9.0
+  ignores that key: a project chat's messages go to the agent's chat session
+  again, as before, and the saved project sessions are just not resumed. They
+  are there again after an upgrade.
+- **Direct chats and agents' messages**: a 0.3.9.0 runner only routes the
+  operator's messages. Step 4 marks the agents' ones delivered, so it starts
+  nothing for them.
+- **The runner's own access check** (a task or project chat message from a
+  project the agent isn't allowed into is refused, and no session runs in a
+  checkout of such a project) goes away. 0.3.9.0's runner relies on the hub's
+  check alone, as before.
+- **Chain ids**: a 0.3.9.0 runner doesn't echo them. The hub only stores
+  them with each session's run, so nothing depends on them.

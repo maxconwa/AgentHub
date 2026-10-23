@@ -732,6 +732,19 @@ class ChatRunner:
         work = self.runner.work.get(task_id)
         return work is not None and not work.task.done()
 
+    async def _task_loop_due(self, task_id: int) -> bool:
+        """The task's own loop may launch now but isn't running (a changes verdict just sent the task back, and the
+        sync that starts its loop comes after the chat messages are routed): start it, so the message is queued into
+        that one session instead of waking a second one. If the loop ends without a session it hands the message
+        on (:meth:`task_loop_ended`)."""
+        try:
+            if await self.runner._verified_task(task_id) is None:
+                return False
+        except HubError:  # gone, or no longer ours: route it as before
+            return False
+        self.runner._start(task_id)
+        return True
+
     async def route(self, d: Delivery) -> None:
         refusal = await self._refusal(d)
         if refusal is not None:
@@ -760,7 +773,8 @@ class ChatRunner:
             self._handled.discard(d.id)
             return
         if d.kind == "task" and d.task_id is not None:
-            if self._task_loop_active(d.task_id):  # its loop starts a session soon (a slot, the usage limit)
+            # its loop starts a session soon (a slot, the usage limit), or is due to (a reviewer's send-back)
+            if self._task_loop_active(d.task_id) or await self._task_loop_due(d.task_id):
                 if await self._claim(d, "queued"):
                     self.state.add(d)
                 return
