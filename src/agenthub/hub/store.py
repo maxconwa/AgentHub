@@ -154,12 +154,8 @@ def ensure_projects(conn: sqlite3.Connection, projects: list[str], *, actor: str
     return out
 
 
-MAX_DESCRIPTION_CHARS = 4000
-
-
 def set_project_description(conn: sqlite3.Connection, project: str, description: str, *, actor: str) -> None:
-    if len(description) > MAX_DESCRIPTION_CHARS:
-        raise Invalid(f"description must be at most {MAX_DESCRIPTION_CHARS} characters")
+    """The operator's description of a project (no length limit)."""
     project = require_project_name(conn, project)
     conn.execute("UPDATE projects SET description = ? WHERE name = ?", (description, project))
     events.emit(conn, type="project.updated", actor=actor, project=project, payload={"description_changed": True})

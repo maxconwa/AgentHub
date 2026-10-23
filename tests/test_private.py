@@ -80,11 +80,13 @@ def test_send_validates_body_author_and_agent(pair):
     with db.transaction(conn):
         m = private.send(conn, alice.id, author=OP_ACTOR, body="hello")
     assert m["agent_id"] == alice.id and m["author"] == OP_ACTOR and m["body"] == "hello"
-    for bad in ("", "   ", "x" * 4001):
+    for bad in ("", "   "):
         with pytest.raises(store.Invalid), db.transaction(conn):
             private.send(conn, alice.id, author=OP_ACTOR, body=bad)
-    with db.transaction(conn):
-        private.send(conn, alice.id, author=OP_ACTOR, body="x" * 4000)
+    with db.transaction(conn):  # the operator's text has no length limit; an agent's has
+        private.send(conn, alice.id, author=OP_ACTOR, body="x" * (private.MAX_BODY_CHARS + 1))
+    with pytest.raises(store.Invalid), db.transaction(conn):
+        private.send(conn, alice.id, author=alice.id, body="x" * (private.MAX_BODY_CHARS + 1))
     with pytest.raises(store.Forbidden), db.transaction(conn):  # an agent writes only in its own chat
         private.send(conn, alice.id, author=bob.id, body="pretending")
     with pytest.raises(store.NotFound), db.transaction(conn):
@@ -189,8 +191,8 @@ def test_agent_message_lands_in_its_own_thread_and_badge(pair):
 def test_api_body_limits(pair):
     hub, alice, bob = pair
     assert api_send(hub, alice, "").status_code == 422
-    assert api_send(hub, alice, "x" * 4001).status_code == 422
-    assert api_send(hub, alice, "x" * 4000).status_code == 201
+    assert api_send(hub, alice, "x" * (private.MAX_BODY_CHARS + 1)).status_code == 422
+    assert api_send(hub, alice, "x" * private.MAX_BODY_CHARS).status_code == 201
 
 
 def test_pending_and_revoked_agents_cannot_send(hub):

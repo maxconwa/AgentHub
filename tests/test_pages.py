@@ -279,7 +279,7 @@ def test_task_description_edit_is_escaped_and_emits_event(busy):
     hub, a, b, ap, t = busy
     url = f"/ui/tasks/{t['id']}/description"
     assert hub.client.post(url, headers=hub.op_headers(), data={"title": "x"}).status_code == 403
-    for bad in ({"title": ""}, {"title": "x" * 201}, {"title": "x", "body": "y" * 16001}):
+    for bad in ({"title": ""}, {"title": "x" * 201}):  # the operator's description has no length limit
         assert hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), **bad}).status_code == 422
     r = hub.client.post(url, headers=hub.op_headers(), follow_redirects=False,
                         data={"csrf": hub.csrf(), "title": "<b>T</b>", "body": "<i>B</i>"})
@@ -1453,9 +1453,10 @@ def test_new_project_is_created_with_csrf_and_duplicates_are_409(hub):
                                data={**data, "name": bad}).status_code == 422, bad
     r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={"name": "no-csrf"})
     assert r.status_code == 403
-    long = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "name": "long", "description": "x" * 4001})
-    assert long.status_code == 422
-    assert {p["name"] for p in store.list_projects(hub.conn())} == {"mobile-app"}
+    # the operator's description has no length limit
+    long = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "name": "long", "description": "x" * 70_000})
+    assert long.status_code == 200
+    assert {p["name"] for p in store.list_projects(hub.conn())} == {"mobile-app", "long"}
 
 
 def test_new_project_from_the_panel_shows_its_panel(hub):

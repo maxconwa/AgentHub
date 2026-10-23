@@ -5,30 +5,67 @@ from agenthub.cli import app as cli_app
 from agenthub.cli import uvicorn_options
 from agenthub.config import HubConfig
 from agenthub.hub.app import BindError, check_bind
+from agenthub.hub.limits import AGENT_MIN_BODY_BYTES, OPERATOR_MAX_BODY_BYTES
+
+TOO_BIG = AGENT_MIN_BODY_BYTES + 1024  # past an agent's limit (hub.toml's max_body_bytes is never below it)
 
 
 def test_oversized_body_rejected_by_content_length(hub):
     a = hub.enroll("a")
-    resp = hub.client.post("/api/v1/projects/proj/messages", content=b"x" * (65 * 1024),
+    resp = hub.client.post("/api/v1/projects/proj/messages", content=b"x" * TOO_BIG,
                            headers={**a.headers, "content-type": "application/json"})
     assert resp.status_code == 413
 
 
+def _chunks(total: int):
+    for _ in range(total // 65536 + 1):
+        yield b"x" * 65536
+
+
 def test_oversized_chunked_body_rejected(hub):
     a = hub.enroll("a")
-
-    def chunks():
-        for _ in range(100):
-            yield b"x" * 1024
-
-    resp = hub.client.post("/api/v1/chats/project/proj/messages", content=chunks(),
+    resp = hub.client.post("/api/v1/chats/project/proj/messages", content=_chunks(TOO_BIG),
                            headers={**a.headers, "content-type": "application/json"})
     assert resp.status_code == 413
 
 
 def test_oversized_enroll_rejected_before_auth(hub):
-    resp = hub.client.post("/api/v1/enroll", content=b"x" * (65 * 1024))
+    resp = hub.client.post("/api/v1/enroll", content=b"x" * TOO_BIG)
     assert resp.status_code == 413
+
+
+def test_an_old_hub_toml_limit_still_fits_an_agent_message(tmp_path):
+    """hub.toml written by 0.3.8 says max_body_bytes = 65536; an agent's 64 KiB message still fits."""
+    from .conftest import make_hub
+
+    hub = make_hub(tmp_path, max_body_bytes=64 * 1024)
+    a = hub.enroll("a")
+    body = "\u00e9" * (64 * 1024)  # 64 Ki characters, 2 bytes each in UTF-8, more if JSON escapes them
+    resp = hub.client.post("/api/v1/chats/project/proj/messages", json={"body": body}, headers=a.headers)
+    assert resp.status_code == 201, resp.text
+
+
+def test_the_operator_may_send_a_bigger_dashboard_request(hub):
+    """Past an agent's limit, a /ui request passes only when it comes from the operator (checked before the body is
+    read); the route then answers (here 403: no CSRF token), not the size limit."""
+    big = b"note=" + b"x" * TOO_BIG
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    assert hub.client.post("/ui/projects/proj/description", content=big,
+                           headers={**hub.op_headers(), **form}).status_code == 403
+    assert hub.client.post("/ui/projects/proj/description", content=_chunks(TOO_BIG),
+                           headers={**hub.op_headers(), **form}).status_code == 403
+    # not the operator: no identity, or an agent's token alongside the operator's identity
+    a = hub.enroll("a")
+    assert hub.client.post("/ui/projects/proj/description", content=big, headers=form).status_code == 413
+    assert hub.client.post("/ui/projects/proj/description", content=_chunks(TOO_BIG),
+                           headers=form).status_code == 413
+    assert hub.client.post("/ui/projects/proj/description", content=big,
+                           headers={**hub.op_headers(), **a.headers, **form}).status_code == 413
+    # agent routes keep the agent limit, even from the operator's device
+    assert hub.client.post("/api/v1/enroll", content=big, headers=hub.op_headers()).status_code == 413
+    # and the operator's own ceiling holds
+    huge = {"content-length": str(OPERATOR_MAX_BODY_BYTES + 1), **hub.op_headers(), **form}
+    assert hub.client.post("/ui/projects/proj/description", content=b"", headers=huge).status_code == 413
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "127.0.0.2"])

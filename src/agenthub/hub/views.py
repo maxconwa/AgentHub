@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any
 from urllib.parse import quote
 
+from agenthub import names
 from agenthub.hub import approvals, avatars, device_board, private, questions, store, tasks
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
@@ -204,7 +205,7 @@ def prompt_state(conn: sqlite3.Connection, target: str, found: dict[str, Any] | 
     # "no checkout configured", so say so before it's sent.
     project = found["board"][0] if found["board"] else None
     no_checkout = [a["name"] for a in agents if wakeable(a)
-                   and (project not in a["checkouts"] if project else not a["checkouts"])]
+                   and (not any(names.same(k, project) for k in a["checkouts"]) if project else not a["checkouts"])]
     return {"target": target, "label": found["label"], "wakes": wakes, "too_old": too_old, "reason": reason,
             "agents": len(agents), "no_checkout": no_checkout, "project": project}
 

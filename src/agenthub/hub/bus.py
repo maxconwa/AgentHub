@@ -53,6 +53,9 @@ def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     data = {k: p[k] for k in keep if k in p}
     if event["type"] in ("message.posted", "device.message_posted", "chat.message"):
         data["addressed_to_me"] = p.get("to") == recipient
+    if event["type"] == "chat.message":  # an @mention addresses the agent too
+        data["mentioned"] = recipient in (p.get("mentions") or ())
+        data["addressed_to_me"] = data["addressed_to_me"] or data["mentioned"]
     return {
         "type": "event",
         "event": {"id": event["id"], "ts": event["ts"], "type": event["type"], "project": event["project"],

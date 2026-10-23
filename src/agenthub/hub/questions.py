@@ -14,11 +14,11 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from agenthub.hub import chats, events, tasks
+from agenthub.hub import chats, events, limits, tasks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, get_agent
 
-MAX_CHARS = 4000
+MAX_CHARS = limits.AGENT_TEXT_CHARS  # an agent's question; the operator's answer has no limit
 MAX_PENDING_PER_AGENT = 5
 
 _SELECT = "SELECT q.*, a.name AS agent_name, a.status AS agent_status FROM questions q LEFT JOIN agents a ON a.id = q.agent_id "
@@ -84,8 +84,8 @@ def ask(
 def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> dict[str, Any]:
     if not actor.startswith("human:"):
         raise Forbidden("only a human operator can answer questions")
-    if not answer.strip() or len(answer) > MAX_CHARS:
-        raise Invalid(f"an answer must be 1 to {MAX_CHARS} characters")
+    if not answer.strip():
+        raise Invalid("an answer can't be empty")
     q = get(conn, qid)
     cur = conn.execute("UPDATE questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? "
                        "WHERE id = ? AND status = 'pending'", (answer, actor, now_iso(), qid))
@@ -95,7 +95,7 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
     agent = get_agent(conn, q["agent_id"])
     if agent is None or agent.status == "revoked":  # a revoked agent's chat is read-only
         return get(conn, qid)
-    # A chat message holds the whole answer (MAX_CHARS is well under chats.MAX_BODY_CHARS).
+    # The operator's chat message holds the whole answer (neither has a length limit).
     chats.send(conn, "agent", agent.id, _answer_prefix(qid) + answer + "\n\n" + _about(q), actor,
                meta={"answer_to": qid})
     return get(conn, qid)

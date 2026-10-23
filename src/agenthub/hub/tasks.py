@@ -24,7 +24,7 @@ import json
 import sqlite3
 from typing import Any
 
-from agenthub.hub import events
+from agenthub.hub import events, limits
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, require_project_name
 
@@ -183,17 +183,15 @@ def create_task(
 
 
 MAX_TITLE_CHARS = 200
-MAX_BODY_CHARS = 16000
+MAX_BODY_CHARS = limits.AGENT_TEXT_CHARS  # an agent's task description; the operator's has no limit
 
 
 def set_description(conn: sqlite3.Connection, task_id: int, title: str, body: str, *, actor: str) -> dict[str, Any]:
-    """Edit a task's title and description. Operator only (the route enforces it); the event names
-    the changed fields but carries no text."""
+    """Edit a task's title and description. Operator only (the route enforces it), so the description has no length
+    limit; the event names the changed fields but carries no text."""
     title = title.strip()
     if not title or len(title) > MAX_TITLE_CHARS:
         raise Invalid(f"title must be 1 to {MAX_TITLE_CHARS} characters")
-    if len(body) > MAX_BODY_CHARS:
-        raise Invalid(f"description must be at most {MAX_BODY_CHARS} characters")
     task = get_task(conn, task_id)
     conn.execute("UPDATE tasks SET title = ?, body = ?, updated_at = ? WHERE id = ?", (title, body, now_iso(), task_id))
     events.emit(conn, type="task.updated", actor=actor, project=task["project"],

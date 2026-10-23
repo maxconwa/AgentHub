@@ -128,9 +128,11 @@ def test_only_the_operator_sends_operator_messages(trio):
         op_send(hub, "agent", a.id, actor=a.id)
     with pytest.raises(store.Forbidden):
         op_send(hub, "agent", a.id, actor="system:hub")
-    for bad in ("", "   ", "x" * (chats.MAX_BODY_CHARS + 1)):
+    for bad in ("", "   "):
         with pytest.raises(store.Invalid):
             op_send(hub, "agent", a.id, body=bad)
+    # the operator's text has no length limit (an agent's has, chats.MAX_BODY_CHARS)
+    assert len(op_send(hub, "agent", a.id, body="x" * (chats.MAX_BODY_CHARS + 1))["body"]) == chats.MAX_BODY_CHARS + 1
 
 
 def test_reply_to_must_be_in_the_same_chat(trio):

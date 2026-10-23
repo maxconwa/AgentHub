@@ -59,7 +59,8 @@ class HubConfig:
     operators: list[str] = field(default_factory=list)
     whois_cache_seconds: int = 30
     tailscale_bin: str = "tailscale"
-    max_body_bytes: int = 64 * 1024
+    # Agents' request bodies; never below 1 MiB. The operator's dashboard requests may be bigger.
+    max_body_bytes: int = 1024 * 1024
     # Rate limits: per agent (all agent endpoints), and per caller address for enrollment.
     agent_rate_per_second: float = 10.0
     agent_rate_burst: int = 100

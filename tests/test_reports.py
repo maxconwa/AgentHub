@@ -158,12 +158,12 @@ def test_the_agent_api_lists_and_gets_reports(hub):
 
 def test_an_html_page_may_be_bigger_than_other_requests(hub):
     a = hub.enroll("alice")
-    big = "<p>" + "x" * 1_500_000 + "</p>"  # far over the hub's 64 KiB body limit
+    big = "<p>" + "x" * 1_500_000 + "</p>"  # over the hub's usual 1 MiB body limit
     assert ok(publish(hub, a, html=big))["kind"] == "html"
     too_big = "x" * (reports.MAX_HTML_CHARS + 1)
     assert publish(hub, a, html=too_big).status_code == 422
     # Every other endpoint keeps the usual limit.
-    r = hub.client.post("/api/v1/projects/proj/messages", json={"body": "x" * 100_000}, headers=a.headers)
+    r = hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "x" * 1_100_000}, headers=a.headers)
     assert r.status_code == 413
     huge = hub.client.post("/api/v1/reports", content=b"x" * (reports.MAX_REQUEST_BYTES + 1),
                            headers={**a.headers, "content-type": "application/json"})

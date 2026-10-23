@@ -88,7 +88,7 @@ def test_not_allowed_in_project_is_403(pair):
 def test_validation(pair):
     hub, alice, _ = pair
     assert ask(hub, alice, text="").status_code == 422
-    assert ask(hub, alice, text="x" * 4001).status_code == 422
+    assert ask(hub, alice, text="x" * (questions.MAX_CHARS + 1)).status_code == 422  # an agent's: 64 KiB
     assert ask(hub, alice, task_id=9999).status_code == 404
 
 
@@ -176,7 +176,6 @@ def test_answer_form_needs_csrf_and_operator(pair):
                         data={"csrf": hub.csrf(), "answer": "x"}, follow_redirects=False)
     assert r.status_code == 403
     assert op_answer(hub, qid, "").status_code == 422
-    assert op_answer(hub, qid, "x" * 4001).status_code == 422
     assert questions.get(hub.conn(), qid)["status"] == "pending"
 
 
