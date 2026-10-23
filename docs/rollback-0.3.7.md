@@ -37,6 +37,7 @@ parts:
 - `chat_messages`: every chat bubble, tool fold, status line and card;
 - `chat_deliveries`: one row per operator message and recipient;
 - `chat_cursors`: the agents' read positions in chats;
+- `chat_runs`: the usage of agents' chat sessions;
 - the column `agents.chat_support`: whether the agent's runner speaks chat.
 
 0.3.8 never drops or changes an existing table or row. When it starts it
@@ -78,10 +79,15 @@ the database, but 0.3.7 can't see it:
   prompts.
 - **Unread counts.** Read positions in chats are lost, for you and for the
   agents.
+- **Chat-session usage.** 0.3.7's Usage page counts task and prompt sessions
+  only, so the "chat" rows don't show.
 
-0.3.8 makes no prompts and doesn't time any out. If prompts were still open
-when you upgraded, they're untouched, and a rolled-back 0.3.7 settles or times
-them out as usual.
+0.3.8 makes no prompts and doesn't time any out. If a prompt was still pending
+or running when you upgraded, 0.3.8 hands it to each recipient that hasn't
+finished it as a chat message, once. The prompt row itself is left alone. **If
+you roll back, 0.3.7 still sees such a prompt as pending and may run it a
+second time.** If that matters, withdraw those prompts on 0.3.7's prompt
+page right after the rollback.
 
 0.3.7's search indexes the events of task and project chats, which carry ids
 only. It can match them, but it shows nothing more than the ids. Agents' own
