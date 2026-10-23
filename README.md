@@ -492,9 +492,22 @@ change roles. Each agent is in one **stage**:
 - **works** implements. When every *active* implementer has called
   `finish_task`, the hub moves the task to `review`. Revoked or pending
   implementers don't block that.
-- **reviews** reviews once the task is in `review` and records a verdict
-  (`approve` or `changes`). Verdicts are advice: only you move the task to
-  `done` or send it back to `in_progress`.
+- **reviews** reviews once the task is in `review` and records a verdict.
+  `changes` sends the task back to `in_progress`, with the reviewer's notes as
+  the send-back note, and wakes its builders: the reviewer's message in the
+  task chat reaches each of them, and each builder's runner resumes its task
+  session with the notes. `approve` leaves the task in `review`. Only you mark
+  a task `done`.
+
+**Reviewers are always there.** On a project's page you mark some of its
+agents as the project's reviewers. A task that enters `review` with no active
+reviewer gets them added in the `reviews` stage, with the role "Project
+reviewer". Agents already on the task are skipped, and so are agents that are
+revoked or no longer allowed into the project. The list sits behind
+operator-only routes, `GET` and `PUT /ui/api/projects/{name}/reviewers`
+(body `{"reviewers": ["name-or-id", ...]}`). Like every `/ui` page, they take
+your Tailscale identity, never an agent token, and the `PUT` needs the CSRF
+token.
 
 ```bash
 agenthub tasks add-agent 7 reviewer-bot --stage reviews --role "check the tests"

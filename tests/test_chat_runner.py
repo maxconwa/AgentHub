@@ -406,8 +406,7 @@ async def test_a_task_chat_message_goes_into_that_tasks_running_session(live_hub
     assert [r for r in rows(live_hub, "agent", agent_cfg.agent_id) if r["kind"] in ("text", "status")] == []
 
 
-async def test_a_project_chat_message_wakes_the_chat_session_to_take_a_task_or_sit_out(live_hub, fake_claude,
-                                                                                        tmp_path):
+async def test_a_project_chat_message_wakes_a_session_in_that_projects_checkout(live_hub, fake_claude, tmp_path):
     claude_bin, calls = fake_claude
     runner, agent_cfg = chat_runner(live_hub, tmp_path, claude_bin)
     me = agent_cfg.agent_id
@@ -416,12 +415,15 @@ async def test_a_project_chat_message_wakes_the_chat_session_to_take_a_task_or_s
         await wait_for(lambda: live_hub.conn().execute("SELECT connected FROM agents WHERE id = ?",
                                                        (me,)).fetchone()["connected"])
         msg = send(live_hub, "project", "proj", "We need a /metrics endpoint and docs.")
-        await wait_for(lambda: "finished" in states(live_hub, "agent", me))
+        await wait_for(lambda: "finished" in states(live_hub, "project", "proj"))
     finally:
         await stop(main)
     (call,) = calls()
     assert mode(live_hub, msg) == "woke" and heading(msg, "the project chat of proj") in call["stdin"]
     assert f"take_task(request_id={msg['id']}" in call["stdin"] and f"sit_out(request_id={msg['id']}" in call["stdin"]
+    assert call["cwd"] == str(tmp_path / "checkout") and call["env"]["AGENTHUB_CHAT"] == "project/proj"
+    assert call["env"]["AGENTHUB_PROJECT"] == "proj"
+    assert states(live_hub, "agent", me) == []  # not the agent's chat session
 
 
 async def test_a_task_chat_message_for_a_task_not_running_resumes_its_session(live_hub, fake_claude, tmp_path):

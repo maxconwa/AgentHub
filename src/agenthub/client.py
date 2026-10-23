@@ -92,10 +92,13 @@ class HubClient:
     async def report_chat_run(self, kind: str, ref: str, *, outcome: str, seconds: float,
                               session_id: str | None = None, num_turns: int | None = None,
                               cost_usd: float | None = None, project: str | None = None,
-                              task_id: int | None = None) -> dict[str, Any]:
-        """One chat session this runner ran (turns, est. cost, duration), for the Usage page."""
+                              task_id: int | None = None, chain_ids: list[str] | None = None) -> dict[str, Any]:
+        """One chat session this runner ran (turns, est. cost, duration), for the Usage page, with the wake chains
+        of the messages it took in (``chain_ids``, for the hub's loop detection)."""
         payload = {"outcome": outcome, "seconds": seconds, "session_id": session_id, "num_turns": num_turns,
                    "cost_usd": cost_usd, "project": project, "task_id": task_id}
+        if chain_ids:
+            payload["chain_ids"] = chain_ids
         return await self._request("POST", self._chat_path(kind, ref) + "/runs", json=payload)
 
     async def pending_deliveries(self) -> list[dict[str, Any]]:
@@ -230,9 +233,11 @@ class HubClient:
 
     async def end_run(
         self, task_id: int, run_id: int, *, outcome: str, session_id: str | None = None,
-        num_turns: int | None = None, cost_usd: float | None = None,
+        num_turns: int | None = None, cost_usd: float | None = None, chain_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         payload = {"outcome": outcome, "session_id": session_id, "num_turns": num_turns, "cost_usd": cost_usd}
+        if chain_ids:  # the wake chains of the chat messages the run took in
+            payload["chain_ids"] = chain_ids
         return await self._request("POST", f"/tasks/{task_id}/runs/{run_id}/end", json=payload)
 
     async def progress(self, task_id: int, items: list[dict[str, str]], run_id: int | None = None) -> dict[str, Any]:

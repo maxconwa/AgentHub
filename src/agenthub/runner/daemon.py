@@ -314,11 +314,12 @@ class Runner:
     async def sync(self) -> None:
         """Deliver this agent's chat messages, then start work on tasks we are a member of and not running here (the
         launch check filters further)."""
+        me = await self.client.me()
+        self.chats.allowed = list(me["allowed_projects"])  # what chat wakes may reach (a second check behind the hub)
         try:
             await self.chats.sync()
         except (HubError, httpx.HTTPError) as exc:
             log.warning("could not fetch chat deliveries: %s", exc)
-        me = await self.client.me()
         for project in me["allowed_projects"]:
             for state in ("open", "claimed", "in_progress", "review"):
                 for task in await self.client.list_tasks(project, state=state, mine=True):
@@ -488,6 +489,7 @@ class Runner:
             buffer: list[dict[str, str]] = []
             output = SessionOutput(self.client, "task", str(task["id"]), task_id=task["id"],
                                    flush_seconds=self.cfg.chat_flush_seconds)
+            output.took(waiting)
             output.status("started")
 
             async def flush() -> None:
@@ -554,7 +556,7 @@ class Runner:
             try:
                 await self.client.end_run(task["id"], run["id"], outcome=result.outcome,
                                           session_id=result.session_id, num_turns=result.num_turns,
-                                          cost_usd=result.cost_usd)
+                                          cost_usd=result.cost_usd, chain_ids=output.chains or None)
                 await self.client.progress(task["id"], [{"kind": "run_end", "text": (
                     f"run {run['number']} ended: {result.outcome}"
                     + (f", {result.num_turns} turns" if result.num_turns is not None else "")
