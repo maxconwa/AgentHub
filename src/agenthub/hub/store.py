@@ -162,7 +162,7 @@ def set_project_description(conn: sqlite3.Connection, project: str, description:
 
 
 def list_projects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name")]
+    return [dict(r) for r in conn.execute("SELECT * FROM projects ORDER BY name COLLATE NOCASE, name")]
 
 
 def _check_recase(kind: str, old: str, new: str) -> None:
