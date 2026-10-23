@@ -9,9 +9,9 @@
 {% if project.description %}<div class="md">{{ project.description|md }}</div>{% else %}<p class="muted">No description yet.</p>{% endif %}
 <details class="panel">
   <summary>Edit description</summary>
-  <form class="stack" method="post" action="/ui/projects/{{ project.name }}/description">
+  <form class="stack" method="post" action="{{ project_url(project.name) }}/description">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>Description <textarea name="description" rows="4" maxlength="4000">{{ project.description }}</textarea></label>
+    <label>Description <textarea name="description" rows="4">{{ project.description }}</textarea></label>
     <button type="submit">Save description</button>
   </form>
 </details>

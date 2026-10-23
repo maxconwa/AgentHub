@@ -5,7 +5,7 @@
 {% block content %}
 <p><a href="/ui/reports">← Reports</a></p>
 <h1><span class="task-title">{{ r.title }}</span> {{ kind_chip(r) }}</h1>
-<p class="muted"><a {{ open_attrs('project:' ~ r.project, '/ui/projects/' ~ r.project) }}>{{ r.project }}</a>
+<p class="muted"><a {{ open_attrs('project:' ~ r.project, project_url(r.project)) }}>{{ r.project }}</a>
   {%- if r.task_id %} · <a {{ open_attrs('task:' ~ r.task_id, '/ui/tasks/' ~ r.task_id) }}>Task #{{ r.task_id }}{% if r.task_title %} <span class="task-title">{{ r.task_title }}</span>{% endif %}</a>{% endif %}
   · by <a {{ open_attrs('agent:' ~ r.agent_id, '/ui/agents/' ~ r.agent_id) }}>{{ r.agent_name or who(r.agent_id, names) }}</a>
   · published <span title="{{ r.created_at }}">{{ ago(r.created_at) }}</span>{% if r.updated_at != r.created_at %} · updated <span title="{{ r.updated_at }}">{{ ago(r.updated_at) }}</span>{% endif %}</p>

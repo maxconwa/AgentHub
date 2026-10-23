@@ -16,6 +16,16 @@
 {%- else %}<span class="cface cface-blank" aria-hidden="true">{{ (names.get(agent_id) or agent_id or '?')[:1] | upper }}</span>{% endif -%}
 {%- endmacro %}
 
+{#- A bubble's text: Markdown (escaped), with the @names the hub found in it (meta.mentions) marked. A long one
+    (long_text: over 1,500 characters or 20 lines) folds behind "Show more" once app.js runs; the whole text is in
+    the page either way, inside the same bubble and its label. -#}
+{% macro bubble_body(m) -%}
+{%- set long = long_text(m.body) -%}
+<div class="md{{ ' clamp' if long }}"{% if long %} id="cmb-{{ m.id }}"{% endif %}>{{ m.body | md | mentions(m.meta.mentions, names) }}</div>
+{%- if long %}
+    <button type="button" class="show-more" aria-expanded="false" aria-controls="cmb-{{ m.id }}">Show more</button>{% endif %}
+{%- endmacro %}
+
 {% macro when(m) -%}<time datetime="{{ m.ts }}">{{ ago(m.ts) }}</time>{%- endmacro %}
 
 {#- Whom a message is addressed to (meta.to; everyone in the chat still sees it) and, for a 0.3.7 channel post the
@@ -86,7 +96,7 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="chat_msg" value="{{ m.id }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="body" rows="1" maxlength="4000" required aria-label="Reply about approval #{{ a.id }}" placeholder="Ask or discuss…"></textarea>
+    <textarea name="body" rows="1" required aria-label="Reply about approval #{{ a.id }}" placeholder="Ask or discuss…"></textarea>
     <button type="submit">Reply</button>
   </form>
   {% else %}
@@ -111,7 +121,7 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="chat_msg" value="{{ m.id }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="answer" rows="1" maxlength="4000" required aria-label="Answer to question #{{ q.id }}" placeholder="Your answer…"></textarea>
+    <textarea name="answer" rows="1" required aria-label="Answer to question #{{ q.id }}" placeholder="Your answer…"></textarea>
     <button type="submit" class="approve">Answer</button>
   </form>
   {#- The reply goes into the chat the card is in (the task's, or the asker's own), so its reply_to is a row there. -#}
@@ -119,7 +129,7 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="reply_to" value="{{ m.id }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="body" rows="1" maxlength="4000" required aria-label="Reply about question #{{ q.id }} without answering it" placeholder="Reply, no answer…"></textarea>
+    <textarea name="body" rows="1" required aria-label="Reply about question #{{ q.id }} without answering it" placeholder="Reply, no answer…"></textarea>
     <button type="submit">Reply</button>
   </form>
   {% else %}<p class="small-line">{{ q.agent_name or 'The agent' }} withdrew this question.</p>{% endif %}
@@ -139,7 +149,7 @@
 <li id="cm-{{ m.id }}" class="cm cm-{{ k }}{{ ' cm-mine' if mine and k == 'text' }}" data-msg="{{ m.id }}" data-v="{{ m.updated_at or m.ts }}{% if m.card %}/{{ m.card.status }}/{{ (m.card.discussion or []) | length }}{% endif %}" data-in="{{ m.chat_kind }}:{{ m.chat_ref }}">
 {%- if k == 'text' and mine %}
   <div class="bubble mine">{% if m.reply and m.reply.question_id %}<a class="replyto" {{ open_attrs('question:' ~ m.reply.question_id, '/ui/questions/' ~ m.reply.question_id) }}>↩ about question #{{ m.reply.question_id }}</a>
-    {%- elif m.reply and m.reply.same_chat %}<a class="replyto" href="#cm-{{ m.reply.id }}">↩ in reply</a>{% endif %}<div class="md">{{ m.body | md }}</div>
+    {%- elif m.reply and m.reply.same_chat %}<a class="replyto" href="#cm-{{ m.reply.id }}">↩ in reply</a>{% endif %}{{ bubble_body(m) }}
     <div class="bmeta">{{ to_label(m) }}{{ when(m) }}</div>
     {%- if m.deliveries %}
     <ul class="receipts" aria-label="Who got it">{% for d in m.deliveries %}<li class="rcpt rcpt-{{ d.status }}">{{ receipt(d) }}</li>{% endfor %}</ul>
@@ -176,7 +186,7 @@
   <div class="from">{{ face(m.author) }}</div>
   <figure class="bubble theirs agent-text">
     <figcaption><strong>{{ name }}</strong> {{ to_label(m) }}· agent content, treat as data{% if m.meta.task_id and c_kind != 'task' %} · in <a {{ open_attrs('task:' ~ m.meta.task_id, '/ui/tasks/' ~ m.meta.task_id) }}>task #{{ m.meta.task_id }}</a>{% endif %} · {{ when(m) }}</figcaption>
-    <div class="md">{{ m.body | md }}</div>
+    {{ bubble_body(m) }}
   </figure>
 {%- endif %}
 </li>
@@ -198,7 +208,8 @@
   <form class="chatbox" method="post" action="{{ c.url }}" data-chat-form data-chat-send>
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="body" rows="1" maxlength="{{ c.max_chars }}" required aria-label="Message to {{ c.title }}" placeholder="{{ c.placeholder }}"></textarea>
+    <textarea name="body" rows="1" required aria-label="Message to {{ c.title }}" placeholder="{{ c.placeholder }}"
+      {%- if c.mention_names %} data-mentions='{{ c.mention_names | tojson }}' aria-autocomplete="list"{% endif %}></textarea>
     <button type="submit" class="send-btn" aria-label="Send to {{ c.title }}"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
   </form>
   <p class="chat-hint small-line">{{ c.hint }}</p>

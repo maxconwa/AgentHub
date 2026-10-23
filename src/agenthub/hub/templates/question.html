@@ -4,7 +4,7 @@
 {% block content %}
 <p><a href="/ui/approvals">← Approvals</a></p>
 <h1>#{{ q.id }} question {{ chip(q.status) }}</h1>
-<p class="muted">Asked by {{ avatar(avatars.get(q.agent_id), 32) }} <strong>{% if q.agent_name %}<a {{ open_attrs('agent:' ~ q.agent_id, '/ui/agents/' ~ q.agent_id) }}>{{ q.agent_name }}</a>{% else %}{{ q.agent_id }}{% endif %}</strong> in <a {{ open_attrs('project:' ~ q.project, '/ui/projects/' ~ q.project) }}>{{ q.project }}</a> · {{ ago(q.created_at) }}</p>
+<p class="muted">Asked by {{ avatar(avatars.get(q.agent_id), 32) }} <strong>{% if q.agent_name %}<a {{ open_attrs('agent:' ~ q.agent_id, '/ui/agents/' ~ q.agent_id) }}>{{ q.agent_name }}</a>{% else %}{{ q.agent_id }}{% endif %}</strong> in <a {{ open_attrs('project:' ~ q.project, project_url(q.project)) }}>{{ q.project }}</a> · {{ ago(q.created_at) }}</p>
 
 <section class="panel">
   {% if task %}<p><a {{ open_attrs('task:' ~ task.id, '/ui/tasks/' ~ task.id) }}>About task #{{ task.id }}</a></p>{% endif %}
@@ -18,7 +18,7 @@
 {% elif q.status == 'pending' %}
 <form class="replybox" method="post" action="/ui/questions/{{ q.id }}/answer">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <textarea name="answer" rows="4" maxlength="4000" required placeholder="Your answer goes into {{ q.agent_name or 'the agent' }}'s chat and wakes it if it is idle"></textarea>
+  <textarea name="answer" rows="4" required placeholder="Your answer goes into {{ q.agent_name or 'the agent' }}'s chat and wakes it if it is idle"></textarea>
   <button type="submit">Answer</button>
 </form>
 {% else %}

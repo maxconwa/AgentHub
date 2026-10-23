@@ -6,7 +6,7 @@
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
 <h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
-<p class="muted"><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
+<p class="muted"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
 {% if t.last_note %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}
@@ -21,7 +21,7 @@
   <form class="stack" method="post" action="/ui/tasks/{{ t.id }}/description">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Title <input name="title" required maxlength="200" value="{{ t.title }}"></label>
-    <label>Description <textarea name="body" rows="5" maxlength="16000">{{ t.body }}</textarea></label>
+    <label>Description <textarea name="body" rows="5">{{ t.body }}</textarea></label>
     <button type="submit">Save</button>
   </form>
 </details>
@@ -40,7 +40,7 @@
   <h3>Move</h3>
   <form method="post" action="/ui/tasks/{{ t.id }}/move" class="stack">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <textarea name="note" rows="2" maxlength="4000" placeholder="Note (e.g. what to change)"></textarea>
+    <textarea name="note" rows="2" placeholder="Note (e.g. what to change)"></textarea>
     <div class="buttons wrap">{% for m in moves %}<button type="submit" name="state" value="{{ m }}" class="{{ 'approve' if m == 'done' else ('reject' if m == 'cancelled' else '') }}">{{ m.replace('_', ' ') }}</button>{% endfor %}</div>
   </form>
 </section>

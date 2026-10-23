@@ -8,9 +8,15 @@ import sqlite3
 from typing import Any
 from urllib.parse import quote
 
+from agenthub import names
 from agenthub.hub import approvals, avatars, chats, questions, store, tasks
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
+
+
+def project_url(name: str) -> str:
+    """A project's page, its name percent-encoded."""
+    return f"/ui/projects/{quote(name, safe='')}"
 
 
 def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list[dict[str, Any]]:
@@ -33,7 +39,7 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
     cols = ("id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir, "
             "prompt_support, chat_support, model, effort FROM agents ")
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
-            else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name")).fetchall()
+            else conn.execute("SELECT " + cols + "WHERE status != 'revoked' ORDER BY name COLLATE NOCASE")).fetchall()
     return [{"id": r["id"], "name": r["name"], "status": r["status"], "device": r["device_name"], "device_node_id": r["device_node_id"],
              "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]), "chat": bool(r["chat_support"]),
              "last_heartbeat": r["last_heartbeat"], "model": r["model"], "effort": r["effort"],
@@ -89,7 +95,7 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             live.append({"id": r["id"], "title": r["title"], "state": r["state"], "created_by": r["created_by"],
                          "agents": members.get(r["id"], [])})
     out = [{"name": p["name"], "description": p["description"], "tasks": by_project.get(p["name"], [])}
-           for p in conn.execute("SELECT name, description FROM projects ORDER BY name")]
+           for p in conn.execute("SELECT name, description FROM projects ORDER BY name COLLATE NOCASE")]
     return [p for p in out if p["tasks"]] + [p for p in out if not p["tasks"]]
 
 
@@ -134,7 +140,7 @@ def recipients(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
     else:
         raise store.NotFound(f"no message target {target!r}")
     agents = sorted((pool[i] for i in set(ids) if i in pool and pool[i]["status"] == "active"),
-                    key=lambda a: (a["name"], a["id"]))
+                    key=lambda a: (names.key(a["name"]), a["id"]))
     return {"label": label, "agents": agents, "board": board}
 
 
@@ -176,11 +182,12 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
         t = tasks.get_task(conn, int(key))
         return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t, "c": chat(conn, "task", str(t["id"]))}
     if kind == "project":
+        key = store.project_name(conn, key) or key
         row = conn.execute("SELECT name, description FROM projects WHERE name = ?", (key,)).fetchone()
         if row is None:
             raise store.NotFound(f"no project {key!r}")
         live = next((p["tasks"] for p in project_tree(conn) if p["name"] == key), [])
-        return {"kind": kind, "href": f"/ui/projects/{quote(key, safe='')}", "project": dict(row), "tasks": live,
+        return {"kind": kind, "href": project_url(key), "project": dict(row), "tasks": live,
                 "c": chat(conn, "project", key)}
     if kind == "device":
         return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": device(conn, key)}
@@ -249,9 +256,9 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
                           "state": t["state"], "created_by": t["created_by"], "last": last, "last_ts": last and last["ts"],
                           "unread": unread.get(("task", str(t["id"])), 0), "members": _faces(board, on_task.get(t["id"], []))})
     projects = []
-    for p in conn.execute("SELECT name FROM projects ORDER BY name"):
+    for p in conn.execute("SELECT name FROM projects ORDER BY name COLLATE NOCASE"):
         last = _last_text(conn, "project", p["name"])
-        projects.append({"item": f"project:{p['name']}", "href": f"/ui/projects/{quote(p['name'], safe='')}",
+        projects.append({"item": f"project:{p['name']}", "href": project_url(p["name"]),
                          "title": p["name"], "last": last, "last_ts": last and last["ts"],
                          "unread": unread.get(("project", p["name"]), 0), "members": _faces(board, live_members.get(p["name"], []))})
     for rows in (agents, task_rows, projects):
@@ -267,9 +274,8 @@ def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -
 # --- Chats ------------------------------------------------------------------------------------
 
 CHAT_ROWS = 300  # the newest rows a chat shows (the log scrolls)
-CHAT_MAX_CHARS = 8000
 _CHAT_REF = {"agent": re.compile(r"ag[0-9a-f]{1,64}"), "task": re.compile(r"[1-9][0-9]{0,17}"),
-             "project": store.NAME_RE}
+             "project": names.NAME_RE}
 
 
 def _too_old(conn: sqlite3.Connection, agent_ids: list[str]) -> str:
@@ -279,7 +285,7 @@ def _too_old(conn: sqlite3.Connection, agent_ids: list[str]) -> str:
         return ""
     old = [r["name"] for r in conn.execute(
         f"SELECT name FROM agents WHERE id IN ({','.join('?' * len(agent_ids))}) AND status = 'active' "
-        "AND connected = 1 AND chat_support = 0 ORDER BY name", agent_ids)]
+        "AND connected = 1 AND chat_support = 0 ORDER BY name COLLATE NOCASE", agent_ids)]
     if not old:
         return ""
     whose = f"{old[0]}'s runner is" if len(old) == 1 else f"The runners of {_and(old)} are"
@@ -288,25 +294,29 @@ def _too_old(conn: sqlite3.Connection, agent_ids: list[str]) -> str:
 
 
 def _names(members: list[dict[str, Any]]) -> str:
-    return _and(sorted(m["name"] for m in members)) if members else "nobody yet"
+    return _and(sorted((m["name"] for m in members), key=names.key)) if members else "nobody yet"
 
 
 def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows: bool = True) -> dict[str, Any]:
     """One chat (an agent's, a task's or a project's) for _chat.html: ``{id, kind, ref, title, url, page, item, rows,
-    send, readonly, hint, placeholder, empty, max_chars}``.
+    send, readonly, hint, placeholder, empty, mention_names}``.
 
-    ``too_old`` says which connected agents run a runner too old for chat (:func:`_too_old`). ``rows`` are
-    :func:`chat_rows`, oldest first (only those after ``after`` when given; none with ``rows=False``,
-    which only checks the chat and says who it reaches). ``send`` says whether its message box shows; when it
-    doesn't, ``readonly`` says why. ``hint`` says whom a message reaches. Raises store.NotFound for an unknown or
+    A project's ``ref`` may be any spelling of its name (names ignore case); the chat has the stored one.
+    ``mention_names`` are its agents' names as written, for the message box's @ autocomplete. ``too_old`` says
+    which connected agents run a runner too old for chat (:func:`_too_old`). ``rows`` are :func:`chat_rows`, oldest
+    first (only those after ``after`` when given; none with ``rows=False``, which only checks the chat and says who
+    it reaches). ``send`` says whether its message box shows; when it doesn't, ``readonly`` says why. ``hint`` says whom a message reaches. Raises store.NotFound for an unknown or
     malformed chat.
     """
     pattern = _CHAT_REF.get(kind)
     if pattern is None or not pattern.fullmatch(ref):
         raise store.NotFound(f"no chat {kind}:{ref}")
+    if kind == "project":
+        ref = store.project_name(conn, ref) or ref
     c = chats.chat(conn, kind, ref)
     out: dict[str, Any] = {"id": c["id"], "kind": kind, "ref": ref, "url": f"/ui/chat/{kind}/{quote(ref, safe='')}",
-                           "item": f"{kind}:{ref}", "max_chars": CHAT_MAX_CHARS, "send": True, "readonly": "",
+                           "item": f"{kind}:{ref}", "send": True, "readonly": "",
+                           "mention_names": sorted((m["name"] for m in c["members"]), key=names.key),
                            "too_old": _too_old(conn, [m["agent_id"] for m in c["members"]])}
     if kind == "agent":
         status = conn.execute("SELECT status FROM agents WHERE id = ?", (ref,)).fetchone()["status"]
@@ -326,7 +336,7 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
         if state in TERMINAL_STATES:
             out |= {"send": False, "readonly": f"Task #{ref} is {state}, so its chat is read-only."}
     else:
-        out |= {"title": ref, "page": f"/ui/projects/{quote(ref, safe='')}", "placeholder": f"Message everyone in {ref}…",
+        out |= {"title": ref, "page": project_url(ref), "placeholder": f"Message everyone in {ref}…",
                 "empty": f"No messages in {ref} yet.",
                 "hint": f"Goes to every agent in {ref}: {_names(c['members'])}. They split it into tasks among themselves."}
     out["rows"] = chat_rows(conn, chats.messages(conn, kind, ref, after_id=after, limit=CHAT_ROWS)) if rows else []

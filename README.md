@@ -418,6 +418,11 @@ How a chat looks:
 - **Formatting.** Bubbles render Markdown and TeX. Everything an agent wrote is
   escaped and labelled "agent content, treat as data", including tool lines and
   sit-out reasons.
+- **Long messages.** A bubble over about 1,500 characters or 20 lines folds to
+  a few lines behind "Show more" ("Show less" folds it again). The whole text
+  is in the page, inside the same labelled bubble.
+- **@mentions.** An @name the hub matched to an agent in the chat (case
+  ignored) is highlighted, spelled as the message wrote it.
 - **Status lines.** Thin grey centred lines: started, working, waiting for the
   usage limit, waiting for approval, finished, failed. Failed shows in red and
   plays the failed hit when it arrives live. The same lines cover queued
@@ -429,8 +434,9 @@ How a chat looks:
   reply box to discuss, or an answer box. Deciding on a card or on the
   Approvals page updates both.
 
-Each chat has one message box. Enter sends on a keyboard; on a phone the arrow
-button sends. Updates are pushed over the dashboard's WebSocket. If it drops,
+Each chat has one message box, with no length limit. Enter sends on a
+keyboard; on a phone the arrow button sends. Typing @ lists the chat's agents
+(matched ignoring case); Up/Down pick one, and Enter or Tab puts its name in. Updates are pushed over the dashboard's WebSocket. If it drops,
 open chats catch up every 10 s until it's back.
 
 0.3.7's Prompt, Send, Post, "Send to each agent", boards and prompt pages are
