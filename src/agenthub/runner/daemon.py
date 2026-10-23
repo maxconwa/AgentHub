@@ -52,7 +52,7 @@ from websockets.asyncio.client import connect as ws_connect
 from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import AgentConfig
-from agenthub.runner.chat import ChatRunner, SessionOutput, chat_guide, delivery_text
+from agenthub.runner.chat import ChatRunner, SessionOutput, branch_guide, chat_guide, delivery_text
 from agenthub.runner.config import RunnerConfig, configured_effort, configured_model
 from agenthub.runner.session import TEXT_SNIPPET, Session, SessionResult, build_command
 
@@ -133,6 +133,7 @@ def system_prompt(agent_name: str, task: dict[str, Any], me: dict[str, Any], *, 
         f"Your role on this task (written by the operator): {me['role'] or '(none given)'}\n"
         + stage
         + (chat_guide(f"the chat of task #{tid}") if chat else "")
+        + branch_guide(agent_name, f"task{tid}")
         + f"Coordinate through the agenthub MCP tools: read_inbox/{'chat_post' if chat else 'post'} for messages, "
         "ask_agent for direct questions, board_get/board_put for shared notes, announce intents before large edits "
         "if available.\n"

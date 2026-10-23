@@ -17,6 +17,7 @@ from pathlib import Path
 from agenthub import paths
 from agenthub.client import HubClient
 from agenthub.config import AgentConfig, write_private
+from agenthub.names import slug
 
 MCP_SERVER_NAME = "agenthub"
 # ask_agent / wait_for_approval block for minutes; give the server a generous per-call timeout.
@@ -96,7 +97,7 @@ async def enroll(
     if config_path.exists() and not force:
         raise JoinError(f"{config_path} already exists: an agent on this account has already joined. To add "
                         f"another agent, give it its own config dir: agenthub --config-dir "
-                        f"~/.config/agenthub-{name} join ... (or use --force to replace this one)")
+                        f"~/.config/agenthub-{slug(name)} join ... (or use --force to replace this one)")
     async with HubClient(hub_url, transport=transport) as client:
         resp = await client.enroll(code, name)
     token_path = paths.config_dir() / "token"

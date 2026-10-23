@@ -52,6 +52,7 @@ from agenthub import paths, untrusted
 from agenthub.client import HubClient, HubError
 from agenthub.config import write_private
 from agenthub.hooks.permission import NO_TASK_GRANTS
+from agenthub.names import slug
 from agenthub.runner.session import TOOL_LINE, Session, SessionResult, build_command
 
 if TYPE_CHECKING:
@@ -320,6 +321,12 @@ def chat_guide(home: str) -> str:
     )
 
 
+def branch_guide(agent_name: str, example: str) -> str:
+    """How to name git branches: by the agent name's slug (lowercased), which git and every filesystem take."""
+    return (f"Name any git branch you create agent/{slug(agent_name)}-<what it is for> (your name lowercased), "
+            f"e.g. agent/{slug(agent_name)}-{example}.\n")
+
+
 def chat_system_prompt(agent_name: str, checkouts: dict[str, str], cwd: Path) -> str:
     listed = "\n".join(f"  {project}: {path}" for project, path in checkouts.items()) or "  (none)"
     return (
@@ -328,7 +335,8 @@ def chat_system_prompt(agent_name: str, checkouts: dict[str, str], cwd: Path) ->
         "larger piece of work belongs in a task (ask the operator, or take one from a project chat).\n"
         + chat_guide("your chat with the operator")
         + f"This session runs in {cwd}. Your project checkouts on this machine:\n{listed}\n"
-        "Risky shell commands need operator approval: follow the instructions the hooks give you. "
+        + branch_guide(agent_name, "fix-login")
+        + "Risky shell commands need operator approval: follow the instructions the hooks give you. "
         + NO_TASK_GRANTS + "\n" + untrusted.NOTICE + "\n" + untrusted.HUMAN_ONLY
     )
 

@@ -18,9 +18,10 @@ claims a share titled "Share for $FAKE_NAME" through the hub (as the real sessio
 then succeeds; any other session just succeeds.
 prompt_reply: in a prompt session it answers the operator privately through the hub (as `message_operator` would),
 then succeeds; any other session just succeeds.
-Each invocation appends {"argv", "stdin", "cwd", "session", "env", "env_names"} as a JSON line to
+Each invocation appends {"argv", "stdin", "system", "cwd", "session", "env", "env_names"} as a JSON line to
 FAKE_CLAUDE_LOG: ``env`` holds the AGENTHUB_* variables, ``env_names`` the names (never the values) of every
-variable it got, ``stdin`` the first message's text.
+variable it got, ``stdin`` the first message's text, ``system`` the appended system prompt (from
+``--append-system-prompt`` or the file ``--append-system-prompt-file`` names, read at startup as Claude Code does).
 
 Input is stream-json (``--input-format stream-json``, as the runner sends it): one user message per line, stdin
 kept open. Each message is echoed back (``isReplay``) when it's taken in, as ``--replay-user-messages`` does.
@@ -115,11 +116,17 @@ def main():
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
     max_turns = int(argv[argv.index("--max-turns") + 1]) if "--max-turns" in argv else 10  # task sessions have none
     session = str(uuid.uuid4()) if resume is None or "--fork-session" in argv else resume
+    system = None
+    if "--append-system-prompt" in argv:
+        system = argv[argv.index("--append-system-prompt") + 1]
+    elif "--append-system-prompt-file" in argv:
+        with open(argv[argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as fh:
+            system = fh.read()
     log = os.environ.get("FAKE_CLAUDE_LOG")
     if log:
         with open(log, "a") as fh:
             env = {k: v for k, v in os.environ.items() if k.startswith("AGENTHUB_")}
-            fh.write(json.dumps({"argv": argv, "stdin": prompt, "cwd": os.getcwd(), "session": session, "env": env,
+            fh.write(json.dumps({"argv": argv, "stdin": prompt, "system": system, "cwd": os.getcwd(), "session": session, "env": env,
                                  "env_names": sorted(os.environ)}) + "\n")
     mode = os.environ.get("FAKE_CLAUDE_MODE", "success")
     if resume is not None and resume == os.environ.get("FAKE_BAD_RESUME"):

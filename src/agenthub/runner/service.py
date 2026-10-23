@@ -14,7 +14,9 @@ user's session (and the runner) alive in the background.
 Several agents on one account each have their own config dir and their own
 service. The agent in the default config dir keeps the plain names
 (agenthub-runner.service, com.agenthub.runner); any other is suffixed with
-its agent name (agenthub-runner-<name>.service, com.agenthub.runner.<name>).
+its agent name's slug, the name lowercased (agenthub-runner-<slug>.service,
+com.agenthub.runner.<slug>; see agenthub.names): "Hub-Builder-1" gets
+agenthub-runner-hub-builder-1.service, and a lowercase name is unchanged.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import sys
 from pathlib import Path
 
 from agenthub import paths
+from agenthub.names import slug
 
 UNIT_NAME = "agenthub-runner.service"
 LAUNCHD_LABEL = "com.agenthub.runner"
@@ -40,8 +43,8 @@ def use_launchd() -> bool:
 
 
 def instance(config_dir: Path, name: str) -> str | None:
-    """None for the agent in the default config dir, else the agent name its service is suffixed with."""
-    return None if config_dir.resolve() == paths.default_config_dir().resolve() else name
+    """None for the agent in the default config dir, else what its service is suffixed with: the agent name's slug."""
+    return None if config_dir.resolve() == paths.default_config_dir().resolve() else slug(name)
 
 
 def unit_name(inst: str | None = None) -> str:
