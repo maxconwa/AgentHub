@@ -4,7 +4,8 @@ A look is ``(avatar_version, avatar_seed)`` on the agent row; the art itself is
 drawn by :mod:`agenthub.hub.avatar_art`. The pose is derived from hub state on
 every page render, first match wins (see :func:`poses`). ``talking`` is an
 agent in a group prompt's discussion; ``janitor`` is drawn but not derived yet
-(it arrives with the janitor).
+(it arrives with the janitor). ``error`` is drawn but no longer derived: an errored
+task run shows ``failed``, like a failed prompt session.
 """
 
 from __future__ import annotations
@@ -57,19 +58,20 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
         "SELECT r.agent_id, p.mode FROM prompt_recipients r JOIN prompts p ON p.id = r.prompt_id "
         "WHERE r.status = 'running' ORDER BY p.mode")}  # 'single' after 'group': a single prompt's session wins
     waiting = _ids(conn, "SELECT from_agent FROM asks WHERE status = 'pending' AND expires_at > ?", now_s)
-    # The latest ended run per agent errored, on a task that is still live.
-    errored = _ids(conn,
+    # "failed": the latest unit of work the agent finished failed. That is its latest ended task run, if it errored
+    # on a task that is still live and no prompt session finished after it; or its latest finished prompt session,
+    # if it failed and no task run ended after it. A withdrawn recipient never ran a session, so it doesn't count.
+    failed = _ids(conn,
         "SELECT r.agent_id FROM task_runs r JOIN tasks t ON t.id = r.task_id "
         "WHERE r.outcome = 'error' AND t.state NOT IN ('done', 'cancelled') AND r.id = "
-        "(SELECT MAX(id) FROM task_runs WHERE agent_id = r.agent_id AND ended_at IS NOT NULL)")
-    # The latest prompt session the agent finished failed, and no task run ended after it. A withdrawn recipient
-    # never ran a session, so it doesn't count.
-    failed = _ids(conn,
-        "SELECT r.agent_id FROM prompt_recipients r WHERE r.status = 'failed' AND r.note != ? "
+        "(SELECT MAX(id) FROM task_runs WHERE agent_id = r.agent_id AND ended_at IS NOT NULL) "
+        "AND NOT EXISTS (SELECT 1 FROM prompt_recipients WHERE agent_id = r.agent_id AND note != ? "
+        "AND status NOT IN ('pending', 'running', 'skipped') AND updated_at > r.ended_at) "
+        "UNION SELECT r.agent_id FROM prompt_recipients r WHERE r.status = 'failed' AND r.note != ? "
         "AND r.updated_at = (SELECT MAX(updated_at) FROM prompt_recipients WHERE agent_id = r.agent_id "
         "AND status NOT IN ('pending', 'running', 'skipped')) "
         "AND NOT EXISTS (SELECT 1 FROM task_runs WHERE agent_id = r.agent_id AND ended_at > r.updated_at)",
-        prompts.WITHDRAWN)
+        prompts.WITHDRAWN, prompts.WITHDRAWN)
     part_done = _ids(conn,
         "SELECT ta.agent_id FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
         "WHERE ta.stage = 'works' AND ta.finished_at IS NOT NULL AND t.state IN ('in_progress', 'review')")
@@ -90,8 +92,6 @@ def poses(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, st
             pose = "waiting"
         elif aid in failed:
             pose = "failed"
-        elif aid in errored:
-            pose = "error"
         elif aid in part_done:
             pose = "part_done"
         else:

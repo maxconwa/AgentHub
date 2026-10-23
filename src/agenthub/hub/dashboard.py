@@ -226,6 +226,7 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
         live_url=live_url or request.url.path + (f"?{query}" if query else ""),
         live_only=live_poll(request) and "live" in template.blocks,
         active_ids={r[0] for r in conn.execute("SELECT id FROM agents WHERE status = 'active'")},
+        failed_tasks=tasks.failed_ids(conn),
         **ctx,
     )
     return HTMLResponse(html, headers=SECURITY_HEADERS)

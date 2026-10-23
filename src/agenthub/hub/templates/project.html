@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import chip, avatar, task_title, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, avatar, task_title, open_attrs, send_and_prompt, fail_attrs %}
 {% from "_board.html" import board %}
 {% from "_reports.html" import report_table %}
 {% block title %}{{ project.name }}{% endblock %}
@@ -20,7 +20,7 @@
 <h2>Live tasks</h2>
 {% if not tasks %}<p class="empty">No live tasks.</p>{% endif %}
 {% for t in tasks %}
-<div class="task-row">
+<div class="task-row{{ ' is-failed' if t.id in failed_tasks }}" {{ fail_attrs('task:' ~ t.id, t.id in failed_tasks) }}>
   <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}

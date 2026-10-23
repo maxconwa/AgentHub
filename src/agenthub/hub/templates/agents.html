@@ -27,7 +27,7 @@
   {% for ag in agents %}
   <li class="card agent-card{{ ' is-failed' if ag.avatar and ag.avatar.pose == 'failed' }}" {{ fail_attrs('agent:' ~ ag.id, ag.avatar and ag.avatar.pose == 'failed') }} id="agent-{{ ag.id }}" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 96, scene=True) }}
     <div class="info"><span><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a> {{ chip(ag.status) }}</span>
-      {{ agent_tasks(ag, names, path) }}
+      {{ agent_tasks(ag, names, path, failed_tasks) }}
       <div class="small-line">on {{ ag.device }}</div>
       <div class="small-line dir">{{ ag.current_dir or (ag.checkouts.values() | join(', ')) or 'No checkouts reported' }}</div>
       <div class="small-line">reported by the agent</div>

@@ -127,13 +127,26 @@ def test_waiting_on_an_unanswered_ask(hub, setup):
     assert avatars.poses(conn)[a.id] == "idle"
 
 
-def test_error_when_the_latest_run_errored_on_a_live_task(setup):
+def test_failed_when_the_latest_run_errored_on_a_live_task(setup):
     _, a, conn = setup
     tid = _task(conn, a.id)
     _run(conn, tid, a.id, outcome="error")
-    assert avatars.poses(conn)[a.id] == "error"
+    assert avatars.poses(conn)[a.id] == "failed"  # not the old "error" pose
     _run(conn, tid, a.id, outcome="success")  # a later run went fine
     assert avatars.poses(conn)[a.id] == "idle"
+
+
+def test_no_failed_pose_for_a_task_error_after_a_later_prompt_session(setup):
+    _, a, conn = setup
+    _run(conn, _task(conn, a.id), a.id, outcome="error")  # ended 'y'
+    pid = _prompt(conn, a.id, mode="single", status="done")
+    conn.execute("UPDATE prompt_recipients SET updated_at = 'z' WHERE prompt_id = ?", (pid,))
+    assert avatars.poses(conn)[a.id] == "idle"  # the session that finished after it went fine
+    conn.execute("UPDATE prompt_recipients SET status = 'failed', note = ? WHERE prompt_id = ?",
+                 (prompts.WITHDRAWN, pid))
+    assert avatars.poses(conn)[a.id] == "failed"  # withdrawn before it started: the task error is still the latest
+    conn.execute("UPDATE prompt_recipients SET status = 'skipped', note = '' WHERE prompt_id = ?", (pid,))
+    assert avatars.poses(conn)[a.id] == "failed"  # skipped: never ran either
 
 
 def test_no_error_once_the_task_is_done(setup):
@@ -166,7 +179,7 @@ def test_no_failed_pose_for_a_withdrawn_prompt_or_after_a_later_task_run(setup):
     _run(conn, tid, a.id, outcome="success")  # ended_at 'y' > updated_at 'x': a task run ended after it
     assert avatars.poses(conn)[a.id] == "idle"
     _run(conn, tid, a.id, outcome="error")
-    assert avatars.poses(conn)[a.id] == "error"
+    assert avatars.poses(conn)[a.id] == "failed"  # now from the task run
 
 
 def test_failed_shows_over_an_older_task_error(setup):

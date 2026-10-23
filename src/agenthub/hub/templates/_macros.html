@@ -19,7 +19,7 @@
 href="{{ href }}" data-panel="{{ item }}"
 {%- endmacro %}
 
-{# The failed hook: an item that can fail (a prompt, a recipient, an agent) carries data-fail-key, plus data-failed
+{# The failed hook: an item that can fail (a prompt, a recipient, an agent, a task) carries data-fail-key, plus data-failed
    and class is-failed (a red edge) while it is failed. app.js plays .failed-new once on the live swap that turns a
    key failed; a page that loads it already failed shows just the edge. #}
 {% macro fail_attrs(key, failed) -%}
@@ -59,9 +59,10 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {%- endmacro %}
 
 
-{% macro agent_tasks(ag, names, next) -%}
+{# An agent's open tasks, one line each; a task in `failed_tasks` carries the failed hook. #}
+{% macro agent_tasks(ag, names, next, failed_tasks=()) -%}
 {% for t in ag.tasks %}
-<div class="small-line"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
+<div class="small-line{{ ' is-failed' if t.id in failed_tasks }}" {{ fail_attrs('task:' ~ t.id, t.id in failed_tasks) }}><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }}{% else %}{{ t.stage }}{% endif %}</div>
 {% else %}<div class="small-line">No current task</div>{% endfor %}
 {%- endmacro %}
 

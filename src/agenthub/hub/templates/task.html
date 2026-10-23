@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, send_and_prompt, fail_attrs %}
 {% from "_board.html" import board %}
 {% from "_reports.html" import report_table %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
-<h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
+<h1{% if t.id in failed_tasks %} class="is-failed"{% endif %} {{ fail_attrs('task:' ~ t.id, t.id in failed_tasks) }}>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
 <p class="muted"><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, send_and_prompt %}
+{% from "_macros.html" import chip, avatar, task_title, approval_summary, open_attrs, send_and_prompt, fail_attrs %}
 {% from "_board.html" import board %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
 <p><a href="/ui/agents">← Agents</a></p>
-<div class="agent-head">
+{% set ag_failed = ag.avatar and ag.avatar.pose == 'failed' %}
+<div class="agent-head{{ ' is-failed' if ag_failed }}" {{ fail_attrs('agent:' ~ ag.id, ag_failed) }}>
   {{ avatar(ag.avatar, 96, scene=True) }}
   <div class="info"><h1>{{ ag.name }} {{ chip(ag.status) }}</h1>
     {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}</div>
@@ -31,7 +32,7 @@
 <section class="panel">
   <h3>Tasks</h3>
   {% for t in ag.tasks %}
-  <p class="task-row"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
+  <p class="task-row{{ ' is-failed' if t.id in failed_tasks }}" {{ fail_attrs('task:' ~ t.id, t.id in failed_tasks) }}><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }} · <a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {% if t.role %}Role: {{ t.role }} · {% endif %}{{ t.stage }}</p>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
 

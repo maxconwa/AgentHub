@@ -1750,7 +1750,7 @@ def test_dashboard_lists_open_prompts_first_then_five_recent(window):
 
 def fail_hook(html, key):
     """The opening tags in ``html`` that carry the failed hook for ``key``."""
-    return re.findall(r'<[a-z]+\b[^>]*data-fail-key="' + re.escape(key) + r'"[^>]*>', html)
+    return re.findall(r'<[a-z][a-z0-9]*\b[^>]*data-fail-key="' + re.escape(key) + r'"[^>]*>', html)
 
 
 def test_a_failed_prompt_and_a_failed_recipient_carry_the_failed_hook(window):
@@ -1824,6 +1824,91 @@ def test_an_agent_whose_prompt_session_failed_gets_the_failed_card(window):
         [card] = fail_hook(html, f"agent:{d.id}")
         assert card.startswith('<li class="card agent-card is-failed"') and " data-failed " in card
         assert "/failed.svg" in html and 'class="avatar-status status-failed">failed<' in html
+
+
+def run(hub, tid, agent_id, outcome):
+    """A task run; ``outcome`` None is one still going."""
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("INSERT INTO task_runs (task_id, agent_id, started_at, ended_at, outcome) VALUES (?, ?, ?, ?, ?)",
+                     (tid, agent_id, db.now_iso(), None if outcome is None else db.now_iso(), outcome))
+
+
+def task_hooks(hub, tid, agent_id):
+    """Every tag carrying task:<tid>'s failed hook, by the page or panel it is on."""
+    key = f"task:{tid}"
+    return {
+        "dashboard": fail_hook(get(hub, "/ui/dashboard").text, key),  # the agent card's task line
+        "agents": fail_hook(get(hub, "/ui/agents").text, key),
+        "tasks": fail_hook(get(hub, "/ui/tasks").text, key),
+        "projects": fail_hook(get(hub, "/ui/projects").text, key),
+        "project": fail_hook(get(hub, "/ui/projects/proj").text, key),
+        "task": fail_hook(get(hub, f"/ui/tasks/{tid}").text, key),
+        "agent": fail_hook(get(hub, f"/ui/agents/{agent_id}").text, key),
+        "task panel": fail_hook(panel(hub, key).text, key),
+        "project panel": fail_hook(panel(hub, "project:proj").text, key),
+        "agent panel": fail_hook(panel(hub, f"agent:{agent_id}").text, key),
+    }
+
+
+def test_a_live_task_whose_latest_run_errored_carries_the_failed_hook(window):
+    hub, a, c, r, t, ap, q = window
+    tid = t["id"]
+    for where, tags in task_hooks(hub, tid, a.id).items():
+        assert tags and not any("is-failed" in x or "data-failed" in x for x in tags), (where, tags)
+    run(hub, tid, a.id, "success")
+    run(hub, tid, a.id, "error")
+    for where, tags in task_hooks(hub, tid, a.id).items():
+        assert tags and all("is-failed" in x and " data-failed" in x for x in tags), (where, tags)
+    [h1] = fail_hook(get(hub, f"/ui/tasks/{tid}").text, f"task:{tid}")
+    assert h1 == f'<h1 class="is-failed" data-fail-key="task:{tid}" data-failed>'
+    [row] = fail_hook(get(hub, "/ui/tasks").text, f"task:{tid}")
+    assert row == f'<div class="task-row is-failed" data-fail-key="task:{tid}" data-failed>'
+    run(hub, tid, a.id, None)  # a retry is going: the error is no longer the latest run
+    for where, tags in task_hooks(hub, tid, a.id).items():
+        assert not any("is-failed" in x or "data-failed" in x for x in tags), (where, tags)
+
+
+def test_no_failed_hook_on_a_finished_task_or_a_run_that_did_not_error(window):
+    hub, a, c, r, t, ap, q = window
+    tid = t["id"]
+    for outcome in ("usage_limit", "stopped", "success"):
+        run(hub, tid, a.id, outcome)
+        assert tasks.failed_ids(hub.conn()) == set(), outcome
+    run(hub, tid, a.id, "error")
+    assert tasks.failed_ids(hub.conn()) == {tid}
+    conn = hub.conn()
+    with db.transaction(conn):
+        conn.execute("UPDATE tasks SET state = 'cancelled' WHERE id = ?", (tid,))
+    assert tasks.failed_ids(conn) == set()
+    html = get(hub, f"/ui/tasks/{tid}").text
+    [h1] = fail_hook(html, f"task:{tid}")
+    assert "is-failed" not in h1 and "data-failed" not in h1 and "failed-new" not in html
+
+
+def test_an_agent_whose_task_run_errored_gets_the_failed_hook_on_its_head_and_cards(window):
+    hub, a, c, r, t, ap, q = window
+    d = hub.enroll("dora")
+    online(hub, d)
+    conn = hub.conn()
+    with db.transaction(conn):
+        task_agents.add_agent(conn, t["id"], d.id, role="", stage="works", actor=OPERATOR)
+
+    def heads():
+        return {"agent page": fail_hook(get(hub, f"/ui/agents/{d.id}").text, f"agent:{d.id}"),
+                "agent panel": fail_hook(panel(hub, f"agent:{d.id}").text, f"agent:{d.id}"),
+                "dashboard": fail_hook(get(hub, "/ui/dashboard").text, f"agent:{d.id}"),
+                "agents": fail_hook(get(hub, "/ui/agents").text, f"agent:{d.id}")}
+    for where, tags in heads().items():
+        assert len(tags) == 1 and "is-failed" not in tags[0] and "data-failed" not in tags[0], (where, tags)
+    run(hub, t["id"], d.id, "error")
+    found = heads()
+    for where, tags in found.items():
+        assert len(tags) == 1 and "is-failed" in tags[0] and " data-failed" in tags[0], (where, tags)
+    assert found["agent page"][0].startswith('<div class="agent-head is-failed"')
+    assert found["agent panel"][0].startswith('<div class="dhead is-failed"')
+    html = get(hub, f"/ui/agents/{d.id}").text
+    assert "/failed.svg" in html and "/error.svg" not in html  # the failed pose, not the old rain cloud
 
 
 def test_app_js_plays_failed_new_once_when_a_key_turns_failed(hub):

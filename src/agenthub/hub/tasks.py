@@ -333,6 +333,13 @@ def list_runs(conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute("SELECT * FROM task_runs WHERE task_id = ? ORDER BY id", (task_id,))]
 
 
+def failed_ids(conn: sqlite3.Connection) -> set[int]:
+    """Live tasks whose latest run ended in error. A run started after the error (a retry) clears it."""
+    return {r[0] for r in conn.execute(
+        "SELECT t.id FROM tasks t WHERE t.state NOT IN ('done', 'rejected', 'cancelled') AND "
+        "(SELECT outcome FROM task_runs WHERE task_id = t.id ORDER BY id DESC LIMIT 1) = 'error'")}
+
+
 def usage(conn: sqlite3.Connection, task_id: int, agent_id: str | None = None) -> dict[str, Any]:
     """Budget consumed so far by a task's runs (only ``agent_id``'s when given).
 
