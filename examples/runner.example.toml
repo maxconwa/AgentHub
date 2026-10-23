@@ -17,6 +17,5 @@ example-project = "/home/agent/src/example-project"
 # heartbeat_seconds = 15
 # permission_wait_seconds = 600   # how long a live permission request waits for you
 # progress_flush_seconds = 5
+# chat_flush_seconds = 1         # a session's live output reaches its chat at most this often
 # sync_seconds = 60
-# prompt_max_turns = 40           # budget of one session on an operator's prompt
-# prompt_wall_clock_minutes = 30

@@ -38,8 +38,10 @@ class RunnerConfig:
     heartbeat_seconds: float = 15
     permission_wait_seconds: int = 600
     progress_flush_seconds: float = 5
+    # How often a session's live output (text, tool lines, status) is sent to its chat at most.
+    chat_flush_seconds: float = 1
     sync_seconds: float = 60
-    # Optional limits on one operator prompt's session; unset (the default): none, it runs until it's done.
+    # Ignored since 0.3.8 (prompts became chat, which has no limits); still accepted so older files load.
     prompt_max_turns: int | None = None
     prompt_wall_clock_minutes: int | None = None
 

@@ -152,41 +152,6 @@ class HubClient:
     async def withdraw_question(self, question_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/questions/{question_id}/withdraw")
 
-    # --- prompts (retired in 0.3.8: the hub finds none pending; kept until the runner moves to chats) ----------
-
-    async def pending_prompts(self) -> list[dict[str, Any]]:
-        """Prompts this agent still has to act on (``pending``, or ``running`` to resume after a restart)."""
-        return (await self._request("GET", "/prompts/pending"))["prompts"]
-
-    async def get_prompt(self, prompt_id: int) -> dict[str, Any]:
-        return await self._request("GET", f"/prompts/{prompt_id}")
-
-    async def start_prompt(self, prompt_id: int) -> dict[str, Any]:
-        return await self._request("POST", f"/prompts/{prompt_id}/start")
-
-    async def finish_prompt(self, prompt_id: int, ok: bool, note: str = "", *, stale: bool = False) -> dict[str, Any]:
-        payload: dict[str, Any] = {"ok": ok, "note": note}
-        if stale:  # too old to run when this runner started; the hub checks and writes the note
-            payload["stale"] = True
-        return await self._request("POST", f"/prompts/{prompt_id}/finish", json=payload)
-
-    async def report_prompt_run(
-        self, prompt_id: int, *, outcome: str, seconds: float, session_id: str | None = None,
-        num_turns: int | None = None, cost_usd: float | None = None, project: str | None = None,
-    ) -> dict[str, Any]:
-        """One session this runner ran on the prompt, for the Usage page."""
-        payload = {"outcome": outcome, "seconds": seconds, "session_id": session_id, "num_turns": num_turns,
-                   "cost_usd": cost_usd, "project": project}
-        return await self._request("POST", f"/prompts/{prompt_id}/runs", json=payload)
-
-    async def claim_share(self, prompt_id: int, title: str, body: str = "", project: str | None = None
-                          ) -> dict[str, Any]:
-        payload = {"title": title, "body": body, "project": project}
-        return await self._request("POST", f"/prompts/{prompt_id}/claim", json=payload)
-
-    async def decline_share(self, prompt_id: int, reason: str) -> dict[str, Any]:
-        return await self._request("POST", f"/prompts/{prompt_id}/decline", json={"reason": reason})
-
     # --- board -----------------------------------------------------------------
 
     async def board_list(self, project: str, prefix: str = "") -> list[dict[str, Any]]:
