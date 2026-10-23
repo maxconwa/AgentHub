@@ -61,6 +61,12 @@ does agenthub; only Tailscale and lingering need `sudo`.
 hub machine and on every agent machine, then restart the hub and each runner.
 The hub migrates its database on start. Mixed versions are not supported.
 
+**0.3.9.0 lets names have capitals and lifts the length limit on what you
+write.** A 0.3.8 runner doesn't know names with capitals (it builds units and
+folders from the raw name, and matches `runner.toml` keys exactly), so upgrade
+the runners with the hub. Migration 23 only adds; existing lowercase names,
+units, folders and branches stay as they are.
+
 **0.3.8 replaces prompts with chats**, so this matters more than usual:
 
 - A 0.3.7 runner on a 0.3.8 hub gets no prompts and never sees your chat
@@ -76,6 +82,12 @@ On its first start, a 0.3.8 hub copies your old prompts, private messages,
 board threads and other channel posts, and the approvals and questions, into the
 matching chats. It doesn't change or delete the originals. A prompt that was
 still pending or running reaches its agents as a chat message instead.
+
+**Rolling back to 0.3.8** is possible because migration 23 only adds. Respell
+names with capitals in lowercase first, while 0.3.9.0 is still installed
+(`agenthub hub agents rename`, `agenthub hub project rename`), then roll back
+the hub and the runners together.
+[docs/rollback-0.3.8.md](docs/rollback-0.3.8.md) covers the steps.
 
 **Rolling back to 0.3.7** is possible because the database changes only add.
 Roll back the hub and the runners together. Messages written in chats under

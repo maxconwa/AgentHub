@@ -11,7 +11,7 @@ operators = ["operator@example.com"]
 
 whois_cache_seconds = 30
 tailscale_bin = "tailscale"
-max_body_bytes = 65536
+max_body_bytes = 1048576
 
 # The hub's tailnet URL; used for links in phone notifications.
 public_url = "https://HUB-NODE.YOUR-TAILNET.ts.net"
