@@ -65,7 +65,9 @@ def test_route_inventory_is_not_empty(hub):
     assert ("GET", "/ui/activity") in routes and ("GET", "/ui/feed") in routes
     assert ("POST", "/ui/chat/{kind}/{ref}") in routes and ("GET", "/ui/chat/msg/{message_id}") in routes
     assert not [r for r in routes if r[1].startswith(("/ui/prompts", "/ui/compose", "/ui/messenger/"))]
-    assert len(routes) == 58, "a route was added or removed: the walk tests cover it, update this count"
+    assert ("GET", "/ui/api/projects/{name}/reviewers") in routes  # operator JSON under /ui is walked too
+    assert ("PUT", "/ui/api/projects/{name}/reviewers") in routes
+    assert len(routes) == 60, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):

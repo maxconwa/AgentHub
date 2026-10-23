@@ -14,6 +14,8 @@ Roles:
   agent     a ``works`` member of the task (claiming an unstaffed task joins it); may not
             move a task to review: agents finish, and the hub moves it
   system    the hub itself: in_progress → review once every active implementer finished
+  reviewer  a ``reviews`` member whose ``changes`` verdict sends the task back: review → in_progress
+            (``task_agents.record_verdict``); ``approve`` never moves a task, only the operator marks it done
   operator  a human; any legal move
   approval  the outcome of an approval decision (awaiting_approval → open / rejected)
 """
@@ -53,6 +55,7 @@ AGENT_MOVES = frozenset({
 })
 APPROVAL_MOVES = frozenset({("awaiting_approval", "open"), ("awaiting_approval", "rejected")})
 SYSTEM_MOVES = frozenset({("in_progress", "review")})
+REVIEWER_MOVES = frozenset({("review", "in_progress")})
 
 BUDGET_LIMITS = {"max_turns": (1, 500), "wall_clock_minutes": (1, 24 * 60), "max_subtasks": (0, 50)}
 DEFAULT_BUDGET = {"max_turns": 50, "wall_clock_minutes": 60, "max_subtasks": 5}
@@ -65,7 +68,8 @@ def check_transition(current: str, new: str, role: str) -> None:
         raise Conflict(f"illegal task transition {current} → {new}")
     if role == "operator":
         return
-    allowed = {"agent": AGENT_MOVES, "approval": APPROVAL_MOVES, "system": SYSTEM_MOVES}.get(role)
+    allowed = {"agent": AGENT_MOVES, "approval": APPROVAL_MOVES, "system": SYSTEM_MOVES,
+               "reviewer": REVIEWER_MOVES}.get(role)
     if allowed is None:
         raise Invalid(f"unknown role {role!r}")
     if (current, new) not in allowed:
@@ -225,6 +229,10 @@ def transition(
         else:
             _require_member(task, agent, "works")
         released = new_state == "open" and current in ("claimed", "in_progress", "blocked")
+    elif role == "reviewer":
+        if agent is None:
+            raise Invalid("reviewer role requires the acting agent")
+        _require_member(task, agent, "reviews")
     if released:
         assert agent is not None
         task_agents.remove_agent(conn, task_id, agent.id, actor=actor, advance=False)
@@ -245,12 +253,16 @@ def transition(
     )
     if cur.rowcount == 0:
         raise Conflict(f"task {task_id} changed concurrently; re-read and retry")
-    if current == "review" and new_state == "in_progress":  # operator sent it back
+    if current == "review" and new_state == "in_progress":  # the operator or a reviewer sent it back
         conn.execute("UPDATE task_agents SET finished_at = NULL WHERE task_id = ? AND stage = 'works'", (task_id,))
         conn.execute(
             "UPDATE task_agents SET verdict = NULL, verdict_notes = '' WHERE task_id = ? AND stage = 'reviews'",
             (task_id,),
         )
+    if new_state == "review":  # reviewers are always there: the project's, if the task has none
+        from agenthub.hub import reviewers
+
+        reviewers.fill(conn, get_task(conn, task_id))
     fresh = get_task(conn, task_id)
     events.emit(
         conn, type="task.transitioned", actor=actor, project=task["project"], device=device,

@@ -322,7 +322,7 @@ def test_operator_send_back_resets_finish_and_verdicts(hub):
     t = running(hub, "a", "b", reviews=("r",))
     fin(hub, t, "a")
     fin(hub, t, "b")
-    verdict(hub, t, "r", "changes", "fix it")
+    verdict(hub, t, "r", "approve", "fine by me")
     _tx(hub, tasks.transition, t["id"], "in_progress", actor=OPERATOR, role="operator")
     for m in tasks.get_task(hub.conn(), t["id"])["agents"]:
         assert m["finished_at"] is None and m["verdict"] is None and m["verdict_notes"] == ""

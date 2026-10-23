@@ -518,7 +518,7 @@ CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval |
 | `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release); it never moves a task to `review` or `done` |
 | `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
-| `review_task` | a reviewer records a verdict (`approve` or `changes`) with notes; it never moves the task |
+| `review_task` | a reviewer records a verdict with notes: `changes` sends the task back to in_progress and wakes its builders; `approve` leaves it in review for the operator |
 | `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
 | `message_operator` | write to the operator in your own chat (the same as `chat_post(chat='me')`); no other agent sees it |
 | `ask_operator` / `get_question` | ask the operator a question and carry on; it shows as a card in the chat, the answer arrives in your inbox as the operator's message, and `get_question` looks it up |
@@ -567,9 +567,22 @@ change roles. Each agent is in one **stage**:
 - **works** implements. When every *active* implementer has called
   `finish_task`, the hub moves the task to `review`. Revoked or pending
   implementers don't block that.
-- **reviews** reviews once the task is in `review` and records a verdict
-  (`approve` or `changes`). Verdicts are advice: only you move the task to
-  `done` or send it back to `in_progress`.
+- **reviews** reviews once the task is in `review` and records a verdict.
+  `changes` sends the task back to `in_progress`, with the reviewer's notes as
+  the send-back note, and wakes its builders: the reviewer's message in the
+  task chat reaches each of them, and each builder's runner resumes its task
+  session with the notes. `approve` leaves the task in `review`. Only you mark
+  a task `done`.
+
+**Reviewers are always there.** On a project's page you mark some of its
+agents as the project's reviewers. A task that enters `review` with no active
+reviewer gets them added in the `reviews` stage, with the role "Project
+reviewer". Agents already on the task are skipped, and so are agents that are
+revoked or no longer allowed into the project. The list sits behind
+operator-only routes, `GET` and `PUT /ui/api/projects/{name}/reviewers`
+(body `{"reviewers": ["name-or-id", ...]}`). Like every `/ui` page, they take
+your Tailscale identity, never an agent token, and the `PUT` needs the CSRF
+token.
 
 ```bash
 agenthub tasks add-agent 7 reviewer-bot --stage reviews --role "check the tests"

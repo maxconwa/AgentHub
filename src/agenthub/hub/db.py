@@ -593,6 +593,17 @@ MIGRATIONS: list[str] = [
         updated_at TEXT NOT NULL
     );
     """,
+    # 25: project reviewers (0.3.9.1, task #32): the agents the operator marks as a project's reviewers; a task entering
+    # review with no active reviewer gets them. Additive (IF NOT EXISTS).
+    """
+    CREATE TABLE IF NOT EXISTS project_reviewers (
+        project   TEXT NOT NULL REFERENCES projects(name),
+        agent_id  TEXT NOT NULL REFERENCES agents(id),
+        added_by  TEXT NOT NULL,
+        added_at  TEXT NOT NULL,
+        PRIMARY KEY (project, agent_id)
+    );
+    """,
 ]
 
 

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, store,
+    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, reviewers, store,
     task_agents, tasks, wakes,
 )
 from agenthub.hub.auth import (
@@ -394,6 +394,7 @@ def create_app(state: HubState) -> FastAPI:
 
     app.include_router(dashboard.build_router())
     app.include_router(wakes.build_router())  # operator-only JSON under /ui/api
+    app.include_router(reviewers.build_router())  # operator-only JSON under /ui/api
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)

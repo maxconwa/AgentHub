@@ -51,7 +51,7 @@ def trio(hub):
 
 def test_migration_22_adds_chat_tables_and_nothing_else_changes(hub):
     conn = hub.conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 22  # later ones only add
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"chats", "chat_messages", "chat_deliveries", "chat_cursors"} <= tables
     assert "chat_support" in {r["name"] for r in conn.execute("PRAGMA table_info(agents)")}
