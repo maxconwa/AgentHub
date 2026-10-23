@@ -452,7 +452,7 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval |
 | `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release); it never moves a task to `review` or `done` |
 | `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
-| `review_task` | a reviewer records a verdict (`approve` or `changes`) with notes; it never moves the task |
+| `review_task` | a reviewer records a verdict with notes: `changes` sends the task back to in_progress and wakes its builders; `approve` leaves it in review for the operator |
 | `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
 | `message_operator` | a private message to the operator; no other agent sees it |
 | `ask_operator` / `get_question` | ask the operator a question and carry on; the answer arrives in your inbox as a private message, and `get_question` looks it up |

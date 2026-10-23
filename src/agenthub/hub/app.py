@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, store,
+    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, reviewers, store,
     task_agents, tasks,
 )
 from agenthub.hub.auth import (
@@ -369,12 +369,13 @@ def create_app(state: HubState) -> FastAPI:
     from agenthub.hub import dashboard
 
     app.include_router(dashboard.build_router())
+    app.include_router(reviewers.build_router())  # operator-only JSON under /ui/api
     app.mount("/ui/static", StaticFiles(directory=dashboard.HERE / "static"), name="static")
 
     @app.exception_handler(store.StoreError)
     async def store_error(request: Request, exc: store.StoreError):
         status = {store.NotFound: 404, store.Conflict: 409, store.Invalid: 422, store.Forbidden: 403}
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(status.get(type(exc), 400), str(exc))
         body: dict[str, Any] = {"detail": str(exc)}
         if isinstance(exc, store.Conflict):
@@ -933,7 +934,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(exc.status_code, str(exc.detail))
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
@@ -941,7 +942,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
-        if request.url.path.startswith("/ui"):
+        if request.url.path.startswith("/ui") and not request.url.path.startswith("/ui/api/"):
             return dashboard.error_page(422, "; ".join(str(e.get("msg")) for e in exc.errors()))
         return JSONResponse({"detail": jsonable(exc.errors())}, status_code=422)
 

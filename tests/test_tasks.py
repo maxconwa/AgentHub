@@ -474,10 +474,15 @@ def test_finish_and_verdict_endpoints(hub):
     assert post(hub, x, f"{t['id']}/verdict", verdict="approve").status_code == 403
     assert post(hub, r, f"{t['id']}/verdict", verdict="maybe").status_code in (400, 422)
     assert post(hub, r, f"{t['id']}/verdict", verdict="approve", notes="y" * 4001).status_code == 422
-    resp = post(hub, r, f"{t['id']}/verdict", verdict="changes", notes="fix it")
-    assert resp.status_code == 200 and resp.json()["state"] == "review"
+    resp = post(hub, r, f"{t['id']}/verdict", verdict="approve", notes="fine")
+    assert resp.status_code == 200 and resp.json()["state"] == "review"  # approve never moves the task
     rev = [m for m in resp.json()["agents"] if m["agent_id"] == r.id][0]
-    assert rev["verdict"] == "changes" and rev["verdict_notes"] == "fix it"
+    assert rev["verdict"] == "approve" and rev["verdict_notes"] == "fine"
+    resp = post(hub, r, f"{t['id']}/verdict", verdict="changes", notes="fix it")
+    assert resp.status_code == 200 and resp.json()["state"] == "in_progress"  # changes sends it back
+    assert resp.json()["last_note"] == "fix it" and resp.json()["last_moved_by"] == r.id
+    ev = hub.conn().execute("SELECT payload FROM events WHERE type = 'task.verdict' ORDER BY id DESC").fetchone()
+    assert '"changes"' in ev["payload"] and "fix it" in ev["payload"]
     # another project's task is invisible
     other = hub.enroll("o", projects=("other",))
     assert post(hub, other, f"{t['id']}/finish", note="").status_code == 404

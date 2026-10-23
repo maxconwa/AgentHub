@@ -371,9 +371,15 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def review_task(task_id: int, verdict: str, notes: str = "") -> str:
-        """As this task's reviewer, record 'approve' or 'changes' with notes. The operator decides what happens next."""
+        """As this task's reviewer, record 'approve' or 'changes' with notes.
+
+        'changes' sends the task back to in_progress with your notes and wakes its builders; 'approve' leaves it in
+        review, and only the operator marks it done."""
         t = await call(lambda c: c.review_task(task_id, verdict, notes))
-        return f"Recorded verdict {verdict!r} on task #{t['id']}; the operator decides what happens next."
+        if verdict == "changes":
+            return (f"Recorded verdict 'changes' on task #{t['id']}: it is back in progress, and its builders were "
+                    "woken with your notes.")
+        return f"Recorded verdict {verdict!r} on task #{t['id']}; it stays in review until the operator decides."
 
     @server.tool()
     async def publish_report(

@@ -201,7 +201,9 @@ def record_verdict(
     notes: str = "",
     device: str | None = None,
 ) -> dict[str, Any]:
-    """A reviewer records its verdict. It never moves the task: only the operator does."""
+    """A reviewer records its verdict. ``approve`` leaves the task in review (only the operator marks it done);
+    ``changes`` sends it back: review → in_progress with the notes as the send-back note (which clears this round's
+    finishes and verdicts), and its builders are woken in the task's chat (:func:`wake_builders`)."""
     if verdict not in VERDICTS:
         raise Invalid(f"verdict must be one of {', '.join(VERDICTS)}")
     task = _state_membership(conn, task_id, agent, "reviews", "review")
@@ -215,7 +217,28 @@ def record_verdict(
         payload={"task_id": task_id, "agent_id": agent.id, "verdict": verdict, "notes": notes,
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
-    return fresh
+    if verdict != "changes":
+        return fresh
+    fresh = tasks.transition(conn, task_id, "in_progress", actor=agent.id, role="reviewer", agent=agent,
+                             note=notes.strip() or "changes requested", device=device)
+    wake_builders(conn, fresh, agent, notes)
+    return tasks.get_task(conn, task_id)
+
+
+def wake_builders(conn: sqlite3.Connection, task: dict[str, Any], reviewer: Agent, notes: str) -> None:
+    """A reviewer sent ``task`` back: its active builders are woken with the notes, by the reviewer's message in the
+    task chat addressed to them (an agent's chat message wakes its recipients, 0.3.9.1). Their runners also resume
+    the task's session for the move back to in_progress, with the notes as the send-back note."""
+    from agenthub.hub import chats  # chats imports this module's neighbours
+
+    builders = [m for m in task["agents"] if m["stage"] == "works" and m["status"] == "active"]
+    if not builders:
+        return
+    body = (f"Changes requested on task #{task['id']}; it is back in progress.\n\n"
+            + (notes.strip() or "(no notes)"))[:chats.MAX_BODY_CHARS]
+    meta = {"send_back": True}
+    for m in builders:
+        chats.post(conn, reviewer, "task", str(task["id"]), body, to=m["agent_id"], meta=meta)
 
 
 def pause(
