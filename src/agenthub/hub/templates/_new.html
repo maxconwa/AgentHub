@@ -24,9 +24,9 @@
 
 {% elif kind == 'project' %}
   {% call new_form('/ui/projects') %}
-  <label>Name <input name="name" required maxlength="64" pattern="[a-z0-9][a-z0-9_\-]{0,63}" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="e.g. mobile-app"></label>
-  <p class="small-line">Lowercase letters, digits, - and _; it can't be changed later.</p>
-  <label>Description <textarea name="description" rows="4" maxlength="4000"></textarea></label>
+  <label>Name <input name="name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" title="Letters, digits, - and _, starting with a letter or digit" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="e.g. Mobile-App" aria-describedby="new-project-name-hint"></label>
+  <p class="small-line" id="new-project-name-hint">Letters, digits, - and _, shown as you write it; it can't be changed later. Names ignore case: with Golem made, golem is taken.</p>
+  <label>Description <textarea name="description" rows="4"></textarea></label>
   <button type="submit" class="approve">Create project</button>
   <p class="small-line">An agent works in it once it is one of the agent's allowed projects: set them on the agent's page, or name the project in a new agent's enrollment code.</p>
   {% endcall %}

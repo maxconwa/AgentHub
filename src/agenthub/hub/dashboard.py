@@ -24,7 +24,9 @@ from urllib.parse import quote, urlencode
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
+from agenthub import names as agent_names_rule
 from agenthub.hub import (
     approvals, avatar_art, avatars, chats, db, device_board, events, markdown, questions, reports, store,
     task_agents, tasks, usage, views,
@@ -204,8 +206,59 @@ def clock(ts: str | None) -> str:
     return f"{when:%H:%M} UTC" if when.date() == datetime.now(UTC).date() else f"{when:%b} {when.day}, {when:%H:%M} UTC"
 
 
-templates.globals.update(ago=ago, who=who, event_summary=event_summary)
+# A chat bubble longer than this folds behind "Show more" (the whole text is still in the page).
+LONG_CHARS = 1500
+LONG_LINES = 20
+
+
+def long_text(text: str | None) -> bool:
+    """Whether a bubble's text is long enough to fold: over LONG_CHARS characters or LONG_LINES lines."""
+    return bool(text) and (len(text) > LONG_CHARS or text.count("\n") >= LONG_LINES)
+
+
+_TAG = re.compile(r"(<[^>]*>)")
+_TAG_NAME = re.compile(r"</?([A-Za-z0-9]+)")
+_NO_MENTIONS_IN = ("a", "code", "pre")
+
+
+def mention_names(mentioned: Any, names: dict[str, str]) -> set[str]:
+    """The keys (names.key) of the names a message's ``meta.mentions`` lists: agent ids (shown by their names) or
+    names; anything else is ignored."""
+    if not isinstance(mentioned, list):
+        return set()
+    out = set()
+    for m in mentioned:
+        name = names.get(m, m) if isinstance(m, str) else None
+        if name and agent_names_rule.is_name(name):
+            out.add(agent_names_rule.key(name))
+    return out
+
+
+def highlight_mentions(html: str, mentioned: Any, names: dict[str, str]) -> Markup:
+    """``html`` (the ``md`` filter's escaped output) with each @Name the hub found in the message (``meta.mentions``,
+    case ignored) wrapped in ``<span class="mention">``. Only text between tags is touched, never inside a link or
+    code; what gets wrapped is the matched text itself, which is '@' and name characters only, so no markup comes
+    from the message."""
+    wanted = mention_names(mentioned, names)
+    if not wanted or "@" not in html:
+        return Markup(html)  # noqa: S704 (already escaped by markdown.render)
+    out, inside = [], 0
+    for part in _TAG.split(str(html)):
+        if part.startswith("<"):
+            tag = _TAG_NAME.match(part)
+            if tag and tag[1].lower() in _NO_MENTIONS_IN and not part.endswith("/>"):
+                inside = max(inside + (-1 if part.startswith("</") else 1), 0)
+        elif not inside and "@" in part:
+            part = agent_names_rule.MENTION_RE.sub(
+                lambda m: f'<span class="mention">{m[0]}</span>' if agent_names_rule.key(m[1]) in wanted else m[0], part)
+        out.append(part)
+    return Markup("".join(out))  # noqa: S704 (escaped text, plus spans around '@' and name characters)
+
+
+templates.globals.update(ago=ago, who=who, event_summary=event_summary, long_text=long_text,
+                         project_url=views.project_url)
 templates.filters["clock"] = clock
+templates.filters["mentions"] = highlight_mentions
 templates.filters["md"] = markdown.render
 templates.filters["short_host"] = short_host
 
@@ -411,29 +464,34 @@ def build_router() -> APIRouter:
                        name: Annotated[str, Form(max_length=64)],
                        description: Annotated[str, Form()] = "",
                        panel: PanelField = "", next: NextField = "") -> Response:
-        with db.transaction(conn):
-            if not store.ensure_project(conn, name, actor=operator.actor, description=description):
-                raise store.Conflict(f"project {name!r} already exists")
+        with db.transaction(conn):  # names ignore case: with Golem made, golem is taken (409)
+            store.create_project(conn, name, actor=operator.actor, description=description)
         if panel and request.headers.get("hx-request"):
             return render_panel(request, operator, conn, f"project:{name}", next)
-        return done(request, f"/ui/projects/{name}")
+        return done(request, views.project_url(name))
 
     @router.get("/projects/{name}", response_class=HTMLResponse)
-    def project_page(name: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        project = next((p for p in store.list_projects(conn) if p["name"] == name), None)
-        if project is None:
+    def project_page(name: str, request: Request, operator: Op, conn: Conn) -> Response:
+        found = store.project_name(conn, name)
+        if found is None:
             raise store.NotFound(f"no project {name!r}")
+        if found != name:  # another spelling of the name: go to the one the project has
+            query = request.url.query
+            return RedirectResponse(views.project_url(found) + (f"?{query}" if query else ""), status_code=307,
+                                    headers=SECURITY_HEADERS)
+        project = next(p for p in store.list_projects(conn) if p["name"] == name)
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
-                      c=page_chat(request, conn, "project", name), c_kind="project", next=f"/ui/projects/{quote(name)}",
+                      c=page_chat(request, conn, "project", name), c_kind="project", next=views.project_url(name),
                       reports=reports.list_reports(conn, projects=[name]))
 
     @router.post("/projects/{name}/description")
     def project_description(name: str, request: Request, operator: PostOp, conn: Conn,
-                            description: Annotated[str, Form(max_length=4000)] = "") -> Response:
+                            description: Annotated[str, Form()] = "") -> Response:
+        name = store.project_name(conn, name) or name
         with db.transaction(conn):
             store.set_project_description(conn, name, description, actor=operator.actor)
-        return done(request, f"/ui/projects/{name}")
+        return done(request, views.project_url(name))
 
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -503,7 +561,7 @@ def build_router() -> APIRouter:
 
     @router.post("/chat/{kind}/{ref}")
     def chat_send(kind: str, ref: str, request: Request, operator: PostOp, conn: Conn,
-                  body: Annotated[str, Form(min_length=1, max_length=views.CHAT_MAX_CHARS)],
+                  body: Annotated[str, Form(min_length=1)],
                   reply_to: Annotated[int, Form(ge=0)] = 0, next: NextField = "") -> Response:
         """A chat's message box (and a question card's Reply, with ``reply_to`` its row): the operator's message, which
         the hub routes to the chat's agents. app.js gets the new row back; a plain form goes back to the page."""
@@ -512,7 +570,7 @@ def build_router() -> APIRouter:
         if not c["send"]:
             raise HTTPException(409, c["readonly"])
         with db.transaction(conn):
-            row = chats.send(conn, kind, ref, body, operator.actor, reply_to=reply_to or None)
+            row = chats.send(conn, kind, c["ref"], body, operator.actor, reply_to=reply_to or None)
         if chat_request(request):
             return render_rows(request, operator, conn, views.chat_rows(conn, [row]), kind)
         return done(request, safe_next(next) or c["page"])
@@ -553,7 +611,7 @@ def build_router() -> APIRouter:
 
     @router.post("/questions/{qid}/answer")
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
-                        answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)],
+                        answer: Annotated[str, Form(min_length=1)],
                         panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         written(answer)
         with db.transaction(conn):
@@ -581,7 +639,7 @@ def build_router() -> APIRouter:
 
     @router.post("/approvals/{approval_id}/discuss")
     def approval_discuss(approval_id: int, request: Request, operator: PostOp, conn: Conn,
-                         body: Annotated[str, Form(min_length=1, max_length=4000)],
+                         body: Annotated[str, Form(min_length=1)],
                          panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         written(body)
         with db.transaction(conn):
@@ -593,7 +651,7 @@ def build_router() -> APIRouter:
     @router.post("/approvals/{approval_id}/decide")
     def approval_decide(approval_id: int, request: Request, operator: PostOp, conn: Conn,
                         decision: Annotated[str, Form(pattern="^(approve|reject)$")],
-                        note: Annotated[str, Form(max_length=2000)] = "",
+                        note: Annotated[str, Form()] = "",
                         panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         with db.transaction(conn):
             approvals.decide(conn, approval_id, approve=decision == "approve", actor=operator.actor, note=note)
@@ -604,6 +662,7 @@ def build_router() -> APIRouter:
     @router.get("/tasks", response_class=HTMLResponse)
     def tasks_page(request: Request, operator: Op, conn: Conn, project: str = "", state: str = "") -> HTMLResponse:
         state = state if state in tasks.STATES else ""
+        project = store.project_name(conn, project) or project if project else ""
         rows = tasks.list_tasks(conn, projects=[project] if project else None, state=state or None, limit=500,
                                 newest_first=True)
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
@@ -614,7 +673,7 @@ def build_router() -> APIRouter:
     def task_create(request: Request, operator: PostOp, conn: Conn,
                     project: Annotated[str, Form(max_length=64)],
                     title: Annotated[str, Form(min_length=1, max_length=200)],
-                    body: Annotated[str, Form(max_length=16000)] = "",
+                    body: Annotated[str, Form()] = "",
                     assignee: Annotated[str, Form(max_length=64)] = "",
                     role: Annotated[str, Form(max_length=task_agents.MAX_ROLE_CHARS)] = "",
                     panel: PanelField = "", next: NextField = "") -> Response:
@@ -644,7 +703,7 @@ def build_router() -> APIRouter:
     @router.post("/tasks/{task_id}/description")
     def task_description(task_id: int, request: Request, operator: PostOp, conn: Conn,
                          title: Annotated[str, Form(min_length=1, max_length=tasks.MAX_TITLE_CHARS)],
-                         body: Annotated[str, Form(max_length=tasks.MAX_BODY_CHARS)] = "") -> Response:
+                         body: Annotated[str, Form()] = "") -> Response:
         with db.transaction(conn):
             tasks.set_description(conn, task_id, title, body, actor=operator.actor)
         return done(request, f"/ui/tasks/{task_id}")
@@ -682,7 +741,7 @@ def build_router() -> APIRouter:
     @router.post("/tasks/{task_id}/move")
     def task_move(task_id: int, request: Request, operator: PostOp, conn: Conn,
                   state: Annotated[str, Form(max_length=32)],
-                  note: Annotated[str, Form(max_length=4000)] = "") -> Response:
+                  note: Annotated[str, Form()] = "") -> Response:
         with db.transaction(conn):
             tasks.transition(conn, task_id, state, actor=operator.actor, role="operator", note=note)
         return done(request, f"/ui/tasks/{task_id}")
@@ -699,6 +758,7 @@ def build_router() -> APIRouter:
     def activity_page(request: Request, operator: Op, conn: Conn, project: str = "", agent: str = "",
                   type: str = "") -> HTMLResponse:
         sql, params = "SELECT * FROM events WHERE 1 = 1", []
+        project = store.project_name(conn, project) or project if project else ""
         if project:
             sql += " AND project = ?"
             params.append(project)
@@ -751,11 +811,15 @@ def build_router() -> APIRouter:
         return render_agents(request, operator, conn, {"code": code, "projects": names})
 
     @router.get("/agents/{agent_id}", response_class=HTMLResponse)
-    def agent_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+    def agent_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> Response:
         rows = views.agent_rows(conn, agent_id=agent_id)
         agent = store.get_agent(conn, agent_id)
         if not rows or agent is None:
-            raise HTTPException(404, "no such agent")
+            try:  # /ui/agents/<name>, in any case: the agent's page is at its id
+                named = store.find_agent(conn, agent_id)
+            except store.NotFound:
+                raise HTTPException(404, "no such agent") from None
+            return RedirectResponse(f"/ui/agents/{quote(named.id, safe='')}", status_code=307, headers=SECURITY_HEADERS)
         c = page_chat(request, conn, "agent", agent_id)
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
@@ -771,7 +835,7 @@ def build_router() -> APIRouter:
     def agent_revoke(agent_id: str, request: Request, operator: PostOp, conn: Conn,
                      confirm: Annotated[str, Form(max_length=64)] = "") -> Response:
         agent = store.find_agent(conn, agent_id)
-        if confirm != agent.name:
+        if not agent_names_rule.same(confirm.strip(), agent.name):
             raise HTTPException(422, "type the agent's name to confirm revocation")
         with db.transaction(conn):
             approvals.set_agent_status(conn, agent_id, "revoked", actor=operator.actor, note="revoked")

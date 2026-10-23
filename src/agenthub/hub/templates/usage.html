@@ -34,7 +34,7 @@
 {%- endmacro %}
 
 {% macro agent_link(g) %}<a {{ open_attrs('agent:' ~ g.agent_id, '/ui/agents/' ~ g.agent_id) }}>{{ g.label }}</a>{% endmacro %}
-{% macro project_link(g) %}{% if g.project %}<a {{ open_attrs('project:' ~ g.project, '/ui/projects/' ~ g.project) }}>{{ g.project }}</a>{% else %}<span class="muted">{{ g.label }}</span>{% endif %}{% endmacro %}
+{% macro project_link(g) %}{% if g.project %}<a {{ open_attrs('project:' ~ g.project, project_url(g.project)) }}>{{ g.project }}</a>{% else %}<span class="muted">{{ g.label }}</span>{% endif %}{% endmacro %}
 {% macro task_link(g) %}<a {{ open_attrs('task:' ~ g.task_id, '/ui/tasks/' ~ g.task_id) }}>#{{ g.task_id }}{% if g.title %} <span class="task-title">{{ g.title }}</span>{% endif %}</a>{% if g.project %} <span class="by-label">{{ g.project }}</span>{% endif %}{% endmacro %}
 
 {% block content %}

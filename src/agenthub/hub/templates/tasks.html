@@ -31,7 +31,7 @@
 {% for t in rows %}
 <div class="task-row">
   <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
-  <div class="small-line"><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a> · {{ ago(t.updated_at) }}</div>
+  <div class="small-line"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · {{ ago(t.updated_at) }}</div>
   {% for m in t.agents %}
   <div class="member">{{ avatar(avatars.get(m.agent_id), 24) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}</div></div>
   {% else %}<div class="member small-line">Nobody yet</div>

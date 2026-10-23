@@ -3,6 +3,9 @@
 (function () {
   "use strict";
 
+  // app.css folds long chat bubbles only under html.js, so without this script every bubble shows whole.
+  document.documentElement.classList.add("js");
+
   // Math: markdown.render leaves $…$ and $$…$$ as .math elements holding the TeX as text; typeset them
   // with the vendored KaTeX, on load and in everything HTMX swaps in (live regions, the panel, the chat
   // window). katex.render builds DOM nodes and sets their styles through the CSSOM, which the CSP
@@ -344,6 +347,7 @@
           var twin = li.querySelector('details[data-remember="' + CSS.escape(d.getAttribute("data-remember")) + '"]');
           if (twin) twin.open = d.open;
         });
+        old.querySelectorAll(".md.clamp.is-open").forEach(function (md) { setFolded(li.querySelector(".md.clamp"), false); });
         old.querySelectorAll("textarea").forEach(function (ta) {
           var twin = ta.name && ta.form && li.querySelector('form[action="' + CSS.escape(ta.form.getAttribute("action")) + '"] textarea[name="' + CSS.escape(ta.name) + '"]');
           if (twin && ta.value) twin.value = ta.value;
@@ -366,6 +370,26 @@
     if (follow) log.scrollTop = log.scrollHeight;
     return n;
   }
+
+  // A long bubble (_chat.html's bubble_body: .md.clamp, then its .show-more button) opens and folds again.
+  function setFolded(md, folded) {
+    if (!md) return;
+    md.classList.toggle("is-open", !folded);
+    var button = md.nextElementSibling;
+    if (button && button.classList.contains("show-more")) {
+      button.setAttribute("aria-expanded", String(!folded));
+      button.textContent = folded ? "Show more" : "Show less";
+    }
+  }
+  document.addEventListener("click", function (evt) {
+    var button = evt.target.closest && evt.target.closest(".show-more");
+    if (!button) return;
+    var md = button.previousElementSibling;
+    if (!md || !md.classList.contains("clamp")) return;
+    var folding = md.classList.contains("is-open");
+    setFolded(md, folding);
+    if (folding && md.getBoundingClientRect().top < 0) md.scrollIntoView({ block: "nearest" });
+  });
 
   function getRows(url) {
     return fetch(url, { credentials: "same-origin", headers: { "X-Chat": "1" } })
@@ -468,6 +492,93 @@
     evt.preventDefault();
     if (ta.value.trim() && ta.form) ta.form.requestSubmit();
   });
+
+  // @ in a chat's message box (a textarea[data-mentions]: the chat's agents' names as written, JSON). Typing @ and the
+  // start of a name lists the names starting with it, case ignored; Up/Down pick, Enter or Tab puts the name in as
+  // written, Escape closes the list. Names go into the list as text only.
+  var MENTION_AT = /(^|[^\w@])@([A-Za-z0-9_-]{0,64})$/;
+  var mention = null;  // the open list: {ta, list, names, sel, typed}
+  var mentionSeq = 0;
+
+  function mentionNames(ta) {
+    try {
+      var v = JSON.parse(ta.getAttribute("data-mentions") || "[]");
+      return Array.isArray(v) ? v.filter(function (n) { return typeof n === "string"; }) : [];
+    } catch (e) { return []; }
+  }
+  function closeMentions() {
+    if (!mention) return;
+    mention.list.remove();
+    mention.ta.removeAttribute("aria-controls");
+    mention.ta.removeAttribute("aria-activedescendant");
+    mention = null;
+  }
+  function selectMention(i) {
+    var items = mention.list.children;
+    mention.sel = (i + items.length) % items.length;
+    Array.prototype.forEach.call(items, function (li, j) { li.setAttribute("aria-selected", String(j === mention.sel)); });
+    mention.ta.setAttribute("aria-activedescendant", items[mention.sel].id);
+    items[mention.sel].scrollIntoView({ block: "nearest" });
+  }
+  function pickMention(name) {
+    var ta = mention.ta, end = ta.selectionStart, start = end - mention.typed.length - 1;
+    closeMentions();
+    ta.setRangeText("@" + name + " ", start, end, "end");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));  // resize the box; the list stays shut (a space ends it)
+    ta.focus();
+  }
+  function showMentions(ta) {
+    var m = ta.selectionStart === ta.selectionEnd && MENTION_AT.exec(ta.value.slice(0, ta.selectionStart));
+    var typed = m ? m[2] : "", key = typed.toLowerCase();
+    var hits = m ? mentionNames(ta).filter(function (n) { return n.toLowerCase().indexOf(key) === 0; }) : [];
+    if (!hits.length || hits.length === 1 && hits[0].toLowerCase() === key) { closeMentions(); return; }
+    if (mention && mention.ta !== ta) closeMentions();
+    if (!mention) {
+      var list = document.createElement("ul");
+      list.className = "mention-list";
+      list.id = "mention-list-" + (++mentionSeq);
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", "Agents in this chat");
+      list.addEventListener("mousedown", function (evt) {
+        var li = evt.target.closest("li[role=option]");
+        evt.preventDefault();  // keep the focus (and the caret) in the box
+        if (li && mention) pickMention(li.getAttribute("data-name"));
+      });
+      ta.after(list);
+      ta.setAttribute("aria-controls", list.id);
+      mention = { ta: ta, list: list, sel: 0 };
+    }
+    mention.typed = typed;
+    mention.list.replaceChildren.apply(mention.list, hits.map(function (name, i) {
+      var li = document.createElement("li");
+      li.id = mention.list.id + "-" + i;
+      li.setAttribute("role", "option");
+      li.setAttribute("data-name", name);
+      li.textContent = "@" + name;
+      return li;
+    }));
+    selectMention(0);
+  }
+  document.addEventListener("input", function (evt) {
+    if (evt.target.matches && evt.target.matches("textarea[data-mentions]")) showMentions(evt.target);
+  });
+  document.addEventListener("keyup", function (evt) {
+    if (/^(ArrowLeft|ArrowRight|Home|End)$/.test(evt.key) && evt.target.matches && evt.target.matches("textarea[data-mentions]")) {
+      showMentions(evt.target);
+    }
+  });
+  document.addEventListener("focusout", function (evt) { if (mention && evt.target === mention.ta) closeMentions(); });
+  document.addEventListener("submit", function () { closeMentions(); }, true);
+  // Capture phase: while the list is open these keys are its own (not Send, not closing the panel).
+  document.addEventListener("keydown", function (evt) {
+    if (!mention || evt.target !== mention.ta || evt.isComposing) return;
+    if (evt.key === "ArrowDown" || evt.key === "ArrowUp") selectMention(mention.sel + (evt.key === "ArrowDown" ? 1 : -1));
+    else if ((evt.key === "Enter" || evt.key === "Tab") && !evt.shiftKey) pickMention(mention.list.children[mention.sel].getAttribute("data-name"));
+    else if (evt.key === "Escape") closeMentions();
+    else return;
+    evt.preventDefault();
+    evt.stopPropagation();
+  }, true);
 
   // A chat on the page (not in the panel) starts at its newest row too.
   openChats().forEach(showLatest);

@@ -18,7 +18,7 @@
 {% endif %}
 {% for g in groups %}
 <section class="report-group" id="reports-{{ g.project }}" aria-labelledby="reports-{{ g.project }}-h">
-  <h2 id="reports-{{ g.project }}-h"><a {{ open_attrs('project:' ~ g.project, '/ui/projects/' ~ g.project) }}>{{ g.project }}</a> <span class="by-label">{{ g.reports|length }} report{{ 's' if g.reports|length != 1 }}</span></h2>
+  <h2 id="reports-{{ g.project }}-h"><a {{ open_attrs('project:' ~ g.project, project_url(g.project)) }}>{{ g.project }}</a> <span class="by-label">{{ g.reports|length }} report{{ 's' if g.reports|length != 1 }}</span></h2>
   {{ report_table(g.reports, names) }}
 </section>
 {% endfor %}

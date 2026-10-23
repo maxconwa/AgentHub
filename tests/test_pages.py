@@ -198,8 +198,11 @@ def test_description_edit_needs_csrf_and_is_escaped(tree):
     assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html
     ev = hub.conn().execute("SELECT payload FROM events WHERE type = 'project.updated'").fetchone()
     assert ev["payload"] == '{"description_changed":true}'
-    r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "description": "y" * 4001})
-    assert r.status_code == 422
+    # the operator's description has no length limit (0.3.9.0)
+    r = hub.client.post(url, headers=hub.op_headers(), data={"csrf": hub.csrf(), "description": "y" * 40_001},
+                        follow_redirects=False)
+    assert r.status_code == 303
+    assert len(next(p for p in store.list_projects(hub.conn()) if p["name"] == "proj")["description"]) == 40_001
 
 
 def test_empty_hub_projects(hub):
@@ -1051,7 +1054,8 @@ def test_plus_menu_forms_open_in_the_panel(busy, kind, action):
         assert 'name="role"' in f and 'name="assignee"' in f and 'name="title"' in f and 'value="proj"' in f
         assert 'value="worker"' in f and 'value="gone"' not in f
     if kind == "project":
-        assert 'name="name"' in f and 'pattern="[a-z0-9][a-z0-9_\\-]{0,63}"' in f and 'maxlength="4000"' in f
+        assert 'name="name"' in f and 'pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,63}"' in f and "<textarea" in f
+        assert "names ignore case" in f.lower() and "<textarea" in f and "maxlength" not in f.split("<textarea")[1]
 
 
 def test_new_task_and_agent_from_the_panel(busy):
