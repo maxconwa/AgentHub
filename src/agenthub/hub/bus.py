@@ -8,6 +8,12 @@ Routing is deliberately narrow: an agent is only told about things it could
 read anyway. Notifications carry ids and metadata, not bodies; clients fetch
 content through the normal authenticated endpoints.
 
+Chats (0.3.8): the operator's sockets get each new or changed chat message in
+full (``{"type": "chat", "op": "new"|"update", ...}``) instead of an Activity
+row; agents get id-only ``chat.deliver`` (their own deliveries) and
+``chat.message`` events (words and decisions in their task and project chats,
+never tool lines, statuses or another agent's own chat).
+
 Revocation: an ``agent.revoked`` event closes that agent's sockets with code
 4401. HTTP requests are already refused immediately because every request
 re-checks the token in the database.
@@ -24,7 +30,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from agenthub.hub import device_board
+from agenthub.hub import chats, device_board
 from agenthub.hub.events import row_to_event
 
 log = logging.getLogger("agenthub.bus")
@@ -43,9 +49,9 @@ def _notification(event: dict[str, Any], recipient: str) -> dict[str, Any]:
     p = event["payload"]
     keep = ("message_id", "channel", "task_id", "approval_id", "ask_id", "kind", "status", "from", "to",
             "state", "agent_id", "agents", "expires_at", "key", "version", "conflict_id", "board_key", "node_id",
-            "prompt_id", "mode")
+            "prompt_id", "mode", "chat_id", "chat_kind", "chat_ref", "delivery_id")
     data = {k: p[k] for k in keep if k in p}
-    if event["type"] in ("message.posted", "device.message_posted"):
+    if event["type"] in ("message.posted", "device.message_posted", "chat.message"):
         data["addressed_to_me"] = p.get("to") == recipient
     return {
         "type": "event",
@@ -77,10 +83,31 @@ def recipients(event: dict[str, Any], conn: sqlite3.Connection) -> set[str]:
     if etype == "device.message_posted":  # the other active agents on that machine
         rows = conn.execute("SELECT id FROM agents WHERE status = 'active' AND device_node_id = ?", (p["node_id"],))
         return {r["id"] for r in rows} - {event["actor"]}
+    if etype == "chat.deliver":  # the operator's message, to the one agent it is delivered to
+        return {p["agent_id"]}
+    if etype == "chat.message":  # words and decisions in a group chat, to its other agents
+        if p.get("chat_kind") not in ("task", "project") or p.get("kind") not in chats.MAIL_KINDS:
+            return set()
+        if event["actor"].startswith("human:"):  # the operator's text reaches them as chat.deliver
+            return set()
+        return set(chats.members(conn, p["chat_kind"], p["chat_ref"])) - {event["actor"]}
     if etype == "intent.conflict":
         rows = conn.execute("SELECT agent_id FROM intents WHERE id IN (?, ?)", tuple(p["intents"])).fetchall()
         return {r["agent_id"] for r in rows}
     return set()
+
+
+def _chat_frame(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, Any]:
+    """The operator's push for a new or changed chat message: the whole row as it is now (agent text in it is
+    escaped by the page that shows it, like everywhere else)."""
+    p = event["payload"]
+    try:
+        message = chats.get_message(conn, p["message_id"])
+    except chats.NotFound:
+        message = None
+    return {"type": "chat", "op": "new" if event["type"] == "chat.message" else "update", "event_id": event["id"],
+            "chat_id": p["chat_id"], "chat_kind": p["chat_kind"], "chat_ref": p["chat_ref"], "id": p["message_id"],
+            "message": message}
 
 
 class EventBus:
@@ -174,10 +201,15 @@ class EventBus:
                 self._last_id = event["id"]
                 if self.notifier is not None:
                     self.notifier.submit(event, names)
-                if self._operators and self.render_for_operator is not None:
-                    operator_rows.append({"type": "event", "id": event["id"], "event_type": event["type"],
-                                          "project": event["project"], "actor": event["actor"],
-                                          "html": self.render_for_operator(event, names)})
+                if self._operators:
+                    if event["type"] in ("chat.message", "chat.updated"):
+                        operator_rows.append(_chat_frame(conn, event))
+                    elif event["type"] == "chat.deliver":
+                        pass  # the message's own frame lists its deliveries
+                    elif self.render_for_operator is not None:
+                        operator_rows.append({"type": "event", "id": event["id"], "event_type": event["type"],
+                                              "project": event["project"], "actor": event["actor"],
+                                              "html": self.render_for_operator(event, names)})
                 if event["type"] == "agent.revoked":
                     revoked.append(event["payload"]["agent_id"])
                     continue

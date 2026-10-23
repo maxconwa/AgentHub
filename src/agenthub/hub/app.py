@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import ipaddress
 import json
 import logging
@@ -22,8 +20,8 @@ from pydantic import BaseModel, Field
 from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
-    approvals, asks, db, device_board, events, intents, private, prompts, questions, reports, store, task_agents,
-    tasks,
+    approvals, asks, chats, db, device_board, events, intents, private, prompts, questions, reports, store,
+    task_agents, tasks,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -114,7 +112,9 @@ class HubState:
 
 
 def expire_prompts(state: HubState) -> list[int]:
-    """Time out group prompt discussions older than ``prompt_discussion_minutes`` (see :func:`prompts.expire`)."""
+    """Time out group prompt discussions older than ``prompt_discussion_minutes`` (see :func:`prompts.expire`).
+    Since 0.3.8 no new prompt is made and the hub no longer runs this on a timer; prompts left open by 0.3.7 stay
+    as they were, for a hub rolled back to 0.3.7 to settle."""
     conn = state.connect()
     try:
         with db.transaction(conn):
@@ -123,13 +123,7 @@ def expire_prompts(state: HubState) -> list[int]:
         conn.close()
 
 
-async def _expire_prompts_forever(state: HubState) -> None:
-    while True:
-        await asyncio.sleep(state.prompt_expiry_seconds)
-        try:
-            await asyncio.to_thread(expire_prompts, state)
-        except Exception:  # noqa: BLE001 - keep the loop alive
-            log.exception("prompt expiry failed")
+RETIRED = "retired in 0.3.8: talk in chats (chat_post, read_inbox, take_task, sit_out)"
 
 
 # --- request models -----------------------------------------------------------
@@ -246,6 +240,36 @@ class DiscussionRequest(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
+class ChatPostRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=chats.MAX_BODY_CHARS)
+    to: str | None = Field(default=None, max_length=64)
+
+
+class ChatStreamRequest(BaseModel):
+    task_id: int | None = None
+    # Items are checked one by one (an unknown or malformed one is skipped and counted), so a newer runner's items
+    # don't make the whole call fail.
+    items: list[Any] = Field(max_length=chats.MAX_STREAM_ITEMS)
+
+
+class DeliveryClaimRequest(BaseModel):
+    mode: str = Field(max_length=16)
+    note: str = Field(default="", max_length=chats.MAX_DETAIL_CHARS)
+
+
+class ChatSessionRequest(BaseModel):
+    session_id: str | None = Field(default=None, max_length=128)
+
+
+class TakeTaskRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=chats.MAX_TITLE_CHARS)
+    body: str = Field(default="", max_length=chats.MAX_TASK_BODY_CHARS)
+
+
+class SitOutRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class PromptFinishRequest(BaseModel):
     ok: bool
     note: str = Field(default="", max_length=4000)
@@ -293,6 +317,17 @@ Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 Caller = Annotated[AgentCaller, Depends(active_agent)]
 
 
+def _private_entry(m: dict[str, Any], agent_id: str) -> dict[str, Any]:
+    return {"id": m["id"], "kind": "private", "project": None, "channel": "private", "author": m["author"],
+            "author_name": None, "to_agent": agent_id, "body": m["body"], "ts": m["ts"], "addressed_to_me": True}
+
+
+def _device_entry(m: dict[str, Any]) -> dict[str, Any]:
+    return {"id": m["id"], "kind": "device", "project": None, "channel": "device", "author": m["author"],
+            "author_name": m["author_name"], "to_agent": m["to_agent"], "body": m["body"], "ts": m["ts"],
+            "addressed_to_me": m["addressed_to_me"]}
+
+
 def jsonable(value: Any) -> Any:
     from fastapi.encoders import jsonable_encoder
 
@@ -304,15 +339,15 @@ def create_app(state: HubState) -> FastAPI:
     async def lifespan(app: FastAPI):
         conn = db.init_db(state.config.db_path)
         conn.execute("UPDATE agents SET connected = 0")
+        with db.transaction(conn):  # what 0.3.7 wrote (also while rolled back) shows in the chats
+            added = chats.backfill(conn)
+        if added:
+            log.info("copied %d earlier messages, prompts, approvals and questions into chats", added)
         conn.close()
         state.bus.start()
-        expiry = asyncio.create_task(_expire_prompts_forever(state), name="agenthub-prompt-expiry")
         try:
             yield
         finally:
-            expiry.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await expiry
             await state.bus.stop()
 
     app = FastAPI(title="agenthub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -369,24 +404,71 @@ def create_app(state: HubState) -> FastAPI:
     def projects(caller: Caller) -> dict[str, Any]:
         return {"projects": list(caller.agent.allowed_projects)}
 
+    # --- chats -------------------------------------------------------------------
+
+    @app.get(f"{api}/chats/deliveries")
+    def pending_deliveries(caller: Caller, conn: Conn) -> dict[str, Any]:
+        """The operator's messages the caller's runner hasn't given to a session yet, oldest first."""
+        return {"deliveries": chats.pending_deliveries(conn, caller.agent)}
+
+    @app.post(f"{api}/chats/deliveries/{{delivery_id}}")
+    def claim_delivery(delivery_id: int, body: DeliveryClaimRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """The runner takes one (compare-and-set: 409 when it was delivered already, so it skips it)."""
+        with db.transaction(conn):
+            return chats.claim_delivery(conn, caller.agent, delivery_id, mode=body.mode, note=body.note)
+
+    @app.get(f"{api}/chats/agent/me/session")
+    def chat_session(caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return {"session_id": chats.session(conn, caller.agent)}
+
+    @app.put(f"{api}/chats/agent/me/session")
+    def set_chat_session(body: ChatSessionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            chats.set_session(conn, caller.agent, body.session_id)
+        return {"session_id": body.session_id}
+
+    @app.get(f"{api}/chats/{{kind}}/{{ref}}/messages")
+    def chat_history(kind: str, ref: str, caller: Caller, conn: Conn,
+                     limit: Annotated[int, Query(ge=1, le=200)] = 30, after: int = 0) -> dict[str, Any]:
+        with db.transaction(conn):
+            return chats.history(conn, caller.agent, kind, ref, limit=limit, after_id=after)
+
+    @app.post(f"{api}/chats/{{kind}}/{{ref}}/messages", status_code=201)
+    def chat_post(kind: str, ref: str, body: ChatPostRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return chats.post(conn, caller.agent, kind, ref, body.body, to=body.to, device=caller.device.name)
+
+    @app.post(f"{api}/chats/{{kind}}/{{ref}}/stream", status_code=201)
+    def chat_stream(kind: str, ref: str, body: ChatStreamRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        """A session's live output: text blocks, tool lines (folded into one row per stretch) and status lines."""
+        with db.transaction(conn):
+            return chats.stream(conn, caller.agent, kind, ref, body.items, task_id=body.task_id,
+                                device=caller.device.name)
+
+    @app.post(f"{api}/chats/requests/{{message_id}}/take", status_code=201)
+    def take_task(message_id: int, body: TakeTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return chats.take_task(conn, caller.agent, message_id, title=body.title, body=body.body,
+                                   device=caller.device.name)
+
+    @app.post(f"{api}/chats/requests/{{message_id}}/sit-out", status_code=201)
+    def sit_out(message_id: int, body: SitOutRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+        with db.transaction(conn):
+            return chats.sit_out(conn, caller.agent, message_id, reason=body.reason, device=caller.device.name)
+
     # --- messages ------------------------------------------------------------
 
     @app.post(f"{api}/projects/{{project}}/messages", status_code=201)
-    def post_message(project: str, body: PostMessageRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
+    def post_message(project: str, caller: Caller) -> dict[str, Any]:
+        """Retired: channels are read-only history (copied into the project's and tasks' chats)."""
         require_project(caller, project)
-        with db.transaction(conn):
-            return store.post_message(
-                conn, author=caller.agent, project=project, channel=body.channel,
-                body=body.body, to=body.to, device=caller.device.name,
-            )
+        raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/projects/{{project}}/messages")
-    def recent_messages(
-        project: str, caller: Caller, conn: Conn,
-        channel: str | None = None, limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    ) -> dict[str, Any]:
+    def recent_messages(project: str, caller: Caller) -> dict[str, Any]:
         require_project(caller, project)
-        return {"messages": store.recent_messages(conn, project=project, channel=channel, limit=limit)}
+        raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/inbox")
     def inbox(
@@ -396,41 +478,41 @@ def create_app(state: HubState) -> FastAPI:
         peek: bool = False,
         addressed_only: bool = False,
     ) -> dict[str, Any]:
-        """Unread private messages from the operator first, then the caller's device board (both
-        whatever ``project`` is), then channel messages; all of them count toward ``limit``."""
+        """Unread mail, all of it counting toward ``limit``, in this order: the operator's chat messages not yet given
+        to a session (reading them delivers them), private messages 0.3.7 left unread, the caller's device board
+        (these three whatever ``project`` is), what agents and the hub wrote in the caller's task and project chats,
+        and channel messages 0.3.7 left unread."""
         projects = [require_project(caller, project)] if project else list(caller.agent.allowed_projects)
         mark = not (peek or addressed_only)
         agent = caller.agent
+        sources = [
+            lambda n, m: chats.operator_mail(conn, agent, limit=n, mark_read=m),
+            lambda n, m: [_private_entry(x, agent.id) for x in private.unread_for_agent(conn, agent, mark_read=m,
+                                                                                         limit=n)],
+            lambda n, m: [_device_entry(x) for x in device_board.unread_for_agent(
+                conn, agent, mark_read=m, limit=n, addressed_only=addressed_only)],
+            lambda n, m: chats.chat_mail(conn, agent, projects=projects, limit=n, mark_read=m,
+                                         addressed_only=addressed_only),
+            lambda n, m: store.read_inbox(conn, agent, projects=projects, limit=n, mark_read=m,
+                                          addressed_only=addressed_only)["messages"],
+        ]
+        entries: list[dict[str, Any]] = []
+        more = False
         with db.transaction(conn):
-            mine = private.unread_for_agent(conn, agent, mark_read=mark, limit=limit)
-            room = limit - len(mine)
-            near = device_board.unread_for_agent(conn, agent, mark_read=mark, limit=room,
-                                                 addressed_only=addressed_only)
-            got = store.read_inbox(conn, agent, projects=projects, limit=room - len(near),
-                                   mark_read=not peek, addressed_only=addressed_only)
-            more = got["more"]
-            # Anything still unread beyond what was just returned? (Marked rows are no longer unread.)
-            if len(mine) == limit:
-                left = private.unread_for_agent(conn, agent, mark_read=False, limit=limit + 1)
-                more = more or len(left) > (0 if mark else limit)
-            if len(near) == room:
-                seen = 0 if mark else len(near)
-                left = device_board.unread_for_agent(conn, agent, mark_read=False, limit=seen + 1,
-                                                     addressed_only=addressed_only)
-                more = more or len(left) > seen
-        entries = [{"id": m["id"], "kind": "private", "project": None, "channel": "private", "author": m["author"],
-                    "author_name": None, "to_agent": agent.id, "body": m["body"], "ts": m["ts"],
-                    "addressed_to_me": True} for m in mine]
-        entries += [{"id": m["id"], "kind": "device", "project": None, "channel": "device", "author": m["author"],
-                     "author_name": m["author_name"], "to_agent": m["to_agent"], "body": m["body"], "ts": m["ts"],
-                     "addressed_to_me": m["addressed_to_me"]} for m in near]
-        return {"messages": entries + got["messages"], "more": more}
+            for fetch in sources:
+                room = limit - len(entries)
+                got = fetch(room, mark) if room > 0 else []
+                entries += got
+                # Anything still unread beyond what was just returned? (Marked rows no longer are.)
+                seen = 0 if mark else len(got)
+                more = more or len(fetch(seen + 1, False)) > seen
+        return {"messages": entries, "more": more}
 
     @app.post(f"{api}/private", status_code=201)
     def message_operator(body: PrivateMessageRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        """Write to the operator in the caller's own private chat."""
+        """Write to the operator in the caller's own chat."""
         with db.transaction(conn):
-            return private.send(conn, caller.agent.id, author=caller.agent.id, body=body.body)
+            return chats.post(conn, caller.agent, "agent", "me", body.body, device=caller.device.name)
 
     @app.post(f"{api}/device/messages", status_code=201)
     def post_device(body: DeviceMessageRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
@@ -463,43 +545,15 @@ def create_app(state: HubState) -> FastAPI:
         with db.transaction(conn):
             return questions.withdraw(conn, question_id, caller.agent)
 
-    # --- prompts from the operator (agents act on their own; none can create one) ---
+    # --- prompts (retired in 0.3.8; an older runner finds none pending and idles) ---------------------------
 
     @app.get(f"{api}/prompts/pending")
-    def pending_prompts(caller: Caller, conn: Conn) -> dict[str, Any]:
-        return {"prompts": prompts.pending_for(conn, caller.agent)}
+    def pending_prompts(caller: Caller) -> dict[str, Any]:
+        return {"prompts": []}
 
-    @app.get(f"{api}/prompts/{{prompt_id}}")
-    def get_prompt(prompt_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
-        return prompts.get_for_agent(conn, prompt_id, caller.agent)
-
-    @app.post(f"{api}/prompts/{{prompt_id}}/start")
-    def start_prompt(prompt_id: int, caller: Caller, conn: Conn) -> dict[str, Any]:
-        with db.transaction(conn):
-            return prompts.start(conn, prompt_id, caller.agent)
-
-    @app.post(f"{api}/prompts/{{prompt_id}}/finish")
-    def finish_prompt(prompt_id: int, body: PromptFinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        with db.transaction(conn):
-            return prompts.finish(conn, prompt_id, caller.agent, ok=body.ok, note=body.note, stale=body.stale)
-
-    @app.post(f"{api}/prompts/{{prompt_id}}/runs", status_code=201)
-    def prompt_run(prompt_id: int, body: PromptRunRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        with db.transaction(conn):
-            return prompts.record_run(conn, prompt_id, caller.agent, outcome=body.outcome, seconds=body.seconds,
-                                      session_id=body.session_id, num_turns=body.num_turns, cost_usd=body.cost_usd,
-                                      project=body.project)
-
-    @app.post(f"{api}/prompts/{{prompt_id}}/claim", status_code=201)
-    def claim_share(prompt_id: int, body: PromptClaimRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        with db.transaction(conn):
-            return prompts.claim(conn, prompt_id, caller.agent, title=body.title, body=body.body,
-                                 project=body.project)
-
-    @app.post(f"{api}/prompts/{{prompt_id}}/decline")
-    def decline_share(prompt_id: int, body: PromptDeclineRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        with db.transaction(conn):
-            return prompts.decline(conn, prompt_id, caller.agent, reason=body.reason)
+    @app.api_route(f"{api}/prompts/{{rest:path}}", methods=["GET", "POST"])
+    def retired_prompts(rest: str, caller: Caller) -> dict[str, Any]:
+        raise HTTPException(410, RETIRED)
 
     # --- board ---------------------------------------------------------------
 
@@ -827,11 +881,15 @@ def create_app(state: HubState) -> FastAPI:
             # (and otherwise works as before), so its agent isn't woken by prompts.
             # The model and effort, likewise, only when the runner reports one that differs (an older runner
             # reports neither).
+            # Likewise a runner that runs chats (0.3.8) says "chat": 1; the hub records it for the UI to show,
+            # and an older runner's operator messages wait as pending deliveries until it is upgraded.
             prompt_support = 1 if message.get("prompts") == 1 else 0
+            chat_support = 1 if message.get("chat") == 1 else 0
             dirs, model, effort = _reported_dirs(message), _reported_model(message), _reported_effort(message)
             stored = conn.execute("SELECT checkouts, current_dir, model, effort FROM agents WHERE id = ?",
                                   (agent_id,)).fetchone()
-            sets, args = ["last_heartbeat = ?", "prompt_support = ?"], [db.now_iso(), prompt_support]
+            sets = ["last_heartbeat = ?", "prompt_support = ?", "chat_support = ?"]
+            args: list[Any] = [db.now_iso(), prompt_support, chat_support]
             if dirs is not None and (stored["checkouts"], stored["current_dir"]) != dirs:
                 sets.append("checkouts = ?, current_dir = ?")
                 args.extend(dirs)

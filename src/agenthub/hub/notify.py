@@ -51,6 +51,14 @@ def build_notification(
         if cfg.ntfy_include_details and private_body:
             note["message"] += f"\n{private_body}"[:500]
         return note
+    if (etype == "chat.message" and p.get("chat_kind") == "agent" and p.get("kind") == "text"
+            and not p.get("source") and not event["actor"].startswith(("human:", "system:"))):
+        # An agent wrote to the operator in its own chat (chat_post / message_operator); not a session's live text.
+        note = {"title": f"Message from {who}", "message": f"{who} wrote to you.", "priority": 3,
+                "tags": ["speech_balloon"], "click": f"{base}/ui/agents/{p['chat_ref']}" if base else None}
+        if cfg.ntfy_include_details and private_body:
+            note["message"] += f"\n{private_body}"[:500]
+        return note
     if etype == "approval.requested":
         kind = p.get("kind", "")
         msg: dict[str, Any] = {
@@ -137,13 +145,17 @@ class Notifier:
         body = question = None
         p = event["payload"]
         wants_private = event["type"] == "private.sent" and p.get("from") == "agent"
-        if (wants_private or event["type"] == "question.asked") and self.cfg.ntfy_include_details:
+        wants_chat = event["type"] == "chat.message" and p.get("chat_kind") == "agent" and p.get("kind") == "text"
+        if (wants_private or wants_chat or event["type"] == "question.asked") and self.cfg.ntfy_include_details:
             from agenthub.hub import db, private, questions
 
             conn = db.connect(self.cfg.db_path)
             try:
                 if wants_private:
                     body = private.body(conn, p["message_id"])
+                elif wants_chat:
+                    row = conn.execute("SELECT body FROM chat_messages WHERE id = ?", (p["message_id"],)).fetchone()
+                    body = row["body"] if row else None
                 else:
                     question = questions.get(conn, p["question_id"])["question"]
             finally:

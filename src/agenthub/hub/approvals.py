@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agenthub import security
-from agenthub.hub import events, store, task_agents, tasks
+from agenthub.hub import chats, events, store, task_agents, tasks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
 
@@ -142,7 +142,9 @@ def create(
         conn, type="approval.requested", actor=requester, project=project, device=device,
         payload={"approval_id": approval_id, "kind": kind, "details": details, "reason": reason},
     )
-    return get(conn, approval_id)
+    approval = get(conn, approval_id)
+    chats.approval_card(conn, approval)  # its card in the task's chat, else the requester's
+    return approval
 
 
 def request(

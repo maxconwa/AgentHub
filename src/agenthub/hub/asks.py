@@ -1,9 +1,10 @@
 """Direct agent-to-agent questions with a timeout.
 
 An ask is delivered as a message addressed to the target in the project's
-``asks`` channel, so the inbox, the Stop hook, and the runner's WebSocket all
+chat (``meta.to``, ``meta.ask_id``), so the inbox, the Stop hook, and the runner's WebSocket all
 pick it up without special cases. The answer is posted back the same way, so
-an asker whose ``ask_agent`` call timed out still receives it.
+an asker whose ``ask_agent`` call timed out still receives it. (Before 0.3.8 both went to the
+project's ``asks`` channel.)
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from agenthub.hub import events, store
+from agenthub.hub import chats, events, store
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
 
@@ -65,13 +66,13 @@ def create(
         (project, asker.id, target.id, question, now_iso(now), now_iso(expires)),
     )
     ask_id = cur.lastrowid
-    # post_message validates that the target is an active member of the project.
-    msg = store.post_message(
-        conn, author=asker, project=project, channel=ASK_CHANNEL, to=target.id, device=device,
+    # chats.post validates that the target is an active member of the project.
+    chats.post(
+        conn, asker, "project", project, to=target.id, device=device, meta={"ask_id": ask_id},
+        max_chars=chats.MAX_BODY_CHARS + 200,
         body=f"[ask #{ask_id}] {question}\n\n(Answer with the answer_ask tool, ask_id={ask_id}, "
              f"before {now_iso(expires)}.)",
     )
-    conn.execute("UPDATE asks SET message_id = ? WHERE id = ?", (msg["id"], ask_id))
     events.emit(
         conn, type="ask.created", actor=asker.id, project=project, device=device,
         payload={"ask_id": ask_id, "to": target.id, "question": question, "expires_at": now_iso(expires)},
@@ -96,10 +97,9 @@ def answer(
         raise Conflict(f"ask {ask_id} is already {ask['status']}")
     asker = store.get_agent(conn, ask["from_agent"])
     if asker is not None and asker.status == "active" and ask["project"] in asker.allowed_projects:
-        store.post_message(
-            conn, author=responder, project=ask["project"], channel=ASK_CHANNEL, to=asker.id, device=device,
-            body=f"[answer to ask #{ask_id}] {text}",
-        )
+        chats.post(conn, responder, "project", ask["project"], to=asker.id, device=device,
+                   meta={"ask_id": ask_id}, max_chars=chats.MAX_BODY_CHARS + 200,
+                   body=f"[answer to ask #{ask_id}] {text}")
     events.emit(
         conn, type="ask.answered", actor=responder.id, project=ask["project"], device=device,
         payload={"ask_id": ask_id, "to": ask["from_agent"], "answer": text},
