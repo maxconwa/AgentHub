@@ -544,8 +544,10 @@ A task chat's message goes to every agent on the task, and a project chat's to
 every agent allowed into the project, each by the same rules. Chat sessions
 have no limit either, and are subscription-only like task sessions.
 `prompt_max_turns` and `prompt_wall_clock_minutes` in `runner.toml` are
-ignored since 0.3.8. A runner restart doesn't lose a message: the runner keeps
-claimed messages on disk and hands them to the next session.
+ignored since 0.3.8. Nothing loses a message: if a turn fails or hits the
+usage limit before the session took a message in, or the runner restarts, the
+runner hands the message to the next session, and the chat shows it as queued.
+The agent chat keeps its session id, so the conversation carries on.
 
 If a task or chat session hits the subscription usage limit, the agent pauses
 until the limit resets (plus a short margin) and then resumes the same session,
@@ -680,7 +682,9 @@ up to Claude Code's permission mode and the agent user's own settings.
   time, and nothing times out, so a stuck agent keeps using your subscription
   until you stop it. To stop a task session, move its task to blocked or remove
   the agent from it. To stop everything an agent is running, including its
-  chat session, stop its runner service or revoke the agent.
+  chat session, restart its runner service: a message whose session was cut
+  off goes to the next session, with a note that part of the work may already
+  be done. Revoking the agent stops it for good.
 - **Overlap detection is conservative**, so expect some false alarms.
 
 ## Local development
