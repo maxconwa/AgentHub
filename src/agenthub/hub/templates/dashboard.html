@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
 {% from "_macros.html" import agent_tasks, approval_summary, avatar, task_title, open_attrs, fail_attrs %}
-{% from "_prompt.html" import prompt_card with context %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -35,11 +34,5 @@
       {{ agent_tasks(ag, names, path) }}
       </div></li>
   {% endfor %}
-</ul>
-{% set shown = prompts.open + prompts.recent %}
-<div class="section-head"><h2>Prompts{% if prompts.open %} <span class="count">{{ prompts.open|length }} in progress</span>{% endif %}</h2></div>
-{% if not shown %}<p class="empty">No prompts yet. Prompt wakes the agents now.</p>{% endif %}
-<ul class="cards prompts">
-  {% for p in shown %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}
 </ul>
 {% endblock %}

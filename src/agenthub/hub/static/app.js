@@ -73,17 +73,18 @@
   });
 
   // Slide-in panel: a [data-panel] link or card loads /ui/panel?item=... into <aside id="panel">
-  // and slides it in from the left. Without JavaScript the same links go to the item's full page.
-  // Chat window: the Chat button loads /ui/messenger into <section id="messenger">; a [data-chat] row
-  // loads its conversation (/ui/messenger/<key>) there. The + button's menu opens New task / project /
-  // agent forms in the panel (items new:<kind>). Only one of panel and chat window is open at a time.
+  // and slides it in from the left. Without JavaScript the same links go to the item's full page. An agent's,
+  // task's or project's panel is its chat.
+  // Chat window: the Chat button loads the chat list (/ui/messenger) into <section id="messenger">; a row there
+  // opens that chat in the panel. The + button's menu opens New task / project / agent forms in the panel
+  // (items new:<kind>). Only one of panel and chat window is open at a time.
   var panel = document.getElementById("panel");
   var scrim = document.getElementById("panel-scrim");
   var messenger = document.getElementById("messenger");
   var fabChat = document.getElementById("fab-chat");
   var fabPlus = document.getElementById("fab-plus");
   var plusMenu = document.getElementById("plus-menu");
-  var opener = null, openerItem = null, fallback = null, chatFallback = null;
+  var opener = null, openerItem = null, fallback = null;
   // Whether a response for the panel or the chat window is still wanted: one that arrives after the
   // operator closed it (or opened the other) is dropped instead of opening it again.
   var wantPanel = false, wantMessenger = false;
@@ -122,23 +123,18 @@
     setTimeout(function () { if (!panelOpen()) panel.replaceChildren(); }, 400);
   }
 
-  function loadMessenger(url, href) {
-    chatFallback = href || "/ui/chats";
-    wantMessenger = true;
-    htmx.ajax("GET", url, { target: messenger, swap: "innerHTML" });
-  }
-
   function openMessenger() {
     closeMenu(false);
     closePanel(false);
-    loadMessenger("/ui/messenger");
+    wantMessenger = true;
+    htmx.ajax("GET", "/ui/messenger", { target: messenger, swap: "innerHTML" });
   }
 
   function closeMessenger(restore) {
     wantMessenger = false;
     if (!messengerOpen()) return;
     messenger.hidden = true;
-    messenger.replaceChildren();  // so its list and thread stop polling
+    messenger.replaceChildren();  // so its list stops polling
     fabChat.setAttribute("aria-expanded", "false");
     syncScrim();
     if (restore !== false) fabChat.focus();
@@ -181,17 +177,6 @@
     } catch (e) { return ""; }
   }
 
-  // While a tap-to-message sheet fills #compose (bottom of the screen), the buttons step aside so they
-  // don't cover it (app.css hides .fabs under body.compose-open).
-  var compose = document.getElementById("compose");
-  function syncCompose() {
-    document.body.classList.toggle("compose-open", !!compose && compose.childElementCount > 0);
-  }
-  if (compose) {
-    syncCompose();
-    document.addEventListener("htmx:afterSwap", function (evt) { if (evt.detail.target === compose) syncCompose(); });
-  }
-
   if (panel && scrim && messenger && fabChat && fabPlus && plusMenu) {
     document.addEventListener("click", function (evt) {
       if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) return;  // new tab: follow href
@@ -211,13 +196,6 @@
         return;
       }
       if (t.closest("[data-messenger-close]")) { closeMessenger(); return; }
-      if (t.closest("[data-chat-list]")) { evt.preventDefault(); loadMessenger("/ui/messenger"); return; }
-      var row = t.closest("[data-chat]");
-      if (row) {
-        evt.preventDefault();
-        loadMessenger("/ui/messenger/" + encodeURIComponent(row.getAttribute("data-chat")), row.href);
-        return;
-      }
       if (t === scrim) { closePanel(); closeMessenger(); return; }
       if (t.closest("[data-panel-close]")) { closePanel(); return; }
       var el = t.closest("[data-panel]");
@@ -226,7 +204,7 @@
       if (inner && inner !== el && el.contains(inner)) return;  // e.g. a Message button on an agent card
       evt.preventDefault();
       var item = el.getAttribute("data-panel");
-      if (messenger.contains(el)) {  // a conversation's header or question: the panel replaces the window
+      if (messenger.contains(el)) {  // a row of the chat list: the panel replaces the window
         opener = fabChat;
         openerItem = null;
       } else if (!panel.contains(el)) {  // opened from the page (a link inside the panel keeps the first opener)
@@ -268,8 +246,7 @@
     });
 
     function polledThread(el) {
-      return el !== panel && el !== messenger && el.classList &&
-        (panel.contains(el) && el.classList.contains("dthread") || messenger.contains(el) && el.classList.contains("mthread"));
+      return el !== panel && el.classList && panel.contains(el) && el.classList.contains("dthread");
     }
 
     // A polled thread keeps the reader's place unless they were at the newest message.
@@ -291,9 +268,7 @@
         messenger.hidden = false;
         fabChat.setAttribute("aria-expanded", "true");
         syncScrim();
-        var thread = messenger.querySelector(".mthread");
-        if (thread) thread.scrollTop = thread.scrollHeight;
-        var go = (posted && messenger.querySelector("textarea")) || messenger.querySelector(".mhead .icon-btn");
+        var go = messenger.querySelector(".mhead .icon-btn");
         if (go) go.focus();
         return;
       }
@@ -303,6 +278,7 @@
       syncScrim();
       if (!posted) panel.scrollTop = 0;
       panel.querySelectorAll(".dthread").forEach(function (th) { th.scrollTop = th.scrollHeight; });
+      panel.querySelectorAll(".chat").forEach(showLatest);
       var focus = (posted && panel.querySelector("textarea")) || panel.querySelector("[data-panel-close]");
       if (focus) focus.focus();
     });
@@ -311,7 +287,7 @@
       var target = evt.detail.target;
       if (!(target === panel && wantPanel || target === messenger && wantMessenger)) return;
       if (evt.detail.requestConfig.verb === "get") {  // let the full page explain (404 and so on)
-        var to = target === panel ? fallback : chatFallback;
+        var to = target === panel ? fallback : "/ui/chats";
         if (to) location.assign(to);
         return;
       }
@@ -327,11 +303,179 @@
     });
   }
 
+  // Chats (_chat.html): a .chat[data-chat="<kind>:<ref>"] holds an <ol class="chat-log"> of rows, each an
+  // li#cm-<id> with data-v (its version). The operator socket says, by id only, which row is new or changed
+  // (chat.message, chat.updated) and which approval or question was decided; this fetches that row's HTML
+  // (rendered and escaped by the server) and appends it, or swaps it in place: a "ran N tools" fold growing,
+  // a card turning approved. A reader at the newest row stays there; one scrolled up keeps their place.
+  // While the socket is down, every open chat catches up every 10 s instead.
+  var NEAR_END = 40;  // px from the bottom that still counts as "at the newest"
+
+  function logOf(chat) { return chat.querySelector(".chat-log"); }
+  function atEnd(log) { return log.scrollHeight - log.scrollTop - log.clientHeight < NEAR_END; }
+  function showLatest(chat) { var log = logOf(chat); if (log) log.scrollTop = log.scrollHeight; }
+  function lastId(chat) {
+    var rows = chat.querySelectorAll(".chat-log > li[data-msg]");
+    return rows.length ? +rows[rows.length - 1].getAttribute("data-msg") : 0;
+  }
+  function openChats(key) {
+    var all = Array.prototype.slice.call(document.querySelectorAll(".chat[data-chat]"));
+    return key ? all.filter(function (c) { return c.getAttribute("data-chat") === key; }) : all;
+  }
+
+  // Rows from the server (HTML of <li> rows) into one chat: new ids in id order, known ids replaced when their
+  // version changed. `live` marks rows that arrived while the operator watched: a failed line plays its hit.
+  // Returns how many rows belong here (a question card's reply lands in the asker's own chat, maybe not this one).
+  function upsertRows(chat, html, live) {
+    var log = logOf(chat), n = 0;
+    if (!log || !html) return 0;
+    var follow = atEnd(log);
+    var tpl = document.createElement("template");
+    tpl.innerHTML = html;
+    Array.prototype.slice.call(tpl.content.querySelectorAll("li[data-msg]")).forEach(function (li) {
+      if (li.getAttribute("data-in") !== chat.getAttribute("data-chat")) return;
+      n++;
+      var id = +li.getAttribute("data-msg");
+      var old = log.querySelector("#cm-" + id);
+      if (old) {
+        if (old.getAttribute("data-v") === li.getAttribute("data-v")) return;
+        // Keep what the reader had open (a tools fold) and a half-typed card reply.
+        old.querySelectorAll("details[data-remember]").forEach(function (d) {
+          var twin = li.querySelector('details[data-remember="' + CSS.escape(d.getAttribute("data-remember")) + '"]');
+          if (twin) twin.open = d.open;
+        });
+        old.querySelectorAll("textarea").forEach(function (ta) {
+          var twin = ta.name && ta.form && li.querySelector('form[action="' + CSS.escape(ta.form.getAttribute("action")) + '"] textarea[name="' + CSS.escape(ta.name) + '"]');
+          if (twin && ta.value) twin.value = ta.value;
+        });
+        old.replaceWith(li);
+      } else {
+        var after = null;
+        log.querySelectorAll("li[data-msg]").forEach(function (r) { if (!after && +r.getAttribute("data-msg") > id) after = r; });
+        log.insertBefore(li, after);
+      }
+      if (live) {
+        li.querySelectorAll("[data-failed]").forEach(function (el) { el.classList.add("failed-new"); });
+        li.classList.add("cm-new");
+      }
+      if (window.htmx) htmx.process(li);
+      typeset(li);
+    });
+    var empty = chat.querySelector(".chat-empty");
+    if (empty && log.querySelector("li[data-msg]")) empty.remove();
+    if (follow) log.scrollTop = log.scrollHeight;
+    return n;
+  }
+
+  function getRows(url) {
+    return fetch(url, { credentials: "same-origin", headers: { "X-Chat": "1" } })
+      .then(function (r) { return r.ok ? r.text() : ""; })
+      .catch(function () { return ""; });
+  }
+  function refreshRow(chat, id) {
+    getRows("/ui/chat/msg/" + encodeURIComponent(id)).then(function (html) { upsertRows(chat, html, true); });
+  }
+  function catchUp(chat) {
+    getRows(chat.getAttribute("data-url") + "?after=" + lastId(chat)).then(function (html) { upsertRows(chat, html, true); });
+  }
+  function refreshCards(selector) {
+    document.querySelectorAll(selector).forEach(function (card) {
+      var li = card.closest("li[data-msg]"), chat = card.closest(".chat[data-chat]");
+      if (li && chat) refreshRow(chat, li.getAttribute("data-msg"));
+    });
+  }
+
+  // Socket messages. A chat row new or changed: {type: "chat", op: "new"|"update", chat_kind, chat_ref, id, ...}; the
+  // page fetches that row as HTML rather than drawing the frame's copy itself. Everything else: {type: "event",
+  // event_type, html (the activity row), ...}; an approval or question event may have changed a pending card, so
+  // those cards are fetched again (deciding on the Approvals page shows on the card, and the other way round).
+  function onChatFrame(msg) {
+    if (!msg.chat_kind || msg.chat_ref == null || !msg.id) return;
+    openChats(msg.chat_kind + ":" + msg.chat_ref).forEach(function (chat) { refreshRow(chat, msg.id); });
+  }
+  function onChatEvent(msg) {
+    var t = msg.event_type || "";
+    if (t.indexOf("approval.") === 0) refreshCards(".ccard-approval.is-pending");
+    else if (t.indexOf("question.") === 0) refreshCards(".ccard-question.is-pending");
+    else if (t === "chat.message") openChats().forEach(catchUp);  // a hub that sends no chat frames
+  }
+
+  // The message box and the cards' forms post with fetch and get their row back; the socket's copy of the same
+  // row is then a no-op. Without JavaScript they post and come back to the page.
+  document.addEventListener("submit", function (evt) {
+    var form = evt.target;
+    if (!form.matches || !form.matches("form[data-chat-form]") || !window.fetch) return;
+    evt.preventDefault();
+    var chat = form.closest(".chat[data-chat]");
+    var button = evt.submitter || form.querySelector("button[type=submit]");
+    var data = new URLSearchParams(new FormData(form));
+    if (evt.submitter && evt.submitter.name) data.set(evt.submitter.name, evt.submitter.value);
+    var old = form.nextElementSibling;
+    if (old && old.matches("p.error[role=alert], p.sent-note")) old.remove();
+    form.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+    fetch(form.getAttribute("action"), {
+      method: "POST", credentials: "same-origin", body: data,
+      headers: { "X-Chat": "1", "Content-Type": "application/x-www-form-urlencoded" },
+    }).then(function (r) {
+      return r.text().then(function (text) {
+        if (!r.ok) throw { status: r.status, text: text };
+        if (form.hasAttribute("data-chat-send")) {
+          form.reset();
+          sizeBox(form.querySelector("textarea"));
+          var log = chat && logOf(chat);
+          if (log) log.scrollTop = log.scrollHeight;  // your own message: go to it
+        }
+        var placed = chat ? upsertRows(chat, text, false) : 0;
+        if (!placed && form.isConnected) {  // it went to another chat: say so where the operator wrote it
+          form.reset();
+          var sent = document.createElement("p");
+          sent.className = "small-line sent-note";
+          sent.setAttribute("role", "status");
+          sent.textContent = "Sent: it's in your chat with the agent.";
+          form.after(sent);
+        }
+      });
+    }).catch(function (e) {
+      var note = document.createElement("p");
+      note.className = "error";
+      note.setAttribute("role", "alert");
+      var detail = e && e.text ? errorDetail({ responseText: e.text }) : "";
+      note.textContent = e && e.status ? "That didn't go through (error " + e.status + ")" + (detail ? ": " + detail : ".")
+        : "That didn't go through: the hub can't be reached.";
+      form.after(note);
+    }).then(function () {
+      if (form.isConnected) form.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+      if (button && button.isConnected && form.hasAttribute("data-chat-send")) form.querySelector("textarea").focus();
+    });
+  });
+
+  // The message box grows with its text (up to the CSS max-height). Enter sends where there is a real keyboard
+  // (Shift+Enter for a new line); on a touch screen Enter is a new line and the arrow button sends.
+  function sizeBox(ta) {
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + 2 + "px";
+    ta.classList.toggle("is-tall", ta.scrollHeight > ta.clientHeight + 2);  // at its max-height: let it scroll
+  }
+  var fineKeys = window.matchMedia ? window.matchMedia("(hover: hover) and (pointer: fine)") : { matches: true };
+  document.addEventListener("input", function (evt) {
+    if (evt.target.matches && evt.target.matches(".chatbox textarea, .card-reply textarea")) sizeBox(evt.target);
+  });
+  document.addEventListener("keydown", function (evt) {
+    var ta = evt.target;
+    if (evt.key !== "Enter" || evt.isComposing || !ta.matches || !ta.matches(".chatbox textarea, .card-reply textarea")) return;
+    if (evt.shiftKey || !(fineKeys.matches || evt.ctrlKey || evt.metaKey)) return;
+    evt.preventDefault();
+    if (ta.value.trim() && ta.form) ta.form.requestSubmit();
+  });
+
+  // A chat on the page (not in the panel) starts at its newest row too.
+  openChats().forEach(showLatest);
+
   var feed = document.getElementById("feed");
-  if (!feed) return;
   var live = document.getElementById("ws-state");
-  var filters = { project: feed.dataset.project, agent: feed.dataset.agent, type: feed.dataset.type };
-  var delay = 1000;
+  var filters = feed ? { project: feed.dataset.project, agent: feed.dataset.agent, type: feed.dataset.type } : {};
+  var delay = 1000, socketUp = false;
 
   function setState(state) {
     if (live) { live.dataset.state = state; live.textContent = state; }
@@ -344,30 +488,41 @@
     return true;
   }
 
+  function onFeedEvent(msg) {
+    if (!feed || !matches(msg)) return;
+    // msg.html is rendered and escaped by the server's templates.
+    feed.insertAdjacentHTML("afterbegin", msg.html);
+    if (feed.firstElementChild) feed.firstElementChild.classList.add("new");
+    while (feed.children.length > 300) feed.removeChild(feed.lastElementChild);
+  }
+
   function connect() {
     var scheme = location.protocol === "https:" ? "wss://" : "ws://";
     var ws = new WebSocket(scheme + location.host + "/ui/ws");
     var ping;
     ws.onopen = function () {
       setState("live");
+      if (delay > 1000) openChats().forEach(catchUp);  // back after a drop: fetch what was missed
       delay = 1000;
+      socketUp = true;
       ping = setInterval(function () { ws.send("ping"); }, 25000);
     };
     ws.onmessage = function (evt) {
       var msg;
       try { msg = JSON.parse(evt.data); } catch (e) { return; }
-      if (msg.type !== "event" || !matches(msg)) return;
-      // msg.html is rendered and escaped by the server's templates.
-      feed.insertAdjacentHTML("afterbegin", msg.html);
-      if (feed.firstElementChild) feed.firstElementChild.classList.add("new");
-      while (feed.children.length > 300) feed.removeChild(feed.lastElementChild);
+      if (msg.type === "chat") { onChatFrame(msg); return; }
+      if (msg.type !== "event") return;
+      onChatEvent(msg);
+      onFeedEvent(msg);
     };
     ws.onclose = function () {
       clearInterval(ping);
+      socketUp = false;
       setState("offline");
       setTimeout(connect, delay);
       delay = Math.min(delay * 2, 30000);
     };
   }
-  connect();
+  if (window.WebSocket) connect();
+  setInterval(function () { if (!socketUp) openChats().forEach(catchUp); }, 10000);
 })();

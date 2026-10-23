@@ -1,7 +1,6 @@
 {% extends "base.html" %}
-{% set has_live = true %}
-{% from "_macros.html" import chip, avatar, task_title, open_attrs, send_and_prompt %}
-{% from "_board.html" import board %}
+{% from "_macros.html" import chip, avatar, task_title, open_attrs %}
+{% from "_chat.html" import chat with context %}
 {% from "_reports.html" import report_table %}
 {% block title %}{{ project.name }}{% endblock %}
 {% block content %}
@@ -16,6 +15,11 @@
     <button type="submit">Save description</button>
   </form>
 </details>
+
+<section class="page-chat" aria-labelledby="chat-title">
+  <h2 id="chat-title">Chat</h2>
+  {{ chat(c) }}
+</section>
 
 <h2>Live tasks</h2>
 {% if not tasks %}<p class="empty">No live tasks.</p>{% endif %}
@@ -33,13 +37,4 @@
 <h2>Reports</h2>
 {% if reports %}{{ report_table(reports, names) }}{% else %}<p class="empty">No reports in this project yet.</p>{% endif %}
 
-<h2>Project board</h2>
-<form class="stack note-form" method="post" action="/ui/projects/{{ project.name }}/notes">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
-  <label>Note <textarea name="body" rows="3" maxlength="4000" required placeholder="Post a note to everyone on this project"></textarea></label>
-  {% call send_and_prompt(prompt, 'Post note') %}<button type="submit">Post note</button>{% endcall %}
-</form>
-{% endblock %}
-{% block live %}
-{{ board(messages, names) }}
 {% endblock %}

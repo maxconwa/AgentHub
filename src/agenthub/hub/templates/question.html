@@ -16,9 +16,9 @@
 {{ agent_text(q.answer, q.answered_by, names) }}
 {% include "_answer_note.html" %}
 {% elif q.status == 'pending' %}
-<form class="chat" method="post" action="/ui/questions/{{ q.id }}/answer">
+<form class="replybox" method="post" action="/ui/questions/{{ q.id }}/answer">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <textarea name="answer" rows="4" maxlength="4000" required placeholder="Your answer to {{ q.agent_name or 'the agent' }} wakes it if it is online and idle; otherwise it arrives as a private message"></textarea>
+  <textarea name="answer" rows="4" maxlength="4000" required placeholder="Your answer goes into {{ q.agent_name or 'the agent' }}'s chat and wakes it if it is idle"></textarea>
   <button type="submit">Answer</button>
 </form>
 {% else %}

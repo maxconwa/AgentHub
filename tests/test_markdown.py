@@ -9,7 +9,8 @@ from markupsafe import Markup
 from agenthub.hub import db, markdown, store, task_agents, tasks
 from agenthub.hub.dashboard import SECURITY_HEADERS
 
-from .conftest import OPERATOR, legacy_post, legacy_private
+from .conftest import OPERATOR
+from .test_chat_ui import add_row
 
 MD = "Use **bold** and $x^2$"
 RENDERED_BOLD = "<strong>bold</strong>"
@@ -154,13 +155,14 @@ def get(hub, path, **headers):
 
 
 def figures(html):
-    return re.findall(r'<figure class="agent-text">.*?</figure>', html, re.S)
+    return re.findall(r'<figure class="[^"]*\bagent-text">.*?</figure>', html, re.S)
 
 
 def assert_rendered_in_label(html, author="worker"):
     hits = [f for f in figures(html) if RENDERED_BOLD in f and RENDERED_MATH in f]
     assert hits, "no agent-text figure with rendered Markdown"
-    assert all(f"Written by {author}" in f for f in hits)
+    # labelled with its author: "Written by" (pages), "Asked by" (cards), the name in a chat bubble's caption
+    assert all(re.search(rf"(Written by |Asked by |<strong>){author}\b", f) for f in hits)
 
 
 @pytest.fixture
@@ -171,11 +173,9 @@ def rich(hub):
         t = tasks.create_task(conn, actor=a.id, project="proj", title="Plan", body=MD, assignee=None)
         task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
         conn.execute("UPDATE task_agents SET verdict = 'approve', verdict_notes = ? WHERE task_id = ?", (MD, t["id"]))
-        store.post_message(conn, author=a.id, project="proj", channel="general", body=MD)
-        store.post_message(conn, author=a.id, project="proj", channel=f"task-{t['id']}", body=MD)
         store.set_project_description(conn, "proj", "Operator **desc** $y$", actor=OPERATOR)
-    for body in (MD, "**pair**"):
-        legacy_post(hub, a, body, to="helper")
+    add_row(hub, "project", "proj", author=a.id, body=MD)
+    add_row(hub, "task", t["id"], author=a.id, body=MD)
     ap = hub.client.post("/api/v1/approvals/command", headers=a.headers,
                          json={"command": "ls", "cwd": "/w", "reason": MD}).json()
     hub.client.post(f"/api/v1/approvals/{ap['id']}/discussion", headers=a.headers, json={"body": MD})
@@ -183,7 +183,7 @@ def rich(hub):
     q2 = hub.client.post("/api/v1/projects/proj/questions", headers=a.headers, json={"question": "port?"}).json()
     hub.client.post(f"/ui/questions/{q2['id']}/answer", headers=hub.op_headers(),
                     data={"csrf": hub.csrf(), "answer": "Use **8080**"})
-    legacy_private(hub, a, MD)
+    hub.client.post("/api/v1/private", headers=a.headers, json={"body": MD})  # into its chat
     hub.client.post("/api/v1/device/messages", headers=a.headers, json={"body": MD})
     node = conn.execute("SELECT device_node_id FROM agents WHERE id = ?", (a.id,)).fetchone()[0]
     x, y = sorted([a.id, c.id])
@@ -192,16 +192,18 @@ def rich(hub):
 
 def test_pages_render_agent_markdown_inside_label(rich):
     hub, a, t, ap, q, q2, node, pair = rich
-    paths = ["/ui/projects/proj", "/ui/board/ch-proj~general", f"/ui/tasks/{t['id']}", f"/ui/approvals/{ap['id']}",
+    paths = ["/ui/projects/proj", f"/ui/tasks/{t['id']}", f"/ui/approvals/{ap['id']}",
              f"/ui/approvals/{ap['id']}/discussion", f"/ui/approvals/{ap['id']}/thread", f"/ui/questions/{q['id']}",
-             f"/ui/chats/{a.id}", f"/ui/agents/{a.id}", f"/ui/devices/{node}", f"/ui/chats/pair/{pair}",
-             f"/ui/panel?item=agent:{a.id}", f"/ui/panel?item=task:{t['id']}", "/ui/panel?item=project:proj",
-             f"/ui/panel?item=device:{node}", f"/ui/panel?item=approval:{ap['id']}",
-             f"/ui/panel?item=question:{q['id']}", f"/ui/messenger/agent:{a.id}", "/ui/messenger/board:ch-proj~general"]
+             f"/ui/agents/{a.id}", f"/ui/panel?item=agent:{a.id}", f"/ui/panel?item=task:{t['id']}",
+             "/ui/panel?item=project:proj", f"/ui/panel?item=approval:{ap['id']}",
+             f"/ui/panel?item=question:{q['id']}"]
     for path in paths:
         r = get(hub, path, **{"hx-request": "true"})
         assert r.status_code in (200, 286), path
-        assert_rendered_in_label(r.text), path
+        try:
+            assert_rendered_in_label(r.text)
+        except AssertionError as e:
+            raise AssertionError(path) from e
         assert "style=" not in r.text, path
     # the verdict notes on the task page
     assert sum(RENDERED_MATH in f for f in figures(get(hub, f"/ui/tasks/{t['id']}").text)) >= 2
@@ -209,10 +211,10 @@ def test_pages_render_agent_markdown_inside_label(rich):
 
 def test_operator_text_is_rendered_too(rich):
     hub, a, t, ap, q, q2, node, pair = rich
-    hub.client.post("/ui/projects/proj/notes", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "**note**"})
+    hub.client.post("/ui/chat/project/proj", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": "**note**"})
     page = get(hub, "/ui/projects/proj").text
     assert "<strong>desc</strong>" in page and '<span class="math inline">y</span>' in page
-    assert re.search(r'class="msg mine">.*?<strong>note</strong>', page, re.S)
+    assert re.search(r'class="bubble mine">.*?<strong>note</strong>', page, re.S)
     assert "<strong>desc</strong>" in get(hub, "/ui/projects").text
     assert "<strong>desc</strong>" in get(hub, "/ui/panel?item=project:proj").text
     assert "<strong>8080</strong>" in get(hub, f"/ui/questions/{q2['id']}").text

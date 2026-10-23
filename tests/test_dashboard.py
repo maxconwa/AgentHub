@@ -7,7 +7,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from agenthub.hub import approvals, db, prompts, store, task_agents, tasks
+from agenthub.hub import approvals, db, store, task_agents, tasks
 
 from .conftest import OP_IP, OP_LOGIN, OPERATOR
 
@@ -49,10 +49,13 @@ def world(hub):
     conn = hub.conn()
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="t", assignee="worker")
-        pr = prompts.create(conn, target=f"agent:{a.id}", body="wake up", actor=OPERATOR)
+    msg = hub.client.post(f"/ui/chat/agent/{a.id}", headers=hub.op_headers(**{"x-chat": "1"}),
+                          data={"csrf": hub.csrf(), "body": "wake up"})
+    assert msg.status_code == 200
+    message_id = int(re.search(r'data-msg="(\d+)"', msg.text)[1])
     node_id = store.get_agent(conn, a.id).device_node_id
     return hub, a, {"approval_id": ap["id"], "qid": q["id"], "task_id": t["id"], "agent_id": a.id, "node_id": node_id,
-                    "prompt_id": pr["id"], "report_id": rep["id"],
+                    "message_id": message_id, "ref": a.id, "report_id": rep["id"],
                     "key": "ch-proj~general", "name": "proj", "version": 1, "seed": 12345, "kind": "mini", "pose": "idle"}
 
 
@@ -60,9 +63,9 @@ def test_route_inventory_is_not_empty(hub):
     routes = ui_routes(hub.client.app)
     assert ("POST", "/ui/approvals/{approval_id}/decide") in routes
     assert ("GET", "/ui/activity") in routes and ("GET", "/ui/feed") in routes
-    assert ("POST", "/ui/prompts") in routes and ("GET", "/ui/prompts/{prompt_id}") in routes
-    assert ("POST", "/ui/prompts/{prompt_id}/withdraw") in routes
-    assert len(routes) == 64, "a route was added or removed: the walk tests cover it, update this count"
+    assert ("POST", "/ui/chat/{kind}/{ref}") in routes and ("GET", "/ui/chat/msg/{message_id}") in routes
+    assert not [r for r in routes if r[1].startswith(("/ui/prompts", "/ui/compose", "/ui/messenger/"))]
+    assert len(routes) == 53, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):
@@ -134,9 +137,10 @@ def test_pages_render_with_security_headers(world):
     hub, agent, ids = world
     for path in ["/ui/dashboard", "/ui/reports", "/ui/approvals", f"/ui/approvals/{ids['approval_id']}", "/ui/tasks", f"/ui/tasks/{ids['task_id']}",
                  "/ui/activity", "/ui/activity?type=task", "/ui/agents", f"/ui/agents/{ids['agent_id']}", "/ui/search?q=push", "/ui/badge",
-                 f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats", f"/ui/chats/{ids['agent_id']}",
-                 "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/board",
-                 f"/ui/prompts/{ids['prompt_id']}", f"/ui/reports/{ids['report_id']}"]:
+                 f"/ui/approvals/{ids['approval_id']}/thread", f"/ui/questions/{ids['qid']}", "/ui/chats",
+                 "/ui/badge/chats", "/ui/devices", f"/ui/devices/{ids['node_id']}", "/ui/messenger",
+                 f"/ui/chat/msg/{ids['message_id']}", f"/ui/chat/agent/{ids['agent_id']}?after=0",
+                 f"/ui/panel?item=agent:{ids['agent_id']}", f"/ui/reports/{ids['report_id']}"]:
         r = hub.client.get(path, headers=hub.op_headers())
         assert r.status_code == 200, path
         assert "default-src 'self'" in r.headers["content-security-policy"] and r.headers["x-frame-options"] == "DENY"
@@ -242,11 +246,14 @@ def test_operator_websocket_streams_feed(tmp_path):
             while row.get("event_type") != "board.updated":
                 row = ws.receive_json()
             assert 'class="event"' in row["html"]
-            # a chat message comes whole, as a chat frame (the page escapes it), not as an Activity row
+            # a chat message comes as a chat frame, not as an Activity row; app.js uses its ids to fetch the row as
+            # HTML (/ui/chat/msg/<id>) into the chat that is open
             live.post("/api/v1/chats/project/proj/messages", json={"body": "hello operator"}, headers=agent.headers)
             frame = ws.receive_json()
             assert frame["type"] == "chat" and frame["op"] == "new" and frame["chat_kind"] == "project"
             assert frame["message"]["body"] == "hello operator" and frame["message"]["author"] == agent.id
+            page = live.get(f"/ui/chat/msg/{frame['id']}", headers=hub.op_headers())
+            assert "hello operator" in page.text and 'data-in="project:proj"' in page.text
 
 
 @pytest.mark.parametrize("variant", ["cross_origin", "agent_token", "no_identity"])

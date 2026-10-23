@@ -15,8 +15,8 @@ import ipaddress
 import json
 import re
 import sqlite3
-from functools import lru_cache
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode
@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agenthub.hub import (
-    approvals, avatar_art, avatars, db, device_board, events, markdown, private, prompts, questions, reports, store,
+    approvals, avatar_art, avatars, chats, db, device_board, events, markdown, questions, reports, store,
     task_agents, tasks, usage, views,
 )
 from agenthub.hub.auth import get_conn
@@ -85,8 +85,9 @@ PostOp = Annotated[Operator, Depends(csrf_operator)]
 # A form inside the slide-in panel names its item (so the response can re-render the panel) and the page under it.
 PanelField = Annotated[str, Form(max_length=300)]
 NextField = Annotated[str, Form(max_length=500)]
-# A form inside the chat window names its conversation, so the response can re-render it.
-MessengerField = Annotated[str, Form(max_length=300)]
+# A card's form in a chat (an approval's Approve/Reject/Reply, a question's Answer) names its chat row, so app.js
+# gets that row back re-rendered (see finish).
+ChatMsgField = Annotated[int, Form(ge=0)]
 
 
 # --- template helpers ------------------------------------------------------------
@@ -193,7 +194,17 @@ def event_summary(event: dict[str, Any], names: dict[str, str]) -> str:
     return snippet(json.dumps(p))
 
 
+def clock(ts: str | None) -> str:
+    """An ISO time as the operator reads it: "14:05 UTC" today, else "Oct 24, 14:05 UTC"; unparseable text as is."""
+    try:
+        when = datetime.fromisoformat(ts or "").astimezone(UTC)
+    except ValueError:
+        return ts or ""
+    return f"{when:%H:%M} UTC" if when.date() == datetime.now(UTC).date() else f"{when:%b} {when.day}, {when:%H:%M} UTC"
+
+
 templates.globals.update(ago=ago, who=who, event_summary=event_summary)
+templates.filters["clock"] = clock
 templates.filters["md"] = markdown.render
 templates.filters["short_host"] = short_host
 
@@ -202,6 +213,28 @@ def pending_total(conn: sqlite3.Connection) -> int:
     """What the red badge counts: pending approvals plus pending questions to the operator."""
     return conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()[0] \
         + questions.pending_count(conn)
+
+
+def unread_total(conn: sqlite3.Connection) -> int:
+    """What the Chats badges count: agent messages the operator hasn't looked at yet, in the chats the list shows
+    (not a revoked agent's)."""
+    revoked = {r[0] for r in conn.execute("SELECT id FROM agents WHERE status = 'revoked'")}
+    return sum(o["unread"] or 0 for o in chats.overview(conn) if not (o["kind"] == "agent" and o["ref"] in revoked))
+
+
+def seen(conn: sqlite3.Connection, c: dict[str, Any]) -> None:
+    """The operator is looking at chat ``c`` (views.chat): everything in it up to its newest row is read."""
+    if c["rows"]:
+        with db.transaction(conn):
+            chats.mark_read(conn, c["id"], c["rows"][-1]["id"])
+
+
+def page_chat(request: Request, conn: sqlite3.Connection, kind: str, ref: str) -> dict[str, Any]:
+    """A page's chat (views.chat), marked read when the page is in front of the operator."""
+    c = views.chat(conn, kind, ref)
+    if shows_page_chat(request):
+        seen(conn, c)
+    return c
 
 
 def live_poll(request: Request) -> bool:
@@ -219,7 +252,7 @@ def same_origin(request: Request) -> bool:
 
 
 def shows_page_chat(request: Request) -> bool:
-    """Whether a chat page or agent page response puts its private chat in front of the operator: a page load or
+    """Whether an agent, task or project page response puts its chat in front of the operator: a page load or
     its live region's poll (which holds the chat) from our own pages. Other HTMX requests and cross-site
     requests never mark anything read."""
     return (not request.headers.get("hx-request") or live_poll(request)) and same_origin(request)
@@ -230,7 +263,7 @@ def render(request: Request, operator: Operator, name: str, conn: sqlite3.Connec
     """A page (or fragment) with the shell's context. A page with a live region polls ``live_url`` (default: this
     URL, query included); its poll gets only that region back."""
     template = templates.get_template(name)
-    pending, chat_unread = pending_total(conn), sum(private.unread_counts(conn).values())
+    pending, chat_unread = pending_total(conn), unread_total(conn)
     query = request.url.query
     html = template.render(
         operator=operator, csrf=csrf_token(request.app.state.hub.csrf_secret, operator.login),
@@ -278,39 +311,44 @@ def render_new(request: Request, operator: Operator, conn: sqlite3.Connection, i
 
 
 def render_panel(request: Request, operator: Operator, conn: sqlite3.Connection, item: str, next: str) -> HTMLResponse:
-    """The slide-in panel fragment for ``item``; its forms post back with ``panel`` and ``next``."""
+    """The slide-in panel fragment for ``item``; its forms post back with ``panel`` and ``next``. An agent's, task's or
+    project's panel is its chat (``c``, :func:`views.chat`)."""
     if item in NEW_FORMS:
         return render_new(request, operator, conn, item, next)
     data = views.panel(conn, item)
-    if data["kind"] == "agent" and data["chat"] and same_origin(request):  # the operator is looking at these now
-        with db.transaction(conn):
-            private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["chat"][0]["id"])
-    return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next), **data)
+    if data.get("c") and same_origin(request):  # the operator is looking at this chat now
+        seen(conn, data["c"])
+    return render(request, operator, "_panel.html", conn, item=item, next=safe_next(next),
+                  c_kind=data["c"]["kind"] if data.get("c") else "", **data)
 
 
-def render_conversation(request: Request, operator: Operator, conn: sqlite3.Connection, key: str) -> HTMLResponse:
-    """One conversation in the chat window; an agent's private chat is marked read, as on its chat page."""
-    data = views.conversation(conn, key)
-    if data["kind"] == "agent" and data["messages"] and same_origin(request):  # the operator is looking at these now
-        with db.transaction(conn):
-            private.mark_read_by_operator(conn, data["ag"]["id"], since_id=data["messages"][0]["id"])
-    return render(request, operator, "_messenger.html", conn, view="conversation", **data)
+def chat_request(request: Request) -> bool:
+    """Whether app.js sent this (fetch with X-Chat): it wants chat rows back, not a page or a redirect."""
+    return request.headers.get("x-chat") == "1"
+
+
+def render_rows(request: Request, operator: Operator, conn: sqlite3.Connection, rows: list[dict[str, Any]],
+                chat_kind: str) -> HTMLResponse:
+    """Chat rows (_chat.html's chat_row) on their own, for app.js to append or swap in."""
+    return render(request, operator, "_chat_rows.html", conn, rows=rows, c_kind=chat_kind, next="")
 
 
 def finish(request: Request, operator: Operator, conn: sqlite3.Connection, panel: str, next: str,
-           default: str, messenger: str = "") -> Response:
-    """After a form post: re-render the panel or chat-window conversation it came from (HTMX), else redirect (PRG).
+           default: str, chat_msg: int = 0) -> Response:
+    """After a form post: the chat row it came from (a card's form, sent by app.js), else the panel it came from
+    (HTMX), else a redirect (PRG).
 
-    The post has already committed, so a panel or conversation that can't be rendered (its item is gone)
-    falls back to the redirect rather than an error that would invite posting again.
+    The post has already committed, so a row or panel that can't be rendered (its item is gone) falls back to the
+    redirect rather than an error that would invite posting again.
     """
-    if (panel or messenger) and request.headers.get("hx-request"):
-        try:
-            if messenger:
-                return render_conversation(request, operator, conn, messenger)
+    try:
+        if chat_msg and chat_request(request):
+            m = views.chat_message(conn, chat_msg)
+            return render_rows(request, operator, conn, [m], m["chat_kind"])
+        if panel and request.headers.get("hx-request"):
             return render_panel(request, operator, conn, panel, next)
-        except store.NotFound:
-            pass
+    except store.NotFound:
+        pass
     return done(request, safe_next(next) or default)
 
 
@@ -354,7 +392,7 @@ def build_router() -> APIRouter:
         tally_chips = [{"pose": p, "count": n, "label": avatar_art.POSE_LABELS[p]}
                        for p, n in sorted(tally.items(), key=lambda kv: avatar_art.POSES.index(kv[0]))]
         return render(request, operator, "dashboard.html", conn, nav="dashboard", pending=pending, agents=agents,
-                      tally=tally_chips, questions=questions.pending(conn), prompts=views.prompt_overview(conn))
+                      tally=tally_chips, questions=questions.pending(conn))
 
     @router.get("/projects", response_class=HTMLResponse)
     def projects_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -379,9 +417,8 @@ def build_router() -> APIRouter:
         if project is None:
             raise store.NotFound(f"no project {name!r}")
         live = next((p["tasks"] for p in views.project_tree(conn) if p["name"] == name), [])
-        messages = store.recent_messages(conn, project=name, channel="general", limit=50)
         return render(request, operator, "project.html", conn, nav="projects", project=project, tasks=live,
-                      messages=messages, prompt=views.prompt_state(conn, f"project:{name}"),
+                      c=page_chat(request, conn, "project", name), c_kind="project", next=f"/ui/projects/{quote(name)}",
                       reports=reports.list_reports(conn, projects=[name]))
 
     @router.post("/projects/{name}/description")
@@ -390,17 +427,6 @@ def build_router() -> APIRouter:
         with db.transaction(conn):
             store.set_project_description(conn, name, description, actor=operator.actor)
         return done(request, f"/ui/projects/{name}")
-
-    @router.post("/projects/{name}/notes")
-    def project_note(name: str, request: Request, operator: PostOp, conn: Conn,
-                     body: Annotated[str, Form(min_length=1, max_length=4000)],
-                     panel: PanelField = "", next: NextField = "") -> Response:
-        written(body)
-        with db.transaction(conn):
-            if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
-                raise store.NotFound(f"no project {name!r}")
-            store.post_message(conn, author=operator.actor, project=name, channel="general", body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/projects/{name}")
 
     @router.get("/reports", response_class=HTMLResponse)
     def reports_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -427,48 +453,57 @@ def build_router() -> APIRouter:
 
     @router.get("/badge/chats", response_class=HTMLResponse)
     def chats_badge(operator: Op, conn: Conn) -> HTMLResponse:
-        n = sum(private.unread_counts(conn).values())
+        n = unread_total(conn)
         return HTMLResponse(f'<span class="badge">{n}</span>' if n else "", headers=SECURITY_HEADERS)
 
     @router.get("/badge/messenger", response_class=HTMLResponse)
     def messenger_badge(operator: Op, conn: Conn) -> HTMLResponse:
-        """The Chat button's count: unread private messages plus pending questions."""
-        n = sum(private.unread_counts(conn).values()) + questions.pending_count(conn)
+        """The Chat button's count: unread chat messages plus pending questions."""
+        n = unread_total(conn) + questions.pending_count(conn)
         html = f'<span class="fab-badge">{n}<span class="sr-only"> unread</span></span>' if n else ""
         return HTMLResponse(html, headers=SECURITY_HEADERS)
 
-    # private chats --------------------------------------------------------------------
+    # chats: every agent, task and project has one -----------------------------------------------
 
     @router.get("/chats", response_class=HTMLResponse)
     def chats_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "chats.html", conn, nav="chats", between_agents=views.agent_pairs(conn),
-                      **views.chat_list(conn))
+        return render(request, operator, "chats.html", conn, nav="chats", **views.chat_index(conn))
 
-    # Registered before /chats/{agent_id}; "pair" can't be an agent id (those are "ag" + hex).
-    @router.get("/chats/pair/{key}", response_class=HTMLResponse)
-    def pair_page(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "pair_thread.html", conn, nav="chats", key=key, **views.pair_thread(conn, key))
+    @router.get("/chats/{agent_id}")
+    def chat_page_moved(agent_id: str, operator: Op) -> RedirectResponse:
+        """0.3.7's private chat page: an agent's chat is on its page now."""
+        return RedirectResponse(f"/ui/agents/{quote(agent_id, safe='')}", status_code=308, headers=SECURITY_HEADERS)
 
-    @router.post("/chats/pair/{key}")
-    def pair_post(key: str, operator: PostOp) -> Response:
-        raise HTTPException(405, "agent-to-agent chats are read-only")
+    @router.get("/chat/msg/{message_id}", response_class=HTMLResponse)
+    def chat_row_fragment(message_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
+        """One chat row, re-rendered (app.js swaps it in when the push says it changed)."""
+        m = views.chat_message(conn, message_id)
+        return render_rows(request, operator, conn, [m], m["chat_kind"])
 
-    @router.get("/chats/{agent_id}", response_class=HTMLResponse)
-    def chat_page(agent_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        rows = views.agent_rows(conn, agent_id=agent_id)
-        if not rows:
-            raise HTTPException(404, "no such agent")
+    @router.get("/chat/{kind}/{ref}", response_class=HTMLResponse)
+    def chat_fragment(kind: str, ref: str, request: Request, operator: Op, conn: Conn, after: int = -1) -> Response:
+        """The rows after ``after`` (app.js catching up after the socket dropped); with no ``after``, the chat's page."""
+        if after < 0:
+            return RedirectResponse(views.chat(conn, kind, ref, rows=False)["page"], status_code=303,
+                                    headers=SECURITY_HEADERS)
+        c = views.chat(conn, kind, ref, after=after)
+        return render_rows(request, operator, conn, c["rows"], kind)
+
+    @router.post("/chat/{kind}/{ref}")
+    def chat_send(kind: str, ref: str, request: Request, operator: PostOp, conn: Conn,
+                  body: Annotated[str, Form(min_length=1, max_length=views.CHAT_MAX_CHARS)],
+                  reply_to: Annotated[int, Form(ge=0)] = 0, next: NextField = "") -> Response:
+        """A chat's message box (and a question card's Reply, with ``reply_to`` its row): the operator's message, which
+        the hub routes to the chat's agents. app.js gets the new row back; a plain form goes back to the page."""
+        written(body)
+        c = views.chat(conn, kind, ref, rows=False)
+        if not c["send"]:
+            raise HTTPException(409, c["readonly"])
         with db.transaction(conn):
-            messages = private.thread(conn, agent_id)
-            if messages and shows_page_chat(request):  # the operator is looking at these now
-                private.mark_read_by_operator(conn, agent_id, since_id=messages[0]["id"])
-        return render(request, operator, "chat.html", conn, nav="chats", ag=rows[0], messages=messages,
-                      prompt=views.prompt_state(conn, f"agent:{agent_id}"))
-
-    @router.post("/chats/{agent_id}")
-    def chat_send(agent_id: str, operator: PostOp) -> Response:
-        """Retired: agents are only prompted (POST /ui/prompts); their messages to the operator still arrive here."""
-        raise HTTPException(405, "Send is gone: prompt the agent instead")
+            row = chats.send(conn, kind, ref, body, operator.actor, reply_to=reply_to or None)
+        if chat_request(request):
+            return render_rows(request, operator, conn, views.chat_rows(conn, [row]), kind)
+        return done(request, safe_next(next) or c["page"])
 
     # slide-in panel ------------------------------------------------------------------------
 
@@ -476,89 +511,18 @@ def build_router() -> APIRouter:
     def panel_fragment(request: Request, operator: Op, conn: Conn, item: str = "", next: str = "") -> HTMLResponse:
         return render_panel(request, operator, conn, item[:300], next)
 
-    # chat window -------------------------------------------------------------------------------
+    # the chat list (the Chat button) -------------------------------------------------------
 
     @router.get("/messenger", response_class=HTMLResponse)
     def messenger_list(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "_messenger.html", conn, view="list", **views.messenger(conn))
+        return render(request, operator, "_messenger.html", conn, **views.chat_index(conn))
 
-    @router.get("/messenger/{key}", response_class=HTMLResponse)
-    def messenger_conversation(key: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render_conversation(request, operator, conn, key[:300])
+    # 0.3.7's boards are chats now ---------------------------------------------------------
 
-    # the Prompt sheet -------------------------------------------------------------------------
-
-    @router.get("/compose", response_class=HTMLResponse)
-    def compose_page(request: Request, operator: Op, conn: Conn, to: str = "", next: str = "") -> HTMLResponse:
-        reach = views.recipients(conn, to)
-        next = safe_next(next)
-        # HTMX loads just the panel into #compose; a plain link gets the whole page.
-        name = "_compose.html" if request.headers.get("hx-request") else "compose.html"
-        return render(request, operator, name, conn, nav="", to=to, next=next, back=next or target_page(to),
-                      prompt=views.prompt_state(conn, to, reach), **reach)
-
-    @router.get("/compose/close", response_class=HTMLResponse)
-    def compose_close(operator: Op) -> HTMLResponse:
-        return HTMLResponse("", headers=SECURITY_HEADERS)
-
-    @router.post("/compose")
-    def compose_send(operator: PostOp) -> Response:
-        """Retired: the Prompt sheet posts to /ui/prompts, and boards take posts on the Board."""
-        raise HTTPException(405, "Send is gone: use Prompt, or post on the board")
-
-    # prompts: wake the agents now ----------------------------------------------------------
-
-    @router.post("/prompts")
-    def prompt_create(request: Request, operator: PostOp, conn: Conn,
-                      target: Annotated[str, Form(max_length=200)],
-                      body: Annotated[str, Form(min_length=1, max_length=prompts.MAX_BODY_CHARS)],
-                      panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        """Every composer's Prompt button, with the composer's ``target`` (a board's Post shares its form)."""
-        written(body)
-        with db.transaction(conn):
-            p = prompts.create(conn, target=target, body=body, actor=operator.actor)
-        return finish(request, operator, conn, panel, next, f"/ui/prompts/{p['id']}", messenger)
-
-    @router.post("/prompts/{prompt_id}/withdraw")
-    def prompt_withdraw(prompt_id: int, request: Request, operator: PostOp, conn: Conn,
-                        panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        """A prompt card's Withdraw: the recipients that haven't started don't get it (running ones finish)."""
-        with db.transaction(conn):
-            prompts.withdraw(conn, prompt_id, actor=operator.actor)
-        return finish(request, operator, conn, panel, next, f"/ui/prompts/{prompt_id}", messenger)
-
-    @router.get("/prompts/{prompt_id}", response_class=HTMLResponse)
-    def prompt_page(prompt_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "prompt.html", conn, nav="dashboard", p=views.prompt(conn, prompt_id))
-
-    # board (public channels) ----------------------------------
-
-    @router.get("/board", response_class=HTMLResponse)
-    def board_page(request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        return render(request, operator, "board.html", conn, nav="board", activity_link=views.ACTIVITY_LINK,
-                      **views.board_index(conn))
-
-    @router.get("/board/{key}", response_class=HTMLResponse)
-    def board_thread_page(key: str, request: Request, operator: Op, conn: Conn) -> Response:
-        if key.startswith("pair-"):  # agent-to-agent chats moved to Chats
-            return RedirectResponse(f"/ui/chats/pair/{key}", status_code=308, headers=SECURITY_HEADERS)
-        thread = views.board_thread(conn, key)
-        target = views.board_prompt_target(conn, thread["project"], thread["channel"])
-        return render(request, operator, "board_thread.html", conn, nav="board", key=key,
-                      prompt=views.prompt_state(conn, target) if target else None, **thread)
-
-    @router.post("/board/{key}")
-    def board_post(key: str, request: Request, operator: PostOp, conn: Conn,
-                   body: Annotated[str, Form(min_length=1, max_length=4000)],
-                   messenger: MessengerField = "") -> Response:
-        written(body)
-        thread = views.board_thread(conn, key)
-        if not thread["can_post"]:
-            raise HTTPException(405, "this thread is read-only")
-        with db.transaction(conn):
-            store.post_message(conn, author=operator.actor, project=thread["project"], channel=thread["channel"],
-                               body=body)
-        return finish(request, operator, conn, "", "", f"/ui/board/{key}", messenger)
+    @router.get("/board")
+    @router.get("/board/{key}")
+    def board_moved(operator: Op, key: str = "") -> RedirectResponse:
+        return RedirectResponse("/ui/chats", status_code=308, headers=SECURITY_HEADERS)
 
     # approvals ----------------------------------------------------------------------
 
@@ -573,17 +537,16 @@ def build_router() -> APIRouter:
     def question_page(qid: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         q = questions.get(conn, qid)
         task = tasks.get_task(conn, q["task_id"]) if q["task_id"] else None
-        return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task,
-                      delivery=views.answer_delivery(conn, q))
+        return render(request, operator, "question.html", conn, nav="approvals", q=q, task=task)
 
     @router.post("/questions/{qid}/answer")
     def question_answer(qid: int, request: Request, operator: PostOp, conn: Conn,
                         answer: Annotated[str, Form(min_length=1, max_length=questions.MAX_CHARS)],
-                        panel: PanelField = "", next: NextField = "") -> Response:
+                        panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         written(answer)
         with db.transaction(conn):
             questions.answer(conn, qid, answer=answer, actor=operator.actor)
-        return finish(request, operator, conn, panel, next, f"/ui/questions/{qid}")
+        return finish(request, operator, conn, panel, next, f"/ui/questions/{qid}", chat_msg)
 
     @router.get("/approvals/{approval_id}", response_class=HTMLResponse)
     def approval_page(approval_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
@@ -607,22 +570,22 @@ def build_router() -> APIRouter:
     @router.post("/approvals/{approval_id}/discuss")
     def approval_discuss(approval_id: int, request: Request, operator: PostOp, conn: Conn,
                          body: Annotated[str, Form(min_length=1, max_length=4000)],
-                         panel: PanelField = "", next: NextField = "") -> Response:
+                         panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         written(body)
         with db.transaction(conn):
             a = approvals.post_discussion(conn, approval_id, author=operator.actor, body=body)
         if request.headers.get("hx-request") and not panel:  # the approval page's own thread
             return render(request, operator, "_thread.html", conn, a=a)
-        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}", chat_msg)
 
     @router.post("/approvals/{approval_id}/decide")
     def approval_decide(approval_id: int, request: Request, operator: PostOp, conn: Conn,
                         decision: Annotated[str, Form(pattern="^(approve|reject)$")],
                         note: Annotated[str, Form(max_length=2000)] = "",
-                        panel: PanelField = "", next: NextField = "") -> Response:
+                        panel: PanelField = "", next: NextField = "", chat_msg: ChatMsgField = 0) -> Response:
         with db.transaction(conn):
             approvals.decide(conn, approval_id, approve=decision == "approve", actor=operator.actor, note=note)
-        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}")
+        return finish(request, operator, conn, panel, next, f"/ui/approvals/{approval_id}", chat_msg)
 
     # tasks ------------------------------------------------------------------------------
 
@@ -662,9 +625,8 @@ def build_router() -> APIRouter:
         member_usage = {m["agent_id"]: tasks.usage(conn, task_id, m["agent_id"]) for m in t["agents"]}
         return render(request, operator, "task.html", conn, nav="tasks", t=t, history=history, runs=tasks.list_runs(conn, task_id),
                       usage=tasks.usage(conn, task_id), member_usage=member_usage,
-                      messages=store.recent_messages(conn, project=t["project"], channel=f"task-{task_id}", limit=50),
-                      moves=operator_moves(t["state"]), agents=agents,
-                      terminal=t["state"] in tasks.TERMINAL, prompt=views.prompt_state(conn, f"task:{task_id}"),
+                      c=page_chat(request, conn, "task", str(task_id)), c_kind="task", next=f"/ui/tasks/{task_id}",
+                      moves=operator_moves(t["state"]), agents=agents, terminal=t["state"] in tasks.TERMINAL,
                       reports=reports.list_reports(conn, task_id=task_id))
 
     @router.post("/tasks/{task_id}/description")
@@ -674,16 +636,6 @@ def build_router() -> APIRouter:
         with db.transaction(conn):
             tasks.set_description(conn, task_id, title, body, actor=operator.actor)
         return done(request, f"/ui/tasks/{task_id}")
-
-    @router.post("/tasks/{task_id}/notes")
-    def task_note(task_id: int, request: Request, operator: PostOp, conn: Conn,
-                  body: Annotated[str, Form(min_length=1, max_length=4000)],
-                  panel: PanelField = "", next: NextField = "") -> Response:
-        written(body)
-        with db.transaction(conn):
-            t = tasks.get_task(conn, task_id)
-            store.post_message(conn, author=operator.actor, project=t["project"], channel=f"task-{task_id}", body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/tasks/{task_id}")
 
     @router.post("/tasks/{task_id}/assign")
     def task_assign(task_id: int, request: Request, operator: PostOp, conn: Conn,
@@ -746,7 +698,7 @@ def build_router() -> APIRouter:
             params.append(type.replace("%", "") + "%")
         rows = conn.execute(sql + " ORDER BY id DESC LIMIT 200", params).fetchall()
         types = [r[0] for r in conn.execute("SELECT DISTINCT type FROM events ORDER BY type")]
-        return render(request, operator, "activity.html", conn, nav="board", events=[events.row_to_event(r) for r in rows],
+        return render(request, operator, "activity.html", conn, nav="", events=[events.row_to_event(r) for r in rows],
                       projects=store.list_projects(conn), agents=store.list_agents(conn), types=types,
                       filters={"project": project, "agent": agent, "type": type})
 
@@ -762,18 +714,7 @@ def build_router() -> APIRouter:
     @router.get("/devices/{node_id}", response_class=HTMLResponse)
     def device_page(node_id: str, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
         device = views.device(conn, node_id)
-        return render(request, operator, "device.html", conn, nav="devices", d=device,
-                      messages=views.device_messages(conn, node_id),
-                      prompt=views.prompt_state(conn, f"device:{node_id}"))
-
-    @router.post("/devices/{node_id}/notes")
-    def device_note(node_id: str, request: Request, operator: PostOp, conn: Conn,
-                    body: Annotated[str, Form(min_length=1, max_length=device_board.MAX_BODY_CHARS)],
-                    panel: PanelField = "", next: NextField = "", messenger: MessengerField = "") -> Response:
-        written(body)
-        with db.transaction(conn):
-            device_board.post(conn, node_id, author=operator.actor, body=body)
-        return finish(request, operator, conn, panel, next, f"/ui/devices/{quote(node_id, safe='')}", messenger)
+        return render(request, operator, "device.html", conn, nav="devices", d=device)
 
     # agents -------------------------------------------------------------------------
 
@@ -803,14 +744,10 @@ def build_router() -> APIRouter:
         agent = store.get_agent(conn, agent_id)
         if not rows or agent is None:
             raise HTTPException(404, "no such agent")
-        with db.transaction(conn):
-            chat = private.thread(conn, agent_id, limit=20)
-            if chat and shows_page_chat(request):  # the pinned chat shows these; older unread ones wait for the full chat
-                private.mark_read_by_operator(conn, agent_id, since_id=chat[0]["id"])
+        c = page_chat(request, conn, "agent", agent_id)
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
-                      prompt=views.prompt_state(conn, f"agent:{agent_id}"),
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
-                      chat=chat, pairs=[p for p in views.agent_pairs(conn) if agent_id in (a["id"] for a in p["agents"])])
+                      c=c, c_kind="agent", next=f"/ui/agents/{agent_id}")
 
     @router.post("/agents/{agent_id}/approve")
     def agent_approve(agent_id: str, request: Request, operator: PostOp, conn: Conn) -> Response:

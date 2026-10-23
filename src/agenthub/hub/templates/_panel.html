@@ -1,11 +1,9 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, prompt_only %}
-{% from "_board.html" import board %}
-{% from "_prompt.html" import prompt_card with context %}
-{#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. Every form
-    posts with HTMX, names the item in `panel` so the response re-renders this panel, and keeps a plain
-    method/action (with `next`) for the redirect path. Agents, tasks, projects and devices are talked to only
-    by prompting them (prompt_form, with `prompt`: views.prompt_state); their boards are read here and posted
-    to on the Board. -#}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs %}
+{% from "_chat.html" import chat with context %}
+{#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. An agent's, task's or
+    project's panel is its chat (_chat.html, `c`) under a short head whose facts fold away; a device's, approval's or
+    question's panel is its facts and forms. Forms other than the chat's post with HTMX, name the item in `panel`
+    so the response re-renders this panel, and keep a plain method/action (with `next`) for the redirect path. -#}
 {% macro panel_form(action, label, button, placeholder, field='body', maxlength=4000, help='') -%}
 <form class="composer" method="post" action="{{ action }}" hx-post="{{ action }}" hx-target="#panel" hx-swap="innerHTML">
   <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -15,32 +13,6 @@
   <div class="composer-buttons"><button type="submit">{{ button }}</button></div>
   {% if help %}<p class="small-line">{{ help }}</p>{% endif %}
 </form>
-{%- endmacro %}
-{#- The Prompt section: a Prompt-only composer for the item, then its latest prompts. -#}
-{% macro prompt_form(label, placeholder) -%}
-<section class="dsec">
-  <h3>Prompt</h3>
-  <form class="composer" method="post" action="/ui/prompts" hx-post="/ui/prompts" hx-target="#panel" hx-swap="innerHTML">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="hidden" name="panel" value="{{ item }}">
-    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="body" rows="2" maxlength="4000" required aria-label="{{ label }}" placeholder="{{ placeholder }}"></textarea>
-    {{ prompt_only(prompt) }}
-  </form>
-</section>
-{{ latest_prompts() }}
-{%- endmacro %}
-{% macro board_link(project, channel, label) -%}
-<p class="small-line"><a href="/ui/board/{{ ('ch-' ~ project ~ '~' ~ channel)|urlencode }}">{{ label }}</a></p>
-{%- endmacro %}
-{#- The item's latest prompts (its panel's `prompts`), newest first. -#}
-{% macro latest_prompts() -%}
-{% if prompts %}
-<section class="dsec">
-  <h3>Prompts</h3>
-  <ul class="cards prompts">{% for p in prompts %}<li class="card">{{ prompt_card(p, names) }}</li>{% endfor %}</ul>
-</section>
-{% endif %}
 {%- endmacro %}
 {% macro agent_link(agent_id, name) -%}
 {%- if name %}<a {{ open_attrs('agent:' ~ agent_id, '/ui/agents/' ~ agent_id) }}>{{ name }}</a>{% else %}{{ agent_id }}{% endif -%}
@@ -53,48 +25,28 @@
   <a class="small" href="{{ href }}">Open full page</a></div>
 
 {% if kind == 'agent' %}
-<div class="dhead">{{ avatar(ag.avatar, 72, scene=True) }}
-  <div class="info"><div class="kicker">agent</div><h2 id="panel-title">{{ ag.name }}</h2>{{ chip(ag.status) }}</div></div>
-<section class="dsec">
+<div class="dhead chat-head">{{ avatar(ag.avatar, 48) }}
+  <div class="info"><div class="kicker">agent</div><h2 id="panel-title">{{ ag.name }}</h2>
+    <div class="small-line">{% if ag.status == 'revoked' %}{{ chip(ag.status) }}{% else %}<span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }}{% if ag.status != 'active' %} {{ chip(ag.status) }}{% endif %}{% endif %}</div></div></div>
+<details class="pfacts"><summary>Details</summary>
   <dl class="facts">
-    <dt>Status</dt><dd>{% if ag.status == 'revoked' %}revoked{% else %}<span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}{% endif %}</dd>
     <dt>Tasks</dt><dd>{% for t in ag.tasks %}<div class="ptask"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}
       <dl class="agent-facts"><dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></dd>{% if t.role %}<dt>Role</dt><dd>{{ t.role }}</dd>{% endif %}<dt>Stage</dt><dd>{{ t.stage }}</dd></dl></div>
       {% else %}No current task{% endfor %}</dd>
     <dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}</dd>
+    <dt>Heartbeat</dt><dd>{{ ago(ag.last_heartbeat) }}</dd>
     <dt>Model</dt><dd>{{ ag.model or 'Not reported yet' }} <span class="small-line">reported by the agent</span></dd>
     <dt>Effort</dt><dd>{{ ag.effort or 'Not reported yet' }} <span class="small-line">reported by the agent</span></dd>
     <dt>Directory</dt><dd><span class="dir">{{ ag.current_dir or 'None reported' }}</span> <span class="small-line">reported by the agent</span></dd>
   </dl>
-  {% set waiting = approvals|length + questions|length %}
-  {% if waiting %}
-  <h4>Waiting on you <span class="count">{{ waiting }}</span></h4>
-  <ul class="aplist">
-    {% for a in approvals %}
-    <li><a class="aprow" {{ open_attrs('approval:' ~ a.id, '/ui/approvals/' ~ a.id) }}><span class="kind">{{ a.kind.replace('_', ' ') }}</span>
-      <span class="apwhat">{{ approval_summary(a) }}</span><span class="small-line">#{{ a.id }} · {{ ago(a.created_at) }} · agent text</span></a></li>
-    {% endfor %}
-    {% for q in questions %}
-    <li><a class="aprow" {{ open_attrs('question:' ~ q.id, '/ui/questions/' ~ q.id) }}><span class="kind kind-question">Question</span>
-      <span class="apwhat">{{ q.question|truncate(140) }}</span><span class="small-line">#{{ q.id }} · {{ ago(q.created_at) }} · agent text</span></a></li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</section>
-<section class="dsec">
-  <h3>Private chat</h3>
-  <div class="dthread">{{ board(chat, names, empty="No messages yet.") }}</div>
-  <p class="small-line">Messages {{ ag.name }} sends you arrive here; only you and {{ ag.name }} see them.</p>
-</section>
-{% if ag.status != 'revoked' %}{{ prompt_form('Prompt for ' ~ ag.name, 'Prompt ' ~ ag.name ~ '…') }}
-{% else %}<p class="muted">{{ ag.name }} is revoked, so this chat is read-only and it can't be prompted.</p>{{ latest_prompts() }}{% endif %}
+</details>
+{{ chat(c) }}
 
 {% elif kind == 'task' %}
-<div class="dhead"><span class="group-icon g-task" aria-hidden="true">#</span>
-  <div class="info"><div class="kicker">task #{{ t.id }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2></div></div>
-<section class="dsec">
+<div class="dhead chat-head"><span class="group-icon g-task" aria-hidden="true">#</span>
+  <div class="info"><div class="kicker">task #{{ t.id }} · {{ chip(t.state) }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2></div></div>
+<details class="pfacts"><summary>Details · {{ t.agents | length }} agent{{ '' if t.agents | length == 1 else 's' }}</summary>
   <dl class="facts">
-    <dt>State</dt><dd>{{ chip(t.state) }}</dd>
     <dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, '/ui/projects/' ~ t.project) }}>{{ t.project }}</a></dd>
     <dt>Created</dt><dd>by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</dd>
   </dl>
@@ -103,31 +55,21 @@
     {% for m in t.agents %}{{ member_row(m.agent_id, m.name, (m.role ~ ' · ' if m.role else '') ~ m.stage) }}
     {% else %}<li class="small-line">Nobody yet</li>{% endfor %}
   </ul>
-</section>
-<section class="dsec">
-  <h3>Task board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-  {{ board_link(t.project, 'task-' ~ t.id, 'Post on the task board') }}
-</section>
-{{ prompt_form('Prompt for task #' ~ t.id, 'Prompt the agents on this task…') }}
+</details>
+{{ chat(c) }}
 
 {% elif kind == 'project' %}
-<div class="dhead"><span class="group-icon g-project" aria-hidden="true">▦</span>
+<div class="dhead chat-head"><span class="group-icon g-project" aria-hidden="true">▦</span>
   <div class="info"><div class="kicker">project</div><h2 id="panel-title">{{ project.name }}</h2></div></div>
-<section class="dsec">
+<details class="pfacts"><summary>Details · {{ tasks | length }} live task{{ '' if tasks | length == 1 else 's' }}</summary>
   {% if project.description %}<div class="muted small md">{{ project.description|md }}</div>{% endif %}
   <h4>Live tasks</h4>
   <ul class="tlinks">
     {% for t in tasks %}<li><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}</li>
     {% else %}<li class="small-line">No live tasks</li>{% endfor %}
   </ul>
-</section>
-<section class="dsec">
-  <h3>Project board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-  {{ board_link(project.name, 'general', 'Post on the project board') }}
-</section>
-{{ prompt_form('Prompt for project ' ~ project.name, 'Prompt everyone on this project…') }}
+</details>
+{{ chat(c) }}
 
 {% elif kind == 'device' %}
 <div class="dhead"><span class="group-icon g-device" aria-hidden="true">▣</span>
@@ -140,12 +82,8 @@
   <ul class="mlist">
     {% for a in d.agents %}{{ member_row(a.id, a.name, a.status ~ ' · ' ~ ('connected' if a.connected else 'not connected')) }}{% endfor %}
   </ul>
+  <p class="small-line">Devices have no chat: message an agent on it from its chat.</p>
 </section>
-<section class="dsec">
-  <h3>Device board</h3>
-  <div class="dthread">{{ board(messages, names) }}</div>
-</section>
-{{ prompt_form('Prompt for ' ~ d.name, 'Prompt every agent on ' ~ d.name ~ '…') }}
 
 {% elif kind == 'approval' %}
 {% set dt = a.details %}
@@ -164,7 +102,7 @@
   <div class="dthread"{% if a.status == 'pending' %} hx-get="/ui/approvals/{{ a.id }}/discussion" hx-trigger="every 3s" hx-swap="innerHTML"{% endif %}>
     {%- include "_discussion.html" %}</div>
   {% if a.status == 'pending' %}
-  {{ panel_form('/ui/approvals/' ~ a.id ~ '/discuss', 'Message to ' ~ (a.requester_name or 'the agent'), 'Discuss', 'Ask ' ~ (a.requester_name or 'the agent') ~ ' why, or what else it would need…', help='The agent sees this in the approval thread and replies there. The request stays pending.') }}
+  {{ panel_form('/ui/approvals/' ~ a.id ~ '/discuss', 'Message to ' ~ (a.requester_name or 'the agent'), 'Reply', 'Ask ' ~ (a.requester_name or 'the agent') ~ ' why, or what else it would need…', help='The agent sees this in the approval thread and replies there. The request stays pending.') }}
   {% endif %}
 </section>
 <section class="dsec decide">
@@ -204,7 +142,7 @@
   {{ agent_text(q.answer, q.answered_by, names) }}
   {% include "_answer_note.html" %}
   {% elif q.status == 'pending' %}
-  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer to ' ~ (q.agent_name or 'the agent') ~ ' wakes it if it is online and idle; otherwise it arrives as a private message', field='answer') }}
+  {{ panel_form('/ui/questions/' ~ q.id ~ '/answer', 'Answer to ' ~ (q.agent_name or 'the agent'), 'Answer', 'Your answer goes into ' ~ (q.agent_name or 'the agent') ~ '\'s chat and wakes it if it is idle', field='answer') }}
   {% else %}<p class="small-line">The agent withdrew this question.</p>{% endif %}
 </section>
 {% endif %}
