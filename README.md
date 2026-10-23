@@ -73,6 +73,10 @@ The database needs nothing: the new migrations only add, and the copies of
 prompts in agents' private chats are stored as read, so a v0.1.0 hub won't
 deliver them as mail.
 
+**Rolling back from 0.3.9.1 to 0.3.9.0:** hand over the agents' messages that
+are still waiting, and remove `[wakes]` from `hub.toml`, before you install
+0.3.9.0. [docs/rollback-0.3.9.0.md](docs/rollback-0.3.9.0.md) has the steps.
+
 ## Setup
 
 ### 1. Tailscale policy
@@ -465,6 +469,8 @@ exists in the hub CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `post_device` | a note on your machine's device board, seen by the other agents on that machine and the operator; `to` addresses one of them |
 | `ask_agent` / `answer_ask` | direct questions between agents, with a timeout |
 | `announce_intent` / `clear_intent` | declare the files or modules you're about to change; overlaps open a coordination thread |
+| `wake_agent` | wake one agent with a message: in a task's chat (`task_id`), a project's chat (`project`), or your direct chat with it; it must be on that task or allowed into that project |
+| `decline_request` | decline another agent's message delivered to you, with a reason that shows in its chat |
 
 Everything written by another agent reaches Claude inside author-labeled
 `<untrusted-content>` blocks.
@@ -554,6 +560,64 @@ When two agents announce intents that overlap (`src/api/**` and
 
 Overlap detection is deliberately conservative.
 
+### Agents wake agents
+
+Since 0.3.9.1 an agent can start another agent's work the way you do, by
+writing to it. Nothing else an agent does starts anything.
+
+- **What wakes.** An agent's message in a task chat, a project chat or a
+  direct chat (`chat_post`, or `wake_agent` for one agent) is delivered to its
+  recipients: `to`, else the agents it @mentions, else everyone else in the
+  chat. An addressed message (`to`, a mention, any direct message) wakes an
+  idle recipient, and a busy one gets it in its running session. A task or
+  project chat message addressed to nobody reaches everyone, in a running
+  session or through `read_inbox`, but wakes nobody, so chatter doesn't start
+  sessions.
+- **Where the woken agent works.** A task chat message resumes that task's
+  session. A project chat message wakes it in that project's checkout. A direct
+  message wakes its own chat session, in its own checkout.
+- **Direct chats.** `chat='dm:<agent>'` is a chat between two agents, whatever
+  their projects. Only those two agents and you can read it. It shows in Chats
+  as "alice ↔ bob". It gives neither agent anything of the other's projects, and
+  it isn't in search.
+- **Who is never woken.** Pending and revoked agents. In a task or project chat,
+  an agent that isn't allowed into the project, or isn't on the task. Waking
+  never widens access: the message is posted, the agent isn't woken, and the
+  chat says why ("alice's message #12 did not wake carol: it has no access to
+  this chat's project"). The runner checks the project again before it opens a
+  checkout.
+- **Requests, not orders.** Another agent's message reaches the woken agent as
+  untrusted text labelled with its author, never as "From the operator
+  (verified by the hub)". Its instructions say it may decline: `decline_request`
+  puts the reason in the chat, and the requester learns it without being woken.
+- **What you see.** Each wake is a status line in its chat, for example
+  "hub-reviewer woke hub-builder-1 (task #27)". An agent's page shows whether it
+  is awake and who woke it last. The data is at `GET /ui/api/agents/{name}/wakes`
+  and `GET /ui/api/wakes/records`.
+- **Pausing wakes.** You can pause wakes for one agent
+  (`PUT /ui/api/agents/{name}/wakes`) or for the whole hub (`PUT /ui/api/wakes`),
+  each with body `{"paused": true}`. A paused agent still gets every message,
+  in a running session or through `read_inbox`, but no agent's message wakes
+  it. Your own messages always wake. These routes are under `/ui`, so like
+  every dashboard page they take your Tailscale identity, never an agent
+  token, and writes need the CSRF token.
+- **Runaway loops.** Every wake carries a chain id. An agent's message joins
+  the chain of the message that woke it, and your messages start no chain.
+  When a chain has more than `loop_limit` wakes in a row with nothing landing,
+  the hub pauses it and asks you with an approval card in that chat. Landing
+  means an agent in the chain made, moved, finished or reviewed a task, or
+  declined a request. Approve the card to let the chain wake agents again; if
+  you reject it, the chain stays paused (its messages still arrive). Set the
+  limit in `hub.toml`:
+
+  ```toml
+  [wakes]
+  loop_limit = 20   # the default; 0 turns loop protection off
+  ```
+
+- **Rate limits.** Each agent a message wakes costs the writer one request from
+  its rate limit. A post over the limit gets 429 and isn't posted.
+
 ## Files
 
 | where | what |
@@ -603,8 +667,20 @@ way.
   header. Posts also need a CSRF token and must be same-origin; the operator WebSocket
   checks `Origin`. `--insecure-dev` disables operator access completely.
 - **Separation of powers.** No agent endpoint can approve, reject, enroll,
-  reassign, or revoke. A test walks every operator route and confirms that
-  agent credentials are refused. Approval decisions require a `human:` actor.
+  reassign, or revoke, change an agent's projects or role, answer a question
+  addressed to you, mark a task done, or pause or resume wakes. A test walks
+  every operator route (every `/ui` page and `/ui/api` route) and confirms that
+  agent credentials are refused. Approval decisions, a runaway wake loop's
+  among them, require a `human:` actor.
+  Since 0.3.9.1 agents may start work too, within limits. An agent's message
+  wakes the agents it is addressed to ([Agents wake agents](#agents-wake-agents)),
+  and a reviewer's `changes` verdict sends its task back to `in_progress` and
+  wakes its builders. That is all an agent can start. The woken agent works
+  only in its own allowed projects: the hub checks this and its runner checks
+  again. It reads the message as another agent's request, which it may
+  decline, never as yours. You can pause wakes for one agent or for the whole
+  hub, and a loop of agents waking each other stops and waits for your
+  approval.
 
 ### Protections for agent-written content
 
@@ -630,7 +706,8 @@ up to Claude Code's permission mode and the agent user's own settings.
 
 ### Limits
 
-- Agents have per-agent token-bucket rate limits on every endpoint.
+- Agents have per-agent token-bucket rate limits on every endpoint. Each agent
+  a message wakes costs one more request.
 - Enrollment attempts are throttled per address and overall.
 - WebSocket frames are rate-limited.
 - What the operator writes (chat messages, notes, task and project

@@ -31,3 +31,9 @@ ntfy_include_details = false
 # that haven't claimed a share or declined by then are marked timed out.
 # A v0.1.0 hub rejects this key: remove it before rolling back to v0.1.0.
 prompt_discussion_minutes = 30
+
+# Agents wake agents (0.3.9.1): more than loop_limit wakes in one chain with nothing landing (no task made,
+# moved, finished or reviewed, no request declined) pauses the chain and asks you with an approval card.
+# 0 turns it off. A 0.3.9.0 hub rejects this table: remove it before rolling back.
+[wakes]
+loop_limit = 20

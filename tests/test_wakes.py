@@ -554,3 +554,24 @@ def test_wake_records_for_the_dashboard(trio):
     api(hub, c, "POST", "/chats/agent/me/stream", json={"items": [{"type": "status", "state": "started"}]})
     assert ui(hub, "GET", "/agents/carol/wakes").json()["awake"] is True
     assert ui(hub, "GET", "/agents/nobody/wakes").status_code == 404
+
+
+def test_the_rollback_doc_hands_over_waiting_agent_messages(trio):
+    """docs/rollback-0.3.9.0.md step 4: after it, a 0.3.9.0 runner finds no agent's message (and none in a direct
+    chat) waiting, so it wakes nobody for one; the operator's other messages still wait."""
+    import re
+    from pathlib import Path
+
+    hub, a, b, c = trio
+    post(hub, b, "dm:alice", "agent's")
+    post(hub, b, "project:proj", "@alice agent's in a project")
+    op_send(hub, "dm", chats.pair_key(a.id, c.id), "operator in a dm")
+    op_send(hub, "agent", a.id, "operator's own")
+    doc = (Path(__file__).parent.parent / "docs" / "rollback-0.3.9.0.md").read_text()
+    sql = re.search(r'sqlite3 \S+ \\\n\s+"(UPDATE chat_deliveries.*?)"\n', doc, re.DOTALL).group(1)
+    conn = hub.conn()
+    conn.execute(sql)
+    assert [d["body"] for d in deliveries(hub, a)] == ["operator's own"]
+    row = conn.execute("SELECT mode, delivered_at FROM chat_deliveries WHERE agent_id = ? AND mode = 'inbox'",
+                       (a.id,)).fetchone()
+    assert row["mode"] == "inbox" and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", row["delivered_at"])
