@@ -26,6 +26,10 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Nor the session that runs the suite: an agent running it inside its own task or prompt session has these set.
+    for var in ("AGENTHUB_TASK_ID", "AGENTHUB_PROMPT_ID", "AGENTHUB_PROJECT", "AGENTHUB_RUN_ID",
+                "AGENTHUB_PERMISSION_WAIT_SECONDS"):
+        monkeypatch.delenv(var, raising=False)
 
 
 class FakeWhois:
