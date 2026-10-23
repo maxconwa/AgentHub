@@ -397,9 +397,9 @@ def _iso_time(value: Any) -> str | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.strip())
-    except ValueError:
+        return now_iso(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
+    except (ValueError, OverflowError):  # OverflowError: a time near the ends of the range, moved to UTC
         return None
-    return now_iso(parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC))
 
 
 # --- live output from sessions ----------------------------------------------------------------------------------
