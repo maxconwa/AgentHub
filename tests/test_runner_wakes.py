@@ -3,9 +3,8 @@
 into the running turn, always as untrusted, author-labelled text; its chain id comes back with the results; a payload
 naming a project the agent isn't allowed is refused.
 
-End to end against a real hub and the fake ``claude``. Agent-authored deliveries are written into the hub's tables as
-its wake path does; fields the 0.3.9.1 hub adds to a delivery (``chain_id``, ``wake``, a ``dm`` chat) are laid over the
-hub's rows (:func:`overlay`).
+End to end against a real hub and the fake ``claude``. Agents' messages go through the hub's real wake path
+(``chats.post``); only the access test lays a payload no hub writes over the hub's rows (:func:`overlay`).
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from agenthub.hub import chats, db
+from agenthub.hub import chats, db, store, task_agents, wakes
 from agenthub.hub.db import now_iso
 from agenthub.runner.chat import ChatState, Delivery, chain_ids, delivery_text
 
@@ -29,15 +28,12 @@ def peer(hub, tmp_path, projects=("proj",)) -> str:
     return cfg.agent_id
 
 
-def agent_says(hub, author: str, kind: str, ref: str, body: str, *, to: str) -> dict:
-    """``author`` (an agent) writes in a chat, and the hub delivers it to ``to`` (as its 0.3.9.1 wake path does)."""
+def agent_says(hub, author: str, kind: str, ref: str, body: str, *, to: str | None) -> dict:
+    """``author`` (an agent) writes in a chat (``dm``: ``ref`` is the other agent), addressed to ``to``: the hub's
+    real wake path delivers it."""
     conn = hub.conn()
     with db.transaction(conn):
-        chat_row = chats.chat(conn, kind, ref)
-        message_id = chats._insert(conn, chat_row, author=author, kind="text", body=body, meta={"to": to})
-        conn.execute("INSERT INTO chat_deliveries (message_id, agent_id, status, created_at) "
-                     "VALUES (?, ?, 'pending', ?)", (message_id, to, now_iso()))
-    return chats.get_message(hub.conn(), message_id)
+        return chats.post(conn, store.find_agent(conn, author), kind, ref, body, to=to)
 
 
 def overlay(runner, extra: dict[int, dict]) -> None:
@@ -172,7 +168,6 @@ async def test_an_agents_task_chat_message_wakes_that_tasks_session(live_hub, fa
         await wait_for(lambda: live_hub.task(task_id)["state"] == "review"
                        and (task_id not in runner.work or runner.work[task_id].task.done()))
         msg = agent_says(live_hub, waker, "task", str(task_id), "Why port 8080?", to=agent_cfg.agent_id)
-        overlay(runner, {msg["id"]: {"chain_id": "chain-7"}})
         await wait_for(lambda: states(live_hub, "task", str(task_id)).count("finished") >= 2)
     finally:
         await stop(main)
@@ -183,7 +178,7 @@ async def test_an_agents_task_chat_message_wakes_that_tasks_session(live_hub, fa
     assert call["argv"][call["argv"].index("--resume") + 1] == task_run["session"]  # that task's session
     assert call["cwd"] == str(tmp_path / "checkout") and call["env"]["AGENTHUB_TASK_ID"] == str(task_id)
     assert untrusted_from_peer(call["stdin"], msg, waker) and "From the operator" not in call["stdin"]
-    assert [r["chain_ids"] for r in runs if r["what"] == "chat"] == [["chain-7"]]  # echoed back
+    assert msg["chain_id"] and [r["chain_ids"] for r in runs if r["what"] == "chat"] == [[msg["chain_id"]]]  # echoed
 
 
 async def test_an_agents_project_chat_message_wakes_a_session_in_that_projects_checkout(live_hub, fake_claude,
@@ -203,7 +198,6 @@ async def test_an_agents_project_chat_message_wakes_a_session_in_that_projects_c
     try:
         await wait_for(connected(live_hub, me))
         msg = agent_says(live_hub, waker, "project", "proj", "Who takes the docs?", to=me)
-        overlay(runner, {msg["id"]: {"chain_id": "chain-p"}})
         await wait_for(lambda: "finished" in states(live_hub, "project", "proj"))
         second = agent_says(live_hub, waker, "project", "proj", "And the changelog?", to=me)
         await wait_for(lambda: states(live_hub, "project", "proj").count("finished") == 2)
@@ -219,8 +213,8 @@ async def test_an_agents_project_chat_message_wakes_a_session_in_that_projects_c
     assert ChatState(runner.chats.state.path).session() is None  # the agent's chat session wasn't used
     assert states(live_hub, "agent", me) == []
     finished = [s for s in statuses if s["state"] == "finished"]
-    assert finished[0]["chat"] == "project/proj" and finished[0]["chain_ids"] == ["chain-p"]
-    assert "chain_ids" not in finished[1]  # the second message had no chain
+    assert finished[0]["chat"] == "project/proj" and finished[0]["chain_ids"] == [msg["chain_id"]]
+    assert finished[1]["chain_ids"] == [second["chain_id"]]
 
 
 async def test_an_agents_direct_message_wakes_its_own_chat_session_in_its_own_checkout(live_hub, fake_claude,
@@ -233,25 +227,23 @@ async def test_an_agents_direct_message_wakes_its_own_chat_session_in_its_own_ch
     main = asyncio.create_task(runner.run_forever())
     try:
         await wait_for(connected(live_hub, me))
-        msg = agent_says(live_hub, waker, "agent", me, "Can you look at my branch?", to=me)
-        overlay(runner, {msg["id"]: {"chain_id": "chain-dm", "chat": {
-            "kind": "dm", "ref": f"{me}:{waker}", "project": "elsewhere", "with": {"agent_id": waker, "name": PEER}}}})
+        msg = agent_says(live_hub, waker, "dm", me, "Can you look at my branch?", to=me)
         await wait_for(lambda: "finished" in states(live_hub, "agent", me))
     finally:
         await stop(main)
     (call,) = calls()
     assert mode(live_hub, msg) == "woke"
     assert call["env"]["AGENTHUB_CHAT"] == "agent/me" and call["cwd"] == str(tmp_path / "checkout")
-    assert call["env"]["AGENTHUB_PROJECT"] == "proj"  # its own checkout, not the project the payload names
+    assert call["env"]["AGENTHUB_PROJECT"] == "proj"  # its own checkout (the waker shares no project with it)
     assert untrusted_from_peer(call["stdin"], msg, waker)
     assert f"chat_post(chat='dm:{PEER}', body=...)" in call["stdin"]
-    assert [r["chain_ids"] for r in runs if r["what"] == "chat"] == [["chain-dm"]]
+    assert [r["chain_ids"] for r in runs if r["what"] == "chat"] == [[msg["chain_id"]]]
 
 
 # --- busy: into the running turn -----------------------------------------------------------------------------------
 
 
-async def busy(live_hub, fake_claude, tmp_path, monkeypatch, kind, ref_of, chat=None):
+async def busy(live_hub, fake_claude, tmp_path, monkeypatch, kind, ref_of):
     """Hold a task session running, send an agent's message in chat ``kind``; the turns the session took in."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "hold")
     release = tmp_path / "release"
@@ -269,7 +261,6 @@ async def busy(live_hub, fake_claude, tmp_path, monkeypatch, kind, ref_of, chat=
     try:
         await wait_for(lambda: running(runner, task_id))
         msg = agent_says(live_hub, waker, kind, ref_of(task_id, me), "Also bump the version.", to=me)
-        overlay(runner, {msg["id"]: {"chain_id": "chain-busy", **({"chat": chat(me, waker)} if chat else {})}})
         await wait_for(lambda: mode(live_hub, msg) == "live")
         await asyncio.sleep(0.3)
         release.touch()
@@ -281,7 +272,7 @@ async def busy(live_hub, fake_claude, tmp_path, monkeypatch, kind, ref_of, chat=
     (turn,) = turns()
     assert turn["mid_turn"] and turn["text"].startswith("(This arrived while you were working.)\nA chat message #")
     assert untrusted_from_peer(turn["text"], msg, waker)
-    assert [r["chain_ids"] for r in runs if r["what"] == "task"] == [["chain-busy"]]
+    assert [r["chain_ids"] for r in runs if r["what"] == "task"] == [[msg["chain_id"]]]
     return turn, task_id
 
 
@@ -300,10 +291,7 @@ async def test_a_busy_agent_takes_a_project_chat_wake_into_its_running_turn(live
 
 async def test_a_busy_agent_takes_a_direct_message_into_its_running_turn(live_hub, fake_claude, tmp_path,
                                                                          monkeypatch):
-    def dm(me, waker):
-        return {"kind": "dm", "ref": f"{me}:{waker}", "with": {"agent_id": waker, "name": PEER}}
-
-    turn, task_id = await busy(live_hub, fake_claude, tmp_path, monkeypatch, "agent", lambda t, me: me, chat=dm)
+    turn, task_id = await busy(live_hub, fake_claude, tmp_path, monkeypatch, "dm", lambda t, me: me)
     assert f"in your direct chat with agent {PEER} by" in turn["text"]
     assert turn["text"].endswith(f"chat_post(chat='dm:{PEER}', body=...). Then carry on with task #{task_id}.")
 
@@ -313,13 +301,57 @@ async def test_paused_wakes_go_into_a_running_session_but_start_none(live_hub, f
     runner, agent_cfg = chat_runner(live_hub, tmp_path, claude_bin)
     me = agent_cfg.agent_id
     waker = peer(live_hub, tmp_path)
-    msg = agent_says(live_hub, waker, "agent", me, "Wake up.", to=me)
-    overlay(runner, {msg["id"]: {"wake": False}})
+    with db.transaction(conn := live_hub.conn()):
+        wakes.set_agent_paused(conn, me, True, actor="human:op@example.com")  # the operator's switch
+    msg = agent_says(live_hub, waker, "dm", me, "Wake up.", to=me)
     await runner.chats.sync()
     await runner.chats.sync()
     await asyncio.sleep(0.3)
     assert calls() == [] and runner.chats.chat_flow is None
     assert mode(live_hub, msg) is None  # not claimed: still pending for a running session or read_inbox
+
+
+async def test_a_broadcast_is_delivered_but_starts_nothing(live_hub, fake_claude, tmp_path):
+    claude_bin, calls = fake_claude
+    runner, cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    waker = peer(live_hub, tmp_path)
+    msg = agent_says(live_hub, waker, "project", "proj", "FYI merged", to=None)
+    assert msg["broadcast"]
+    await runner.chats.sync()
+    await runner.chats.sync()
+    await asyncio.sleep(0.3)
+    assert calls() == []
+    (d,) = [x for x in deliveries(live_hub, msg) if x["agent_id"] == cfg.agent_id]
+    assert d["status"] == "pending"
+
+
+async def test_a_changes_verdict_starts_one_builder_session(live_hub, fake_claude, tmp_path):
+    """A changes verdict both moves the task back and posts to the builder in its chat: the builder's runner runs
+    the one "returned" session, which takes the reviewer's message in, rather than a second one for the message."""
+    claude_bin, calls = fake_claude
+    runner, cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("Add health check", assignee="worker")
+    waker = peer(live_hub, tmp_path)
+    live_hub.add(task_id, PEER, "reviews")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review"
+                       and (task_id not in runner.work or runner.work[task_id].task.done()))
+        before = len(calls())
+        conn = live_hub.conn()
+        with db.transaction(conn):
+            task_agents.record_verdict(conn, task_id, store.find_agent(conn, waker), verdict="changes",
+                                       notes="rename the flag")
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review", timeout=30)
+        await asyncio.sleep(3)
+    finally:
+        await stop(main)
+    (session,) = calls()[before:]
+    assert "--resume" in session["argv"] and "sent back to in_progress" in session["stdin"]
+    assert "rename the flag" in session["stdin"]
+    (msg,) = [r for r in chats.messages(live_hub.conn(), "task", str(task_id)) if r["meta"].get("send_back")]
+    (d,) = deliveries(live_hub, msg)
+    assert d["mode"] == "queued"
 
 
 # --- a wake never widens project access ----------------------------------------------------------------------------
@@ -336,8 +368,8 @@ async def test_a_payload_naming_a_disallowed_project_is_refused(live_hub, fake_c
         conn.execute("INSERT INTO projects (name, created_at) VALUES ('secret', ?)", (now_iso(),))
     waker = peer(live_hub, tmp_path, projects=("proj", "secret"))
     as_project = agent_says(live_hub, waker, "project", "proj", "Fix the secret service.", to=me)
-    as_task = agent_says(live_hub, waker, "agent", me, "And its task.", to=me)
-    overlay(runner, {
+    as_task = agent_says(live_hub, waker, "dm", me, "And its task.", to=me)
+    overlay(runner, {  # what a hub that got its access check wrong might send
         as_project["id"]: {"chat": {"ref": "Secret", "project": "Secret"}},  # names ignore case: still refused
         as_task["id"]: {"chat": {"kind": "task", "ref": "99", "task_id": 99, "project": "secret"}},
     })
@@ -362,7 +394,7 @@ async def test_the_chat_session_never_runs_in_a_checkout_of_a_disallowed_project
     main = asyncio.create_task(runner.run_forever())
     try:
         await wait_for(connected(live_hub, me))
-        agent_says(live_hub, waker, "agent", me, "Hello.", to=me)
+        agent_says(live_hub, waker, "dm", me, "Hello.", to=me)
         await wait_for(lambda: "finished" in states(live_hub, "agent", me))
     finally:
         await stop(main)
