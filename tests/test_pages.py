@@ -5,9 +5,9 @@ import re
 
 import pytest
 
-from agenthub.hub import approvals, db, private, store, task_agents, tasks, views
+from agenthub.hub import approvals, db, private, questions, store, task_agents, tasks, views
 
-from .conftest import OP_LOGIN, OPERATOR
+from .conftest import OP_LOGIN, OPERATOR, legacy_post, legacy_private
 
 LABELS = ["Dashboard", "Projects", "Tasks", "Agents", "Devices", "Approvals", "Chats", "Board", "Reports", "Usage"]
 
@@ -528,9 +528,8 @@ def test_revoked_only_device_hidden_and_empty_state(hub):
 # --- Board ------------------------------------------------------------------------
 
 def say(hub, agent, body, channel="general", to=None, project="proj"):
-    r = hub.client.post(f"/api/v1/projects/{project}/messages", headers=agent.headers,
-                        json={"channel": channel, "body": body, **({"to": to} if to else {})})
-    assert r.status_code in (200, 201), r.text
+    """A channel post as 0.3.7 wrote it: these pages show 0.3.7's boards (0.3.8's agents write in chats)."""
+    legacy_post(hub, agent, body, channel=channel, to=to, project=project)
 
 
 @pytest.fixture
@@ -557,7 +556,7 @@ def test_board_index_groups(talk):
     idx = views.board_index(hub.conn())
     assert [i["key"] for i in idx["projects"]] == ["ch-proj~general"]
     assert [(i["key"], i["title"]) for i in idx["tasks"]] == [(f"ch-proj~task-{t['id']}", f"#{t['id']} Fix login")]
-    assert {i["key"] for i in idx["threads"]} == {"ch-proj~coordination-1", "ch-proj~asks"}
+    assert {i["key"] for i in idx["threads"]} == {"ch-proj~coordination-1"}  # asks go to the project chat now
     assert "between_agents" not in idx
     assert all(set(i) >= {"key", "title", "last_body", "last_ts", "avatars"}
                for g in ("projects", "tasks", "threads") for i in idx[g])
@@ -642,7 +641,7 @@ def test_agent_pairs_newest_first_with_labels(talk):
 
 def test_chats_page_lists_private_chats_before_pairs(talk):
     hub, a, c, t = talk
-    hub.client.post("/api/v1/private", headers=a.headers, json={"body": "hi operator"})
+    legacy_private(hub, a, "hi operator")
     html = get(hub, "/ui/chats").text
     assert html.index("With you") < html.index("Between agents") < html.index("Start a chat")
 
@@ -675,7 +674,7 @@ def test_private_messages_never_on_board(talk):
     hub, a, c, t = talk
     secret = "SECRET-PRIVATE-TEXT"
     hub.client.post(f"/ui/chats/{a.id}", headers=hub.op_headers(), data={"csrf": hub.csrf(), "body": secret})
-    hub.client.post("/api/v1/private", headers=a.headers, json={"body": secret + "-agent"})
+    legacy_private(hub, a, secret + "-agent")
     paths = ["/ui/board"] + [f"/ui/board/{k}" for k in
                              ("ch-proj~general", "ch-proj~asks", "ch-proj~coordination-1")] + [f"/ui/chats/pair/{pair_key(a, c)}"]
     for p in paths:
@@ -908,7 +907,7 @@ def side(hub):
     hub.client.post(f"/api/v1/approvals/{ap['id']}/discussion", headers=a.headers, json={"body": f"reply {EVIL}"})
     q = hub.client.post("/api/v1/projects/proj/questions", headers=a.headers,
                         json={"question": f"Which port? {EVIL}", "task_id": t["id"]}).json()
-    hub.client.post("/api/v1/private", headers=a.headers, json={"body": f"psst {EVIL}"})
+    legacy_private(hub, a, f"psst {EVIL}")
     hub.client.post("/api/v1/device/messages", headers=a.headers, json={"body": f"device says {EVIL}"})
     return hub, a, c, r, t, ap, q
 
@@ -1026,8 +1025,7 @@ def test_question_panel_has_answer_form_then_the_answer(side):
     resp = hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(**{"hx-request": "true"}),
                            data={"csrf": hub.csrf(), "answer": "8080", "panel": item})
     assert resp.status_code == 200 and "<html" not in resp.text
-    assert "8080" in resp.text and not forms(resp.text) and "as <a href=\"/ui/prompts/" in resp.text
-    assert "private chat" in resp.text  # the answer went as a prompt to the connected agent
+    assert "8080" in resp.text and not forms(resp.text) and "/ui/prompts/" not in resp.text
 
 
 def test_revoked_agent_panel_is_read_only(side):
@@ -1523,7 +1521,7 @@ def test_floating_buttons_and_chat_window_on_every_page(window):
 
 def test_chat_button_counts_unread_chats_and_pending_questions(window):
     hub, a, c, r, t, ap, q = window
-    hub.client.post("/api/v1/private", headers=c.headers, json={"body": "me too"})
+    legacy_private(hub, c, "me too")
     after = get(hub, "/ui/dashboard").text.split("</main>")[1]
     fab = re.search(r'<a class="fab fab-chat".*?</a>', after, re.S).group(0)
     assert 'hx-get="/ui/badge/messenger"' in fab and 'hx-trigger="every 10s"' in fab
@@ -1893,106 +1891,52 @@ def test_app_js_plays_failed_new_once_when_a_key_turns_failed(hub):
     assert "failedSeen[" in js and "!== false" in js  # only a key this page last showed not failed
 
 
-def test_answering_a_question_prompts_the_asking_agent(window):
-    hub, a, c, r, t, ap, q = window  # worker is connected
-    from agenthub.hub import prompts
-    resp = hub.client.post(f"/ui/questions/{q['id']}/answer", headers=hub.op_headers(), follow_redirects=False,
-                           data={"csrf": hub.csrf(), "answer": "Use 8080"})
-    assert resp.status_code == 303
-    [row] = hub.conn().execute("SELECT id FROM prompts").fetchall()
-    p = prompts.get(hub.conn(), row["id"])
-    # The hub adds what the answer is about (it was asked on task t), outside the operator's text.
-    text = (f"Answer to your question #{q['id']}: Use 8080\n\n"
-            f"(about task #{t['id']} in proj; call get_question({q['id']}) for your question)")
-    assert p["target"] == f"agent:{a.id}" and p["body"] == text
-    assert p["mode"] == "single" and [x["status"] for x in p["recipients"]] == ["pending"]
-    bodies = [m["body"] for m in private.thread(hub.conn(), a.id)]
-    assert bodies.count(f"Prompt #{p['id']}: {text}") == 1
-    page = get(hub, f"/ui/questions/{q['id']}").text
-    assert f'href="/ui/prompts/{p["id"]}"' in page and "wakes worker" in page
-
-
 def answer(hub, qid, text):
     return hub.client.post(f"/ui/questions/{qid}/answer", headers=hub.op_headers(), follow_redirects=False,
                            data={"csrf": hub.csrf(), "answer": text})
 
 
-def last_event(hub):
-    return hub.conn().execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
-
-
-def assert_answered_privately(hub, agent, qid, text, since):
-    from agenthub.config import HubConfig
-    from agenthub.hub import events
-    from agenthub.hub.notify import build_notification
-    assert hub.conn().execute("SELECT COUNT(*) FROM prompts WHERE body LIKE 'Answer%'").fetchone()[0] == 0
-    tid = hub.conn().execute("SELECT task_id FROM questions WHERE id = ?", (qid,)).fetchone()[0]
+def assert_answered_in_chat(hub, agent, qid, text):
+    """0.3.8: whatever the agent is doing, the answer is the operator's message in its chat, delivered to it (its
+    runner gives it to the running session or wakes its chat session); no prompt, no private message."""
+    from agenthub.hub import chats
+    conn = hub.conn()
+    assert conn.execute("SELECT COUNT(*) FROM prompts WHERE body LIKE 'Answer%'").fetchone()[0] == 0
+    assert [m for m in private.thread(conn, agent.id) if m["author"].startswith("human:")] == []
+    tid = conn.execute("SELECT task_id FROM questions WHERE id = ?", (qid,)).fetchone()[0]
     about = f"about task #{tid} in proj; " if tid else ""
-    assert [m["body"] for m in private.thread(hub.conn(), agent.id)][-1] == (
-        f"Answer to your question #{qid}: {text}\n\n({about}call get_question({qid}) for your question)")
-    cfg = HubConfig(public_url="https://hub.example.ts.net", ntfy_url="https://ntfy.example", ntfy_topic="t")
-    rows = hub.conn().execute(
-        "SELECT * FROM events WHERE id > ? AND (type LIKE 'prompt.%' OR type = 'question.answered')", (since,))
-    evs = [events.row_to_event(r) for r in rows]
-    assert [e["type"] for e in evs] == ["question.answered"]
-    assert all(build_notification(e, {}, cfg) is None for e in evs)  # no "nobody was online" push
+    msg = [m for m in chats.messages(conn, "agent", agent.id) if m["kind"] == "text"][-1]
+    assert msg["body"] == f"Answer to your question #{qid}: {text}\n\n({about}call get_question({qid}) for your question)"
+    assert msg["author"] == f"human:{OP_LOGIN}"
+    assert [(d["agent_id"], d["status"]) for d in msg["deliveries"]] == [(agent.id, "pending")]
+    assert views.answer_delivery(conn, questions.get(conn, qid))["chat_message_id"] == msg["id"]
     for html in (get(hub, f"/ui/questions/{qid}").text, panel(hub, f"question:{qid}").text):
-        assert "as a private message" in html and "/ui/prompts/" not in html
+        assert "/ui/prompts/" not in html and "not delivered" not in html
 
 
-def test_answer_to_an_offline_agent_is_a_private_message_not_a_prompt(window):
-    hub, a, c, r, t, ap, q = window  # helper (c) is offline
-    q2 = hub.client.post("/api/v1/projects/proj/questions", headers=c.headers, json={"question": "Port?"}).json()
-    since = last_event(hub)
-    assert answer(hub, q2["id"], "9090").status_code == 303
-    assert_answered_privately(hub, c, q2["id"], "9090", since)
-
-
-def test_answer_box_says_when_the_answer_wakes_the_agent(window):
-    hub, a, c, r, t, ap, q = window
-    for html in (get(hub, f"/ui/questions/{q['id']}").text, panel(hub, f"question:{q['id']}").text):
-        assert ("Your answer to worker wakes it if it is online and idle; otherwise it arrives as a private "
-                "message") in html and "wakes it if it is connected" not in html
-
-
-def test_answer_to_an_agent_whose_runner_is_too_old_is_a_private_message(window):
-    hub, a, c, r, t, ap, q = window
-    online(hub, a, prompts=False)  # connected, but its v0.1.0 runner never runs prompts
-    since = last_event(hub)
-    assert answer(hub, q["id"], "Use 8080").status_code == 303
-    assert_answered_privately(hub, a, q["id"], "Use 8080", since)
-
-
-@pytest.mark.parametrize("busy_with", ["task_run", "running_prompt", "pending_prompt"])
-def test_answer_to_a_busy_agent_is_a_private_message_not_a_prompt(window, busy_with):
+@pytest.mark.parametrize("state", ["idle", "offline", "old_runner", "task_run"])
+def test_an_answer_reaches_the_asking_agent_in_its_chat(window, state):
     hub, a, c, r, t, ap, q = window  # worker (a) is connected
-    from agenthub.hub import prompts
     conn = hub.conn()
     with db.transaction(conn):
-        if busy_with == "task_run":
+        if state == "offline":
+            conn.execute("UPDATE agents SET connected = 0 WHERE id = ?", (a.id,))
+        elif state == "old_runner":
+            conn.execute("UPDATE agents SET prompt_support = 0, chat_support = 0 WHERE id = ?", (a.id,))
+        elif state == "task_run":
             conn.execute("INSERT INTO task_runs (task_id, agent_id, started_at) VALUES (?, ?, ?)",
-                         (t["id"], a.id, db.now_iso()))  # a session on its task, still going
-        else:
-            p = prompts.create(conn, target=f"agent:{a.id}", body="earlier work", actor=OPERATOR)
-            if busy_with == "running_prompt":
-                prompts.start(conn, p["id"], store.get_agent(conn, a.id))
-    since = last_event(hub)
+                         (t["id"], a.id, db.now_iso()))
     assert answer(hub, q["id"], "Use 8080").status_code == 303
-    assert_answered_privately(hub, a, q["id"], "Use 8080", since)
+    assert_answered_in_chat(hub, a, q["id"], "Use 8080")
 
 
-def test_a_delivered_answer_still_says_so_after_the_agent_is_revoked(window):
+def test_an_answer_to_a_revoked_agent_is_recorded_only(window):
     hub, a, c, r, t, ap, q = window
-    answer(hub, q["id"], "Use 8080")
-    pid = hub.conn().execute("SELECT id FROM prompts").fetchone()[0]
     hub.set_status(a, "revoked")
-    for html in (get(hub, f"/ui/questions/{q['id']}").text, panel(hub, f"question:{q['id']}").text):
-        assert f'href="/ui/prompts/{pid}"' in html and "not delivered" not in html
-    q2 = hub.client.post("/api/v1/projects/proj/questions", headers=c.headers, json={"question": "Port?"}).json()
-    answer(hub, q2["id"], "9090")
-    hub.set_status(c, "revoked")
-    html = get(hub, f"/ui/questions/{q2['id']}").text
-    assert "as a private message" in html and "not delivered" not in html
+    assert answer(hub, q["id"], "Use 8080").status_code == 303
+    from agenthub.hub import chats
+    assert [m for m in chats.messages(hub.conn(), "agent", a.id) if m["kind"] == "text"] == []
+    assert "not delivered because worker is revoked" in get(hub, f"/ui/questions/{q['id']}").text
 
 
 def test_agent_page_and_panel_show_the_reported_model(busy):

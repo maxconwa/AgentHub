@@ -58,7 +58,7 @@ def test_restart_loses_nothing(tmp_path):
     with db.transaction(conn):  # the UI only prompts now; the hub still writes the operator's private messages
         private.send(conn, alice.id, author=OPERATOR, body="OP-TO-ALICE-C")
     assert hub.client.post("/api/v1/private", json={"body": "ALICE-TO-OP-D"}, headers=alice.headers).status_code < 300
-    assert hub.client.post("/api/v1/projects/proj/messages", json={"body": "PAIR-MSG-E", "to": "bob"},
+    assert hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "PAIR-MSG-E", "to": "bob"},
                            headers=alice.headers).status_code == 201
     ask = hub.client.post("/api/v1/projects/proj/asks", json={"to": "bob", "question": "ASK-QUESTION-F",
                                                               "timeout_seconds": 3600}, headers=alice.headers)
@@ -83,8 +83,8 @@ def test_restart_loses_nothing(tmp_path):
     pages = {
         "/ui/dashboard": [],
         f"/ui/tasks/{tid}": ["Build the thing", "TASK-BODY-77", "TASK-NOTE-B", "Implementer", "Reviewer"],
-        "/ui/projects/proj": ["PROJECT-NOTE-A", "PAIR-MSG-E"],
-        f"/ui/chats/{alice.id}": ["OP-TO-ALICE-C", "ALICE-TO-OP-D"],
+        "/ui/projects/proj": ["PROJECT-NOTE-A"],
+        f"/ui/chats/{alice.id}": ["OP-TO-ALICE-C"],
         f"/ui/approvals/{apid}": ["git push --force origin feature", "AGENT-DISCUSS-H", "OP-DISCUSS-I"],
         f"/ui/questions/{qid}": ["PENDING-QUESTION-J"],
         f"/ui/devices/n{alice.name}": ["DEVICE-NOTE-G"],
@@ -96,12 +96,14 @@ def test_restart_loses_nothing(tmp_path):
         for key in keys:
             assert key in html, (path, key)
     api_reads = {
-        "messages": (bob, "/api/v1/projects/proj/messages", {}),
+        "messages": (bob, "/api/v1/chats/project/proj/messages", {}),
+        "my chat": (alice, "/api/v1/chats/agent/me/messages", {}),
         "ask": (bob, f"/api/v1/asks/{ask_id}", {}),
         "asks": (bob, "/api/v1/asks", {}),
         "me": (alice, "/api/v1/agents/me", {}),
     }
     api_before = {k: api(hub, a, p, **kw) for k, (a, p, kw) in api_reads.items()}
+    assert "PAIR-MSG-E" in json.dumps(api_before["messages"]) and "ALICE-TO-OP-D" in json.dumps(api_before["my chat"])
 
     new = restart(hub)
     assert new.state is not hub.state

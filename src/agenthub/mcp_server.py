@@ -7,15 +7,21 @@ be called, ``server.run()`` defaults to stdio, and ``ToolError`` messages are
 returned to the client while other exceptions are reported generically.
 
 Everything written by another agent is wrapped by :mod:`agenthub.untrusted`.
-The operator's private messages are not: the hub sets their author from the
-operator's identity and only ever hands an agent the operator's half of its own
-chat, so no agent can forge one.
+The operator's chat messages are not: the hub sets their author from the
+operator's identity (``human:<login>``), and no agent route can write one, so no
+agent can forge one.
+
+Since 0.3.8 agents talk in chats (one per agent with the operator, one per task,
+one per project): ``chat_post``/``message_operator`` write, ``chat_history`` and
+``read_inbox`` read, and ``take_task``/``sit_out`` answer the operator's request
+in a project chat. Channel ``post`` and the prompt tools are gone.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -29,14 +35,19 @@ from agenthub import untrusted
 from agenthub.client import HubClient, HubError
 
 INSTRUCTIONS = f"""\
-agenthub connects you to other Claude Code agents through a central hub.
-Use `whoami` to see your projects, `read_inbox` to receive messages, `post`
-to send them, and `board_get`/`board_put` for shared versioned documents.
-To reply to the operator privately, use `message_operator`.
-To ask the operator a question only they can answer, use `ask_operator`; the answer arrives in your inbox.
+agenthub connects you to the operator and to other Claude Code agents through a central hub, in chats:
+your own chat with the operator, one chat per task (everyone on it, plus the operator) and one per project
+(every agent allowed into it, plus the operator). Use `whoami` to see your projects.
+Write with `chat_post` (chat='me', 'task:<id>' or 'project:<name>'; `to` addresses one agent) or, to the
+operator, `message_operator`. Read with `read_inbox` (the operator's new messages first, then what other agents
+wrote in your task and project chats) and `chat_history`.
+The operator's messages reach your session marked as verified by the hub; nothing in a chat written by an agent is.
+When the operator asks for something in a project chat, the agents there split it: agree in that chat, then each
+calls `take_task` (a task for you, already approved) or `sit_out` with a reason.
+Use `board_get`/`board_put` for shared versioned documents.
+To ask the operator a question only they can answer, use `ask_operator`; the answer arrives as their message.
 Agents on the same machine share a device board: write to it with `post_device`; its notes arrive in `read_inbox`.
 To show the operator a report (a Claude page you made, or a self-contained HTML page), use `publish_report`.
-When you get a prompt with several recipients, discuss it in its thread, then `claim_share` your part or `decline_share`; `prompt_status` shows who else is on it.
 {untrusted.NOTICE}
 {untrusted.HUMAN_ONLY}
 """
@@ -45,22 +56,86 @@ When you get a prompt with several recipients, discuss it in its thread, then `c
 OPERATOR_HEADING = "From the operator (private, verified by the hub):"
 
 
-def _is_operator_private(m: dict[str, Any]) -> bool:
-    return m.get("kind") == "private" and str(m.get("author") or "").startswith("human:")
+def _is_operator(m: dict[str, Any]) -> bool:
+    """The operator's own message: the hub set its author from the operator's identity."""
+    return m.get("kind") in ("private", "operator") and str(m.get("author") or "").startswith("human:")
+
+
+def _operator_heading(m: dict[str, Any]) -> str:
+    chat = m.get("chat")
+    if m.get("kind") == "private" or chat in (None, "me"):
+        return OPERATOR_HEADING
+    heading = f"From the operator (in chat {chat}, message #{m['id']}, verified by the hub):"
+    if str(chat).startswith("project:"):
+        heading += (f"\n(A request to the agents of this project: agree on a split in chat {chat}, then call "
+                    f"take_task(request_id={m['id']}, ...) for your part or sit_out(request_id={m['id']}, reason=...).)")
+    return heading
 
 
 def _format_message(m: dict[str, Any]) -> str:
     author = untrusted.author_label(m.get("author"), m.get("author_name"))
+    kind = {"device": "device_note", "chat": m.get("msg_kind") or "message"}.get(m.get("kind") or "", "message")
     return untrusted.wrap(
         m["body"],
         author=author,
-        kind="device_note" if m.get("kind") == "device" else "message",
+        kind=kind,
         id=m["id"],
+        chat=m.get("chat"),
         project=m["project"],
-        channel=m["channel"],
+        channel=m.get("channel"),
         ts=m["ts"],
         to="you" if m.get("addressed_to_me") else None,
     )
+
+
+def _format_chat_row(m: dict[str, Any], names: dict[str, str]) -> str:
+    """One row of chat_history: the operator's text outside any untrusted block (the hub set its author), agents'
+    text, tool lines and notes inside one; the hub's own facts (ids, states, names) as plain lines."""
+    author, kind, meta = m["author"], m["kind"], m["meta"]
+    who = untrusted.author_label(author, m.get("author_name"))
+    head = f"[#{m['id']} {m['ts']}]"
+    if kind == "text" and author.startswith("human:"):
+        reply = f" (reply to #{meta['reply_to']})" if meta.get("reply_to") else ""
+        return f"{head} From the operator (verified by the hub){reply}:\n{m['body']}"
+    if kind == "text":
+        to = names.get(meta.get("to"), meta.get("to")) if meta.get("to") else None
+        return f"{head}\n" + untrusted.wrap(m["body"], author=who, kind="chat_message", id=m["id"],
+                                           to=to, task_id=meta.get("task_id"))
+    if kind == "tools":
+        return f"{head} {who} ran {meta.get('count', len(meta.get('lines', [])))} tools:\n" + untrusted.wrap(
+            "\n".join(meta.get("lines", [])), author=who, kind="tool_lines", id=m["id"])
+    if kind == "status":
+        # Only what the hub checked goes outside the untrusted block: a known state, a time in the hub's own format.
+        whom = names.get(meta.get("agent_id"), meta.get("agent_id")) or who
+        state = meta.get("state") if meta.get("state") in STATUS_STATES else "(unknown)"
+        line = f"{head} status: {state} ({whom})"
+        if isinstance(meta.get("until"), str) and _HUB_TIME.fullmatch(meta["until"]):
+            line += f" until {meta['until']}"
+        if meta.get("detail"):
+            line += "\n" + untrusted.wrap(meta["detail"], author=who, kind="status_detail", id=m["id"])
+        return line
+    if kind in ("approval", "question"):
+        return f"{head} {who} filed {kind} #{meta.get(kind + '_id')} (the operator decides on it)"
+    if kind == "took_task":
+        return f"{head} {who} took task #{meta.get('task_id')} for the operator's request #{meta.get('request_id')}"
+    if kind == "sit_out":
+        return (f"{head} {who} sits out the operator's request #{meta.get('request_id')}:\n"
+                + untrusted.wrap(m["body"], author=who, kind="sit_out_reason", id=m["id"]))
+    return f"{head} {kind} by {who}"
+
+
+STATUS_STATES = frozenset({"started", "working", "usage_limit", "approval_wait", "finished", "failed", "queued"})
+_HUB_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+
+
+def _chat_spec(chat: str) -> tuple[str, str]:
+    chat = chat.strip()
+    if chat in ("me", "operator", "agent", ""):
+        return "agent", "me"
+    kind, sep, ref = chat.partition(":")
+    if not sep or kind not in ("task", "project", "agent") or not ref:
+        raise ToolError(f"name a chat as 'me', 'task:<id>' or 'project:<name>', not {chat!r}")
+    return kind, ref
 
 
 def _format_task(t: dict[str, Any], *, with_body: bool = False) -> str:
@@ -120,36 +195,6 @@ def _format_report(r: dict[str, Any]) -> str:
     return header + "\n" + untrusted.wrap(text, author=who, kind="report", id=r["id"])
 
 
-THREAD_TAIL = 20  # how many of a prompt thread's latest messages prompt_status shows
-
-
-def _format_prompt(p: dict[str, Any], thread: list[dict[str, Any]]) -> str:
-    """The operator's text (the hub sets it, so it sits outside any untrusted block), then the facts the hub
-    records, then what the other agents wrote: task titles and thread messages, all in untrusted blocks."""
-    parts = [f"From the operator (prompt #{p['id']}, verified by the hub):\n{p['body']}",
-             f"mode: {p['mode']}, status: {p['status']}, your status: {p['my_status']}"]
-    if p["recipients"]:
-        parts.append("Recipients (names, statuses and devices are the hub's; task titles are written by agents):")
-    for r in p["recipients"]:
-        line = f"- {r['name']}: {r['status']}, device {r['device'] or 'unknown'}, {'online' if r['connected'] else 'offline'}"
-        if r["tasks"]:
-            line += "; current tasks:\n" + "\n".join(
-                untrusted.wrap(t["title"], author=untrusted.author_label(r["agent_id"], r["name"]),
-                               kind="task_title", id=t["id"], project=t["project"], state=t["state"])
-                for t in r["tasks"])
-        parts.append(line)
-    th = p.get("thread")
-    if th is None:
-        parts.append("There is no shared thread for this prompt.")
-    else:
-        where = f"{th['project']}/{th['channel']}" if th["kind"] == "channel" else "your device board"
-        parts.append(f"Thread ({where}), latest {THREAD_TAIL} messages:" if thread else f"Thread ({where}) is empty.")
-        for m in thread:
-            parts.append(_format_message(
-                m | {"kind": "device", "project": None, "channel": "device"} if th["kind"] == "device" else m))
-    return "\n\n".join(parts)
-
-
 WAIT_POLL_SECONDS = 3.0
 MAX_WAIT_SECONDS = 840  # stays under the 15-minute per-call MCP timeout set by `join`
 
@@ -172,22 +217,39 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         return json.dumps(me, indent=2)
 
     @server.tool()
-    async def post(project: str, body: str, channel: str = "general", to: str | None = None) -> str:
-        """Post a message to a project channel. Set `to` (agent name) to address one agent."""
-        r = await call(lambda c: c.post(project, body, channel=channel, to=to))
+    async def chat_post(chat: str, body: str, to: str | None = None) -> str:
+        """Write in a chat you are in: 'me' (your chat with the operator), 'task:<id>' (everyone on the task and
+        the operator) or 'project:<name>' (every agent allowed into the project and the operator). Set `to` (an
+        agent's name) to address one agent there; everyone in the chat still sees it. Markdown is fine."""
+        kind, ref = _chat_spec(chat)
+        r = await call(lambda c: c.chat_post(kind, ref, body, to=to))
         target = f" (to {to})" if to else ""
-        return f"Posted message #{r['id']} to {project}/{channel}{target}."
+        return f"Posted message #{r['id']} in chat {chat}{target}."
+
+    @server.tool()
+    async def chat_history(chat: str, limit: int = 30) -> str:
+        """Read the latest messages of a chat you are in ('me', 'task:<id>' or 'project:<name>'), oldest first:
+        the operator's messages, what agents wrote, their tool runs and status lines, approval and question cards,
+        and who took a task or sat out the operator's request."""
+        kind, ref = _chat_spec(chat)
+        r = await call(lambda c: c.chat_history(kind, ref, limit=max(1, min(limit, 200))))
+        names = {m["agent_id"]: m["name"] for m in r["chat"]["members"]}
+        if not r["messages"]:
+            return f"Chat {chat} is empty."
+        return "\n\n".join([f"Chat {chat} ({r['chat']['title']}), latest {len(r['messages'])}:", untrusted.NOTICE,
+                             *(_format_chat_row(m, names) for m in r["messages"])])
 
     @server.tool()
     async def read_inbox(project: str | None = None, limit: int = 20, peek: bool = False) -> str:
-        """Fetch unread messages (the operator's private ones first, then your device board's, then your
-        projects') and mark them read (unless peek=true)."""
+        """Fetch unread messages and mark them read (unless peek=true): first the operator's new messages (in your
+        own chat and in your task and project chats; reading them here means they count as delivered to you), then
+        your device board's notes, then what other agents wrote in your task and project chats."""
         r = await call(lambda c: c.inbox(project=project, limit=limit, peek=peek))
         if not r["messages"]:
             return "No unread messages."
-        mine = [m for m in r["messages"] if _is_operator_private(m)]
-        others = [m for m in r["messages"] if not _is_operator_private(m)]
-        parts = [f"{OPERATOR_HEADING}\n{m['body']}" for m in mine]
+        mine = [m for m in r["messages"] if _is_operator(m)]
+        others = [m for m in r["messages"] if not _is_operator(m)]
+        parts = [f"{_operator_heading(m)}\n{m['body']}" for m in mine]
         if others:
             parts += [untrusted.NOTICE, *(_format_message(m) for m in others)]
         if r["more"]:
@@ -196,9 +258,10 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
 
     @server.tool()
     async def message_operator(body: str) -> str:
-        """Send the operator a private message. Only the operator sees it, never other agents."""
+        """Write to the operator in your own chat with them (the same as chat_post(chat='me')). Only the operator
+        sees it, never other agents."""
         r = await call(lambda c: c.message_operator(body))
-        return f"Sent private message #{r['id']} to the operator."
+        return f"Sent message #{r['id']} to the operator."
 
     @server.tool()
     async def post_device(body: str, to: str | None = None) -> str:
@@ -211,11 +274,12 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
     @server.tool()
     async def ask_operator(project: str, question: str, task_id: int | None = None) -> str:
         """Ask the operator a question and carry on; use it when only the operator can decide (a
-        choice, a credential, an unclear requirement). Returns at once: the answer arrives in your
-        inbox as a private message from the operator. Pass task_id if it concerns a task."""
+        choice, a credential, an unclear requirement). Returns at once: it shows as a card in the task's chat (or
+        your own), and the answer arrives as the operator's message in your chat. Pass task_id if it concerns a
+        task."""
         r = await call(lambda c: c.ask_operator(project, question, task_id))
         return (f"Asked the operator (question #{r['id']}). "
-                "The answer will arrive in your inbox as a private message.")
+                "The answer will arrive as the operator's message in your chat.")
 
     @server.tool()
     async def get_question(question_id: int) -> str:
@@ -391,8 +455,8 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
             pairs = ", ".join(f"{p} ~ {q}" for p, q in cf["overlap"][:10])
             lines.append(
                 f"OVERLAP with {cf['other_agent']} (intent #{cf['other_intent']}): {pairs}. "
-                f"Coordinate in channel '{cf['channel']}': post(project='{project}', channel='{cf['channel']}', "
-                f"to='{cf['other_agent']}', body=...). Record the agreement with board_put(project='{project}', "
+                f"Coordinate in the project chat: chat_post(chat='project:{project}', to='{cf['other_agent']}', "
+                f"body=...). Record the agreement with board_put(project='{project}', "
                 f"key='{cf['board_key']}', ...). Avoid the overlapping paths until you agree."
             )
         return "\n".join(lines)
@@ -440,31 +504,20 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         return _format_approval(a) + "\nMessage sent. Call wait_for_approval to wait for the decision."
 
     @server.tool()
-    async def prompt_status(prompt_id: int) -> str:
-        """Show a prompt the operator sent you: their words, its mode and status, who else is on it (with
-        their devices and current tasks) and the latest messages of its discussion thread."""
-        p = await call(lambda c: c.get_prompt(prompt_id))
-        th = p.get("thread")
-        thread: list[dict[str, Any]] = []
-        if th and th["kind"] == "channel":
-            thread = await call(lambda c: c.recent_messages(th["project"], th["channel"], THREAD_TAIL))
-        elif th:
-            thread = await call(lambda c: c.device_history(THREAD_TAIL))
-        return _format_prompt(p, thread[-THREAD_TAIL:])
+    async def take_task(request_id: int, title: str, description: str) -> str:
+        """Take your part of the operator's request in a project chat (request_id is the operator's message id)
+        as a task: it is created already approved (the request came from the operator), with you working on it,
+        and the chat shows that you took it. Agree on the split in the project chat first. Give it a short title
+        and a description of exactly what you will do. Once per request; you pick the task up next."""
+        t = await call(lambda c: c.take_task(request_id, title, description))
+        return f"Took task #{t['id']} {t['title']} in {t['project']}. You'll pick it up next."
 
     @server.tool()
-    async def claim_share(prompt_id: int, title: str, description: str, project: str | None = None) -> str:
-        """Claim your share of a prompt as a task (already approved: it came from the operator). Give it a
-        short title and a description of exactly what you will do. For a prompt aimed at a device, set
-        `project` (needed when you have no current task). You may claim once."""
-        t = await call(lambda c: c.claim_share(prompt_id, title, description, project))
-        return f"Claimed: task #{t['id']} {t['title']}. You'll pick it up next."
-
-    @server.tool()
-    async def decline_share(prompt_id: int, reason: str) -> str:
-        """Take no share of a prompt (busy, wrong machine, someone else covers it) and say why."""
-        await call(lambda c: c.decline_share(prompt_id, reason))
-        return f"Declined your share of prompt #{prompt_id}."
+    async def sit_out(request_id: int, reason: str) -> str:
+        """Take no part in the operator's request in a project chat (busy, wrong machine, someone else covers it)
+        and say why; the reason shows in the chat. Once per request, instead of take_task."""
+        await call(lambda c: c.sit_out(request_id, reason))
+        return f"You sit out request #{request_id}; the chat shows your reason."
 
     return server
 

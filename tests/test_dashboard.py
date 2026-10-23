@@ -220,7 +220,7 @@ def test_agents_page_enroll_approve_revoke(hub):
 def test_agent_content_is_escaped(world):
     hub, agent, ids = world
     evil = '<script>alert(1)</script><img src=x onerror=alert(2)>'
-    hub.client.post("/api/v1/projects/proj/messages", json={"body": evil}, headers=agent.headers)
+    hub.client.post("/api/v1/chats/project/proj/messages", json={"body": evil}, headers=agent.headers)
     hub.client.post(f"/api/v1/approvals/{ids['approval_id']}/discussion", json={"body": evil}, headers=agent.headers)
     for path in ["/ui/activity", f"/ui/approvals/{ids['approval_id']}", "/ui/search?q=script"]:
         html = hub.client.get(path, headers=hub.op_headers()).text
@@ -236,10 +236,17 @@ def test_operator_websocket_streams_feed(tmp_path):
     hub.state.bus.poll_seconds = 0.02
     with TestClient(hub.client.app, client=("127.0.0.1", 40000)) as live:
         with live.websocket_connect("/ui/ws", headers=hub.op_headers(origin="http://testserver")) as ws:
-            live.post("/api/v1/projects/proj/messages", json={"body": "hello operator"}, headers=agent.headers)
-            msgs = [ws.receive_json() for _ in range(2)]
-            row = next(m for m in msgs if m["event_type"] == "message.posted")
-            assert "hello operator" in row["html"] and 'class="event"' in row["html"]
+            live.put("/api/v1/projects/proj/board/k", json={"value": "v", "expected_version": 0},
+                     headers=agent.headers)
+            row = ws.receive_json()
+            while row.get("event_type") != "board.updated":
+                row = ws.receive_json()
+            assert 'class="event"' in row["html"]
+            # a chat message comes whole, as a chat frame (the page escapes it), not as an Activity row
+            live.post("/api/v1/chats/project/proj/messages", json={"body": "hello operator"}, headers=agent.headers)
+            frame = ws.receive_json()
+            assert frame["type"] == "chat" and frame["op"] == "new" and frame["chat_kind"] == "project"
+            assert frame["message"]["body"] == "hello operator" and frame["message"]["author"] == agent.id
 
 
 @pytest.mark.parametrize("variant", ["cross_origin", "agent_token", "no_identity"])

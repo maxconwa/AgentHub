@@ -7,7 +7,7 @@ import pytest
 
 from agenthub.hub import db, private, store, task_agents, tasks
 
-from .conftest import OPERATOR
+from .conftest import OPERATOR, legacy_post, legacy_private
 
 POLL = {"hx-request": "true", "hx-target": "live"}
 
@@ -21,8 +21,8 @@ def live_region(html):
 
 
 def agent_says(hub, agent, body):
-    r = hub.client.post("/api/v1/private", json={"body": body}, headers=agent.headers)
-    assert r.status_code in (200, 201), r.text
+    """A private message as 0.3.7 wrote it: the pages here still show those (0.3.8's agents write in chats)."""
+    legacy_private(hub, agent, body)
 
 
 def unread(hub, agent):
@@ -40,8 +40,7 @@ def site(hub):
     with db.transaction(conn):
         t = tasks.create_task(conn, actor=OPERATOR, project="proj", title="Fix login", assignee=None)
         task_agents.add_agent(conn, t["id"], a.id, role="tester", stage="works", actor=OPERATOR)
-    hub.client.post("/api/v1/projects/proj/messages", headers=a.headers, json={"channel": "general", "body": "hi",
-                                                                              "to": "helper"})
+    legacy_post(hub, a, "hi", to="helper")
     node = store.get_agent(conn, a.id).device_node_id
     x, y = sorted([a.id, c.id])
     return hub, a, {"task": t["id"], "approval": ap["id"], "question": q["id"], "node": node, "pair": f"pair-{x}-{y}"}

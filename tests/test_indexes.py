@@ -6,7 +6,7 @@ import pytest
 
 from agenthub.hub import db, device_board, private, store, views
 
-from .conftest import OPERATOR
+from .conftest import OPERATOR, legacy_post, legacy_private
 
 NEW_INDEXES = {"messages_channel_id", "messages_to_agent", "private_messages_unread"}
 
@@ -54,8 +54,7 @@ def test_no_full_scan_of_messages_in_board_and_pair_queries(hub, monkeypatch):
     """Every messages query the Board, Chats and chat window run goes through an index."""
     a, c = hub.enroll("worker"), hub.enroll("helper")
     for body, to in (("hi", None), ("direct", "helper")):
-        hub.client.post("/api/v1/projects/proj/messages", headers=a.headers,
-                        json={"channel": "general", "body": body, **({"to": to} if to else {})})
+        legacy_post(hub, a, body, to=to)
     conn = hub.conn()
     seen = []
     conn.set_trace_callback(seen.append)
@@ -87,8 +86,7 @@ def test_recent_messages_of_one_board_use_the_channel_index(hub):
 def test_board_index_and_pairs_still_report_the_newest_posts(hub):
     a, c = hub.enroll("worker"), hub.enroll("helper")
     for who, body, to in ((a, "one", None), (c, "two", None), (a, "three", "helper")):
-        hub.client.post("/api/v1/projects/proj/messages", headers=who.headers,
-                        json={"channel": "general", "body": body, **({"to": to} if to else {})})
+        legacy_post(hub, who, body, to=to)
     conn = hub.conn()
     general = views.board_index(conn)["projects"][0]
     newest = store.recent_messages(conn, project="proj", channel="general")[-1]
@@ -112,7 +110,7 @@ def test_device_last_posts_only_for_the_asked_nodes(hub):
 
 def test_unread_counts_unchanged(hub):
     a = hub.enroll("worker")
-    hub.client.post("/api/v1/private", json={"body": "hi"}, headers=a.headers)
+    legacy_private(hub, a, "hi")
     conn = hub.conn()
     with db.transaction(conn):
         private.send(conn, a.id, author=OPERATOR, body="for you")

@@ -114,7 +114,7 @@ def test_agent_post_reaches_the_other_agent_on_its_device_only(box):
     for who in (alice, bob, carol):
         found = hub.client.get("/api/v1/search", params={"q": "platypus6620"}, headers=who.headers).json()
         assert found["results"] == []
-    board = hub.client.get("/api/v1/projects/proj/messages", headers=carol.headers).json()["messages"]
+    board = hub.client.get("/api/v1/chats/project/proj/messages", headers=carol.headers).json()["messages"]
     assert "platypus6620" not in json.dumps(board)
     own = hub.client.get("/api/v1/device/messages", headers=carol.headers)  # reads only her own board
     assert own.status_code == 200 and "platypus6620" not in own.text
@@ -199,7 +199,7 @@ def test_addressed_note_goes_only_to_its_addressee(hub):
 
 def test_inbox_order_limit_and_read_marking(box):
     hub, alice, bob, carol = box
-    hub.client.post("/api/v1/projects/proj/messages", json={"body": "channel"}, headers=alice.headers)
+    hub.client.post("/api/v1/chats/project/proj/messages", json={"body": "channel"}, headers=alice.headers)
     post(hub, alice, "d1")
     post(hub, alice, "d2")
     conn = hub.conn()
@@ -207,7 +207,7 @@ def test_inbox_order_limit_and_read_marking(box):
         private.send(conn, bob.id, author=OP_ACTOR, body="p1")
     got = inbox(hub, bob, peek=True)["messages"]
     assert [(m["body"], m.get("kind")) for m in got] == [("p1", "private"), ("d1", "device"), ("d2", "device"),
-                                                       ("channel", None)]
+                                                       ("channel", "chat")]
     assert len(inbox(hub, bob, addressed_only=True)["messages"]) == 1  # the private one; marks nothing
     first = inbox(hub, bob, limit=2)
     assert [m["body"] for m in first["messages"]] == ["p1", "d1"] and first["more"] is True

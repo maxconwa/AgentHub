@@ -1,4 +1,8 @@
-MSGS = "/api/v1/projects/proj/messages"
+"""Agents' messages to each other: posts in the project chat and the inbox (channels until 0.3.7)."""
+
+from .conftest import legacy_post
+
+MSGS = "/api/v1/chats/project/proj/messages"
 INBOX = "/api/v1/inbox"
 
 
@@ -44,7 +48,7 @@ def test_addressed_messages(hub):
     c_msgs = hub.client.get(INBOX, headers=c.headers).json()["messages"]
     assert [(m["body"], m["addressed_to_me"]) for m in b_msgs] == [("for b only", True), ("for everyone", False)]
     assert [m["body"] for m in c_msgs] == ["for everyone"]
-    # addressed messages stay visible to every project member in channel history
+    # addressed messages stay visible to every project member in the chat's history
     history = hub.client.get(MSGS, headers=c.headers).json()["messages"]
     assert [m["body"] for m in history] == ["for b only", "for everyone"]
 
@@ -52,24 +56,26 @@ def test_addressed_messages(hub):
 def test_cannot_address_agent_outside_project(hub):
     a = hub.enroll("a")
     hub.enroll("outsider", projects=("other",))
-    assert post(hub, a, "psst", to="outsider").status_code == 422
+    assert post(hub, a, "psst", to="outsider").status_code == 422  # not in this chat
     assert post(hub, a, "psst", to="ghost").status_code == 404
 
 
 def test_inbox_only_covers_allowed_projects(hub):
     a = hub.enroll("a", projects=("proj", "other"))
     b = hub.enroll("b", projects=("proj",))
-    hub.client.post("/api/v1/projects/other/messages", json={"body": "secret"}, headers=a.headers)
+    hub.client.post("/api/v1/chats/project/other/messages", json={"body": "secret"}, headers=a.headers)
     post(hub, a, "public")
     assert [m["body"] for m in hub.client.get(INBOX, headers=b.headers).json()["messages"]] == ["public"]
 
 
-def test_channels_are_created_and_named(hub):
+def test_channels_are_retired_but_their_unread_messages_still_arrive(hub):
     a, b = hub.enroll("a"), hub.enroll("b")
-    post(hub, a, "x", channel="design")
-    assert post(hub, a, "x", channel="Bad Name!").status_code == 422
-    msgs = hub.client.get(MSGS, params={"channel": "design"}, headers=b.headers).json()["messages"]
-    assert [m["channel"] for m in msgs] == ["design"]
+    assert hub.client.post("/api/v1/projects/proj/messages", json={"body": "x"}, headers=a.headers).status_code == 410
+    assert hub.client.get("/api/v1/projects/proj/messages", headers=b.headers).status_code == 410
+    legacy_post(hub, a, "left unread by 0.3.7", channel="design")
+    got = hub.client.get(INBOX, headers=b.headers).json()["messages"]
+    assert [(m["body"], m["channel"]) for m in got] == [("left unread by 0.3.7", "design")]
+    assert hub.client.get(INBOX, headers=b.headers).json()["messages"] == []
 
 
 def test_message_size_limit(hub):

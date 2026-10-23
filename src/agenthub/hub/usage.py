@@ -1,7 +1,8 @@
-"""The Usage page's numbers: what task runs and prompt sessions used over a window.
+"""The Usage page's numbers: what task runs, chat sessions and (until 0.3.7) prompt sessions used over a window.
 
-A task run is a row of ``task_runs`` (the runner records it around each task session); a prompt session is a row of
-``prompt_runs`` (the runner reports each one when it ends). Both carry turns and the CLI's est. cost; wall-clock is
+A task run is a row of ``task_runs`` (the runner records it around each task session); a chat session is a row of
+``chat_runs`` and a prompt session one of ``prompt_runs`` (the runner reports each one when it ends). All carry
+turns and the CLI's est. cost; wall-clock is
 ``ended_at - started_at`` (a task run still going counts once it ends). A session stopped by the subscription usage
 limit is a *limit hit*: it is listed and counted as such, and its turns, minutes and cost count like any other.
 
@@ -22,7 +23,7 @@ DEFAULT_WINDOW = "7d"
 STRIP_DAYS = {"24h": 7, "7d": 7, "30d": 30, "all": 30}  # the per-day strip's length for each window
 RECENT = 30  # runs listed under "Recent runs"
 LIMIT = "usage_limit"
-KINDS = ("task", "prompt")
+KINDS = ("task", "prompt", "chat")
 
 
 def _ts(value: str) -> datetime:
@@ -36,7 +37,8 @@ def _minutes(r: dict[str, Any]) -> float:
 
 
 def _runs(conn: sqlite3.Connection, since: str | None) -> list[dict[str, Any]]:
-    """Every task run and prompt session that started at or after ``since`` (all of them for None), newest first."""
+    """Every task run, prompt session and chat session that started at or after ``since`` (all of them for None),
+    newest first."""
     where, args = ("WHERE r.started_at >= ?", (since,)) if since else ("", ())
     task_rows = conn.execute(
         "SELECT 'task' AS kind, r.id, r.agent_id, a.name AS agent, t.project, r.task_id, t.title AS task_title, "
@@ -46,7 +48,12 @@ def _runs(conn: sqlite3.Connection, since: str | None) -> list[dict[str, Any]]:
         "SELECT 'prompt' AS kind, r.id, r.agent_id, a.name AS agent, r.project, NULL AS task_id, NULL AS task_title, "
         "r.prompt_id, p.target, r.started_at, r.ended_at, r.outcome, r.num_turns, r.cost_usd "
         "FROM prompt_runs r JOIN prompts p ON p.id = r.prompt_id JOIN agents a ON a.id = r.agent_id " + where, args)
-    runs = [dict(r) for r in [*task_rows, *prompt_rows]]
+    chat_rows = conn.execute(
+        "SELECT 'chat' AS kind, r.id, r.agent_id, a.name AS agent, r.project, r.task_id, NULL AS task_title, "
+        "NULL AS prompt_id, c.kind || ':' || c.ref AS target, r.started_at, r.ended_at, r.outcome, r.num_turns, "
+        "r.cost_usd FROM chat_runs r JOIN chats c ON c.id = r.chat_id JOIN agents a ON a.id = r.agent_id " + where,
+        args)
+    runs = [dict(r) for r in [*task_rows, *prompt_rows, *chat_rows]]
     for r in runs:
         r["minutes"] = _minutes(r)
         r["limit_hit"] = r["outcome"] == LIMIT
@@ -72,8 +79,8 @@ def _add(total: dict[str, Any], r: dict[str, Any]) -> None:
 
 
 def _pair() -> dict[str, dict[str, Any]]:
-    """Task and prompt totals side by side, plus their sum."""
-    return {"task": _empty(), "prompt": _empty(), "all": _empty()}
+    """Task, prompt and chat totals side by side, plus their sum."""
+    return {"task": _empty(), "prompt": _empty(), "chat": _empty(), "all": _empty()}
 
 
 def _add_pair(pair: dict[str, dict[str, Any]], r: dict[str, Any]) -> None:

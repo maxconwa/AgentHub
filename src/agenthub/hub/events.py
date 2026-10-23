@@ -35,14 +35,17 @@ def emit(
     project: str | None = None,
     device: str | None = None,
     payload: dict[str, Any] | None = None,
+    index_text: str | None = None,
 ) -> int:
+    """Append an event. ``index_text`` goes into the full-text index only, not the payload (a chat message's text,
+    whose event carries ids only)."""
     payload = payload or {}
     cur = conn.execute(
         "INSERT INTO events (ts, project, actor, device, type, payload) VALUES (?, ?, ?, ?, ?, ?)",
         (now_iso(), project, actor, device, type, json.dumps(payload, separators=(",", ":"))),
     )
     event_id = cur.lastrowid
-    text = " ".join([type, actor, *_strings(payload)])[:_MAX_INDEXED_CHARS]
+    text = " ".join([type, actor, *_strings(payload), *([index_text] if index_text else [])])[:_MAX_INDEXED_CHARS]
     conn.execute("INSERT INTO events_fts (rowid, text) VALUES (?, ?)", (event_id, text))
     return event_id
 

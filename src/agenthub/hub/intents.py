@@ -5,9 +5,8 @@ patterns (``src/api/**``, ``docs/*.md``) or plain names (``auth``,
 ``auth.tokens``). When a new intent overlaps an active intent of another
 agent in the same project, the hub:
 
-  * opens a coordination thread: channel ``coordination-<id>`` with a
-    kickoff message addressed to each agent (so the inbox, Stop hook and
-    runner pick it up),
+  * opens a coordination thread: a kickoff message in the project's chat
+    addressed to each agent (so the inbox, Stop hook and runner pick it up),
   * notifies the operator (an ``intent.conflict`` event, pushed via ntfy),
   * creates the board document ``coordination/<id>`` where the agents record
     the split or ordering they agree on.
@@ -26,7 +25,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from agenthub.hub import events, store
+from agenthub.hub import chats, events, store
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Forbidden, Invalid, NotFound
 
@@ -147,6 +146,8 @@ def _open_conflict(
         (project, other["id"], intent_id, json.dumps(hits), now_iso()),
     )
     cid = cur.lastrowid
+    # The channel name is kept for the record (0.3.7 coordinated there); since 0.3.8 the kickoff and the talk are
+    # in the project's chat, addressed with ``to``.
     channel, board_key = f"coordination-{cid}", f"coordination/{cid}"
     conn.execute("UPDATE intent_conflicts SET channel = ?, board_key = ? WHERE id = ?", (channel, board_key, cid))
     names = [other["agent_name"], agent.name]
@@ -158,11 +159,11 @@ def _open_conflict(
     # Only hub-chosen text and validated identifiers/patterns go in the kickoff;
     # agents' free-text descriptions are not repeated here.
     for target in (other["agent_id"], agent.id):
-        store.post_message(
-            conn, author=HUB_ACTOR, project=project, channel=channel, to=target,
+        chats.post_as_hub(
+            conn, "project", project, to=target, meta={"conflict_id": cid},
             body=(f"[coordination #{cid}] {names[0]} (intent #{other['id']}) and {names[1]} (intent #{intent_id}) "
-                  f"plan overlapping work: {overlap_text}. Agree on a split or an order in channel '{channel}' "
-                  f"(post with channel='{channel}' and to=<the other agent>). When you agree, record it with "
+                  f"plan overlapping work: {overlap_text}. Agree on a split or an order in the project chat "
+                  f"(chat_post(chat='project:{project}', to=<the other agent>, body=...)). When you agree, record it with "
                   f"board_put(key='{board_key}', expected_version=<current>) setting status 'agreed' and the "
                   "agreement text. Until then, avoid editing the overlapping paths."),
         )

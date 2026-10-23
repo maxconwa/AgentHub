@@ -429,6 +429,76 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE agents ADD COLUMN effort TEXT;
     """,
+    # 22: chats replace prompts, private chats and boards: one chat per agent, task and project, their messages
+    # (``legacy`` names the 0.3.7 row a backfilled one was copied from), one delivery per operator message and
+    # recipient, and the agents' read cursors. Additive only: 0.3.7 runs on this database and ignores all of it.
+    """
+    CREATE TABLE chats (
+        id               INTEGER PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('agent', 'task', 'project')),
+        ref              TEXT NOT NULL,
+        project          TEXT REFERENCES projects(name),
+        session_id       TEXT,
+        operator_read_id INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        UNIQUE (kind, ref)
+    );
+
+    CREATE TABLE chat_messages (
+        id         INTEGER PRIMARY KEY,
+        chat_id    INTEGER NOT NULL REFERENCES chats(id),
+        author     TEXT NOT NULL,
+        kind       TEXT NOT NULL CHECK (kind IN ('text', 'tools', 'status', 'approval', 'question', 'took_task',
+                                                 'sit_out')),
+        body       TEXT NOT NULL DEFAULT '',
+        meta       TEXT NOT NULL DEFAULT '{}',
+        legacy     TEXT UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX chat_messages_chat ON chat_messages(chat_id, created_at, id);
+    CREATE INDEX chat_messages_chat_id ON chat_messages(chat_id, id);
+
+    CREATE TABLE chat_deliveries (
+        id           INTEGER PRIMARY KEY,
+        message_id   INTEGER NOT NULL REFERENCES chat_messages(id),
+        agent_id     TEXT NOT NULL REFERENCES agents(id),
+        status       TEXT NOT NULL CHECK (status IN ('pending', 'delivered')),
+        mode         TEXT CHECK (mode IN ('live', 'queued', 'woke', 'inbox', 'failed')),
+        decision     TEXT CHECK (decision IN ('took', 'sat_out')),
+        task_id      INTEGER REFERENCES tasks(id),
+        note         TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL,
+        delivered_at TEXT,
+        UNIQUE (message_id, agent_id)
+    );
+    CREATE INDEX chat_deliveries_agent ON chat_deliveries(agent_id, status, id);
+
+    CREATE TABLE chat_cursors (
+        agent_id     TEXT NOT NULL REFERENCES agents(id),
+        chat_id      INTEGER NOT NULL REFERENCES chats(id),
+        last_read_id INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (agent_id, chat_id)
+    );
+
+    -- one row per chat session a runner ran (its turns, est. cost and duration), for the Usage page
+    CREATE TABLE chat_runs (
+        id          INTEGER PRIMARY KEY,
+        chat_id     INTEGER NOT NULL REFERENCES chats(id),
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        project     TEXT REFERENCES projects(name),
+        task_id     INTEGER REFERENCES tasks(id),
+        session_id  TEXT,
+        started_at  TEXT NOT NULL,
+        ended_at    TEXT NOT NULL,
+        outcome     TEXT NOT NULL,
+        num_turns   INTEGER,
+        cost_usd    REAL
+    );
+    CREATE INDEX chat_runs_started ON chat_runs(started_at);
+
+    ALTER TABLE agents ADD COLUMN chat_support INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

@@ -1,14 +1,12 @@
 """Questions an agent asks the operator (the ``ask_operator`` tool).
 
-A pending question waits in the approval queue; the operator's answer goes back
-to the asking agent. An idle agent (connected with a runner that runs prompts, with no task run and no prompt open) gets
-it as a single prompt (``Answer to your question #N: …``), so it wakes on it now; the
-prompt also puts it in the agent's private chat. Any other agent gets it as a plain
-private message, which its Stop hook or its next session delivers: an offline agent
-isn't woken (and the operator gets no "nobody was online" push), and a busy one isn't
-given a second session alongside the one that asked. Unlike private chat text,
-questions are not secret, but ``question.*`` events carry ids only (the page
-reads the table), the same as private messages.
+A pending question waits in the approval queue and shows as a card in a chat (its task's, else the asking agent's
+own; :func:`chats.question_card`). The operator's answer (on the card or the Approvals page, one endpoint) goes
+back to the asking agent as the operator's message in the agent's own chat (``Answer to your question #N: …``), so
+its runner delivers it like any other: into the running session, or waking the agent's chat session. Unlike chat
+text, questions are not secret, but ``question.*`` events carry ids only (the page reads the table).
+
+Before 0.3.8 an answer went as a prompt or a private message; :func:`answer_delivery` still finds those.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from agenthub.hub import events, private, tasks
+from agenthub.hub import chats, events, tasks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, get_agent
 
@@ -79,6 +77,7 @@ def ask(
         "VALUES (?, ?, ?, ?, 'pending', ?)", (project, agent.id, task_id, question, now_iso()))
     q = get(conn, cur.lastrowid)
     events.emit(conn, type="question.asked", actor=agent.id, project=project, device=device, payload=_payload(q))
+    chats.question_card(conn, q)
     return q
 
 
@@ -96,16 +95,9 @@ def answer(conn: sqlite3.Connection, qid: int, *, answer: str, actor: str) -> di
     agent = get_agent(conn, q["agent_id"])
     if agent is None or agent.status == "revoked":  # a revoked agent's chat is read-only
         return get(conn, qid)
-    text, about = _answer_prefix(qid) + answer, "\n\n" + _about(q)
-    if _idle(conn, agent):
-        from agenthub.hub import prompts  # imported here: prompts imports views, which imports this module
-
-        prompts.create(conn, target=f"agent:{agent.id}", body=text + about, actor=actor)
-    else:
-        if len(text + about) > private.MAX_BODY_CHARS:  # the full answer stays readable at GET /questions/{id}
-            note = f"… [truncated; full answer: call get_question with question_id={qid}]"
-            text = text[: private.MAX_BODY_CHARS - len(note) - len(about)] + note
-        private.send(conn, agent.id, author=actor, body=text + about)
+    # A chat message holds the whole answer (MAX_CHARS is well under chats.MAX_BODY_CHARS).
+    chats.send(conn, "agent", agent.id, _answer_prefix(qid) + answer + "\n\n" + _about(q), actor,
+               meta={"answer_to": qid})
     return get(conn, qid)
 
 
@@ -114,18 +106,6 @@ def _about(q: dict[str, Any]) -> str:
     that gets it (often a new one) can look the question up."""
     lookup = f"call get_question({q['id']}) for your question"
     return f"(about task #{q['task_id']} in {q['project']}; {lookup})" if q["task_id"] else f"({lookup})"
-
-
-def _idle(conn: sqlite3.Connection, agent: Agent) -> bool:
-    """Whether a prompt would wake ``agent`` now: active and connected with a runner that runs prompts, with no
-    task run going and no prompt pending or running (a pending one runs next, and its session reads the answer
-    from the inbox anyway)."""
-    row = conn.execute(
-        "SELECT a.status = 'active' AND a.connected = 1 AND a.prompt_support = 1 "
-        "AND NOT EXISTS (SELECT 1 FROM task_runs WHERE agent_id = a.id AND ended_at IS NULL) "
-        "AND NOT EXISTS (SELECT 1 FROM prompt_recipients WHERE agent_id = a.id AND status IN ('pending', 'running')) "
-        "FROM agents a WHERE a.id = ?", (agent.id,)).fetchone()
-    return bool(row and row[0])
 
 
 def _answer_prefix(qid: int) -> str:
@@ -147,7 +127,8 @@ def answer_prompt_id(conn: sqlite3.Connection, q: dict[str, Any]) -> int | None:
 
 
 def answer_delivery(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, Any]:
-    """How ``q``'s answer reached its agent: ``{prompt_id, private}``, the prompt :func:`answer` made (or None)
+    """How ``q``'s answer reached its agent: ``{chat_message_id, prompt_id, private}``: the operator's message in the
+    agent's chat that carries it (0.3.8), or before 0.3.8 the prompt :func:`answer` made (or None)
     and whether it sent the answer as a plain private message (the answer's prefix, from the answering operator,
     at or after the answer)."""
     private_sent = False
@@ -156,7 +137,10 @@ def answer_delivery(conn: sqlite3.Connection, q: dict[str, Any]) -> dict[str, An
         private_sent = conn.execute(
             "SELECT 1 FROM private_messages WHERE agent_id = ? AND author = ? AND ts >= ? AND substr(body, 1, ?) = ?",
             (q["agent_id"], q["answered_by"], q["answered_at"], len(prefix), prefix)).fetchone() is not None
-    return {"prompt_id": answer_prompt_id(conn, q), "private": private_sent}
+    row = conn.execute("SELECT id FROM chat_messages WHERE json_extract(meta, '$.answer_to') = ? ORDER BY id LIMIT 1",
+                       (q["id"],)).fetchone()
+    return {"chat_message_id": row["id"] if row else None, "prompt_id": answer_prompt_id(conn, q),
+            "private": private_sent}
 
 
 def withdraw(conn: sqlite3.Connection, qid: int, agent: Agent) -> dict[str, Any]:
