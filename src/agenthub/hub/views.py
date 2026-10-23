@@ -19,13 +19,14 @@ def project_url(name: str) -> str:
     return f"/ui/projects/{quote(name, safe='')}"
 
 
-def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list[dict[str, Any]]:
+def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None,
+               with_wakes: bool = False) -> list[dict[str, Any]]:
     """Every non-revoked agent with its device, liveness and open tasks, ordered by name.
 
     Shared by the Dashboard, Agents and Devices pages. ``avatar`` is the agent's
     :func:`avatars.board` entry. ``checkouts`` (project -> path) and ``current_dir`` are
     agent-written text the runner reported. With ``agent_id`` the result is that one agent
-    (revoked or not), or empty if there is none.
+    (revoked or not), or empty if there is none. ``with_wakes`` adds ``wakes`` (:func:`agent_wakes`), else None.
     """
     board = avatars.board(conn)
     open_tasks: dict[str, list[dict[str, Any]]] = {}
@@ -44,7 +45,109 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None) -> list
              "connected": bool(r["connected"]), "prompts": bool(r["prompt_support"]), "chat": bool(r["chat_support"]),
              "last_heartbeat": r["last_heartbeat"], "model": r["model"], "effort": r["effort"],
              "checkouts": json.loads(r["checkouts"] or "{}"), "current_dir": r["current_dir"],
-             "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"])} for r in rows]
+             "tasks": open_tasks.get(r["id"], []), "avatar": board.get(r["id"]),
+             "wakes": agent_wakes(conn, r["id"]) if with_wakes else None} for r in rows]
+
+
+# --- Agents waking agents (0.3.9.1) -----------------------------------------------------------------
+
+
+def agent_wakes(conn: sqlite3.Connection, agent_id: str) -> dict[str, Any]:
+    """An agent's wakes as its row and page show them: ``wakes.agent_view`` (``paused``, ``hub_paused``, ``awake``,
+    ``woken_by``, ``recent``), with ``woken_by`` given a ``chat_item`` and ``chat_href`` to open its chat."""
+    from agenthub.hub import wakes  # wakes and reviewers take the dashboard's operator checks, which import this
+
+    view = wakes.agent_view(conn, agent_id)
+    if view["woken_by"]:
+        view["woken_by"] = with_chat_link(view["woken_by"])
+    view["recent"] = [with_chat_link(w) for w in view["recent"]]
+    return view
+
+
+def with_chat_link(record: dict[str, Any]) -> dict[str, Any]:
+    """A wake record (``wakes.records``) with ``chat_item`` (the panel that is its chat) and ``chat_href`` (its page)."""
+    c = record["chat"]
+    item = f"{c['kind']}:{c['ref']}"
+    return record | {"chat_item": item, "chat_href": chat_page(c["kind"], str(c["ref"]))}
+
+
+def chat_page(kind: str, ref: str) -> str:
+    """The full page a chat is on: its agent's, task's or project's page, or a direct chat's own."""
+    if kind == "agent":
+        return f"/ui/agents/{quote(ref, safe='')}"
+    if kind == "task":
+        return f"/ui/tasks/{quote(ref, safe='')}"
+    if kind == "project":
+        return project_url(ref)
+    return f"/ui/dm/{quote(ref, safe=':')}"  # a pair key, <id>:<id>; the colon stays (a form's next allows it)
+
+
+def hub_wakes(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The hub-wide switch: ``{paused, loop_limit, chains}`` (``wakes.settings``; ``chains`` are the paused ones)."""
+    from agenthub.hub import wakes
+
+    return wakes.settings(conn)
+
+
+def loop_card(conn: sqlite3.Connection, a: dict[str, Any]) -> dict[str, Any] | None:
+    """What a ``wake_loop`` approval's card shows beyond the approval: ``{chain_id, agents: [{id, name}], wakes,
+    limit, last: [wake records, newest first, at most LOOP_LAST]}``. None for any other kind of approval. Every fact
+    comes from the hub (the approval's details and the delivery rows), none from an agent."""
+    if a["kind"] != "wake_loop":
+        return None
+    from agenthub.hub import wakes
+
+    d = a["details"] or {}
+    chain_id = d.get("chain_id") if isinstance(d.get("chain_id"), str) else None
+    ids = [i for i in d.get("agents") or [] if isinstance(i, str)]
+    known = _agent_names(conn, ids)
+    last = [with_chat_link(w) for w in wakes.records(conn, chain_id=chain_id, limit=LOOP_LAST)] if chain_id else []
+    return {"chain_id": chain_id, "agents": [{"id": i, "name": known.get(i, i)} for i in ids],
+            "wakes": d.get("wakes"), "limit": d.get("limit"), "last": last}
+
+
+LOOP_LAST = 5  # wakes a loop-pause card lists
+
+
+def _agent_names(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    return {r["id"]: r["name"] for r in conn.execute(
+        f"SELECT id, name FROM agents WHERE id IN ({','.join('?' * len(ids))})", ids)}
+
+
+def task_reviewers(t: dict[str, Any]) -> list[dict[str, Any]]:
+    """A task's reviewers: its ``reviews`` members that aren't revoked (``task_agents.list_agents`` entries)."""
+    return [m for m in t.get("agents") or [] if m.get("stage") == "reviews" and m.get("status") != "revoked"]
+
+
+def send_back(t: dict[str, Any]) -> dict[str, Any] | None:
+    """A reviewer's send-back still in force: ``{agent_id, name, note}`` when a ``reviews`` member's changes verdict
+    moved the task back to in progress and nothing has moved it since. The note is the reviewer's (agent text)."""
+    by = t.get("last_moved_by")
+    if t.get("state") != "in_progress" or not by:
+        return None
+    reviewer = next((m for m in task_reviewers(t) if m["agent_id"] == by), None)
+    if reviewer is None:
+        return None
+    return {"agent_id": by, "name": reviewer["name"], "note": t.get("last_note") or ""}
+
+
+def project_reviewers(conn: sqlite3.Connection, project: str) -> dict[str, Any]:
+    """The Reviewers picker: ``{reviewers: reviewers.list_reviewers(...), choices: [{id, name, checked}]}``.
+    ``choices`` are the project's agents (allowed into it, not revoked) plus any listed reviewer who no longer is,
+    ordered by name."""
+    from agenthub.hub import reviewers
+
+    listed = reviewers.list_reviewers(conn, project)
+    marked = {r["agent_id"] for r in listed}
+    choices = {r["id"]: r["name"] for r in conn.execute(
+        "SELECT a.id, a.name FROM agents a, json_each(a.allowed_projects) p WHERE p.value = ? AND a.status != 'revoked'",
+        (project,))}
+    choices |= {r["agent_id"]: r["name"] for r in listed}
+    return {"reviewers": listed,
+            "choices": [{"id": i, "name": n, "checked": i in marked}
+                        for i, n in sorted(choices.items(), key=lambda kv: (names.key(kv[1]), kv[0]))]}
 
 
 def devices(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -82,17 +185,18 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     board = avatars.board(conn)
     members: dict[int, list[dict[str, Any]]] = {}
     for r in conn.execute(
-            "SELECT ta.task_id, ta.agent_id, a.name, ta.role, ta.stage, a.device_name FROM task_agents ta "
+            "SELECT ta.task_id, ta.agent_id, a.name, a.status, ta.role, ta.stage, a.device_name FROM task_agents ta "
             "JOIN agents a ON a.id = ta.agent_id ORDER BY ta.added_at, ta.rowid"):
         members.setdefault(r["task_id"], []).append(
-            {"agent_id": r["agent_id"], "name": r["name"], "role": r["role"], "stage": r["stage"],
+            {"agent_id": r["agent_id"], "name": r["name"], "status": r["status"], "role": r["role"], "stage": r["stage"],
              "device": r["device_name"], "avatar": board.get(r["agent_id"])})
     by_project: dict[str, list[dict[str, Any]]] = {}
     for r in conn.execute(
-            "SELECT id, project, title, state, created_by FROM tasks ORDER BY id"):
+            "SELECT id, project, title, state, created_by, last_note, last_moved_by FROM tasks ORDER BY id"):
         live = by_project.setdefault(r["project"], [])
         if r["state"] not in TERMINAL_STATES:
             live.append({"id": r["id"], "title": r["title"], "state": r["state"], "created_by": r["created_by"],
+                         "last_note": r["last_note"], "last_moved_by": r["last_moved_by"],
                          "agents": members.get(r["id"], [])})
     out = [{"name": p["name"], "description": p["description"], "tasks": by_project.get(p["name"], [])}
            for p in conn.execute("SELECT name, description FROM projects ORDER BY name COLLATE NOCASE")]
@@ -155,7 +259,7 @@ def _and(names: list[str]) -> str:
 
 # --- Slide-in panel ---------------------------------------------------------------------------
 
-_PANEL_ITEM = re.compile(r"(agent|task|project|device|approval|question):(.+)")
+_PANEL_ITEM = re.compile(r"(agent|task|project|device|approval|question|dm):(.+)")
 _ID = re.compile(r"[0-9]{1,18}")
 
 
@@ -165,7 +269,8 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     ``href`` is the item's full page. An agent's, task's or project's panel is its chat, ``c`` (:func:`chat`), under
     a few facts. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not); task: ``t``; project: ``project`` and
     its live ``tasks``; device: ``d`` (no chat: devices have none); approval: ``a`` and its ``task``; question: ``q``
-    and its ``task``. Raises store.NotFound for a malformed or unknown item.
+    and its ``task``; dm (a direct chat between two agents, by pair key): only ``c``. Raises store.NotFound for a
+    malformed or unknown item.
     """
     m = _PANEL_ITEM.fullmatch(item)
     if not m:
@@ -174,7 +279,7 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     if kind in ("task", "approval", "question") and not _ID.fullmatch(key):
         raise store.NotFound(f"no {kind} {key!r}")
     if kind == "agent":
-        rows = agent_rows(conn, agent_id=key)
+        rows = agent_rows(conn, agent_id=key, with_wakes=True)
         if not rows:
             raise store.NotFound(f"no agent {key!r}")
         return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0], "c": chat(conn, "agent", key)}
@@ -191,8 +296,12 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
                 "c": chat(conn, "project", key)}
     if kind == "device":
         return {"kind": kind, "href": f"/ui/devices/{quote(key, safe='')}", "d": device(conn, key)}
+    if kind == "dm":
+        c = chat(conn, "dm", key)
+        return {"kind": kind, "href": c["page"], "c": c}
     if kind == "approval":
         a = approvals.get(conn, int(key))
+        a["loop"] = loop_card(conn, a)
         task_id = a["details"].get("task_id")
         return {"kind": kind, "href": f"/ui/approvals/{a['id']}", "a": a,
                 "task": tasks.get_task(conn, task_id) if isinstance(task_id, int) else None}
@@ -222,13 +331,14 @@ def _last_text(conn: sqlite3.Connection, kind: str, ref: str) -> dict[str, Any] 
 
 
 def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """Every chat for the list: ``{agents, tasks, projects}``, each newest first.
+    """Every chat for the list: ``{agents, tasks, projects, dms}``, each newest first.
 
     Every row has ``item`` (the panel that is its chat), ``href`` (its page), ``title``, ``last`` (:func:`_last_text`,
     agent-written unless its author is ``human:``), ``last_ts`` and ``unread`` (agent messages the operator hasn't
     seen). agents (not revoked): ``avatar``, ``status`` and
     ``waiting`` (its pending questions); tasks (live ones, and finished ones that have a chat): ``state``,
-    ``created_by`` and ``members`` (avatars); projects: ``members``, the agents on its live tasks.
+    ``created_by`` and ``members`` (avatars); projects: ``members``, the agents on its live tasks; dms (direct chats
+    between two agents, once one has a message; the operator reads them all): ``members``, the pair.
     """
     board = avatars.board(conn)
     unread = {(o["kind"], str(o["ref"])): o["unread"] or 0 for o in chats.overview(conn)}
@@ -261,9 +371,18 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
         projects.append({"item": f"project:{p['name']}", "href": project_url(p["name"]),
                          "title": p["name"], "last": last, "last_ts": last and last["ts"],
                          "unread": unread.get(("project", p["name"]), 0), "members": _faces(board, live_members.get(p["name"], []))})
-    for rows in (agents, task_rows, projects):
+    dms = []
+    for o in chats.overview(conn):  # a direct chat is listed once it has a message
+        if o["kind"] != "dm":
+            continue
+        last = _last_text(conn, "dm", o["ref"])
+        pair = o["ref"].split(":")
+        dms.append({"item": f"dm:{o['ref']}", "href": chat_page("dm", o["ref"]), "title": o["title"],
+                    "last": last, "last_ts": (last and last["ts"]) or o["last_ts"], "unread": o["unread"] or 0,
+                    "members": [board[i] for i in pair if i in board]})
+    for rows in (agents, task_rows, projects, dms):
         rows.sort(key=_ts_key, reverse=True)
-    return {"agents": agents, "tasks": task_rows, "projects": projects}
+    return {"agents": agents, "tasks": task_rows, "projects": projects, "dms": dms}
 
 
 def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -> list[dict[str, Any]]:
@@ -275,7 +394,7 @@ def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -
 
 CHAT_ROWS = 300  # the newest rows a chat shows (the log scrolls)
 _CHAT_REF = {"agent": re.compile(r"ag[0-9a-f]{1,64}"), "task": re.compile(r"[1-9][0-9]{0,17}"),
-             "project": names.NAME_RE}
+             "project": names.NAME_RE, "dm": re.compile(r"ag[0-9a-f]{1,64}:ag[0-9a-f]{1,64}")}
 
 
 def _too_old(conn: sqlite3.Connection, agent_ids: list[str]) -> str:
@@ -298,8 +417,8 @@ def _names(members: list[dict[str, Any]]) -> str:
 
 
 def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows: bool = True) -> dict[str, Any]:
-    """One chat (an agent's, a task's or a project's) for _chat.html: ``{id, kind, ref, title, url, page, item, rows,
-    send, readonly, hint, placeholder, empty, mention_names}``.
+    """One chat (an agent's, a task's, a project's, or a direct one between two agents) for _chat.html:
+    ``{id, kind, ref, title, url, page, item, rows, send, readonly, hint, placeholder, empty, mention_names}``.
 
     A project's ``ref`` may be any spelling of its name (names ignore case); the chat has the stored one.
     ``mention_names`` are its agents' names as written, for the message box's @ autocomplete. ``too_old`` says
@@ -314,6 +433,7 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
     if kind == "project":
         ref = store.project_name(conn, ref) or ref
     c = chats.chat(conn, kind, ref)
+    ref = c["ref"]  # a direct chat's pair key, sorted
     out: dict[str, Any] = {"id": c["id"], "kind": kind, "ref": ref, "url": f"/ui/chat/{kind}/{quote(ref, safe='')}",
                            "item": f"{kind}:{ref}", "send": True, "readonly": "",
                            "mention_names": sorted((m["name"] for m in c["members"]), key=names.key),
@@ -335,6 +455,16 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
                 "hint": f"Goes to everyone on task #{ref}: {_names(c['members'])}."}
         if state in TERMINAL_STATES:
             out |= {"send": False, "readonly": f"Task #{ref} is {state}, so its chat is read-only."}
+    elif kind == "dm":
+        pair = [conn.execute("SELECT name, status FROM agents WHERE id = ?", (i,)).fetchone() for i in ref.split(":")]
+        both = _and([p["name"] for p in pair])
+        out |= {"title": c["title"], "page": chat_page("dm", ref), "placeholder": f"Message {both}…",
+                "empty": f"{both} haven't written to each other yet.",
+                "hint": f"A direct chat between two agents. Only they and you can read it; your message goes to both."}
+        gone = [p["name"] for p in pair if p["status"] == "revoked"]
+        if gone:
+            out |= {"send": False, "readonly": f"{_and(gone)} {'is' if len(gone) == 1 else 'are'} revoked, "
+                                              "so this chat is read-only."}
     else:
         out |= {"title": ref, "page": project_url(ref), "placeholder": f"Message everyone in {ref}…",
                 "empty": f"No messages in {ref} yet.",
@@ -345,7 +475,9 @@ def chat(conn: sqlite3.Connection, kind: str, ref: str, *, after: int = 0, rows:
 
 def chat_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Chat rows as _chat.html draws them: a card row gets ``card``, the approval or question as it is now (so
-    deciding on the Approvals page shows on the card too), or None when it's gone; a took_task row gets
+    deciding on the Approvals page shows on the card too), or None when it's gone, and ``loop`` (:func:`loop_card`) for
+    a wake_loop approval; a declined sit_out row and a ``woke`` status row get ``request``
+    (:func:`_message_link`, the message declined or the one that woke); a took_task row gets
     ``task`` ({id, title}) when the task exists; a reply gets ``reply`` ({id, same_chat, question_id}) when the row
     it answers exists."""
     out = []
@@ -370,8 +502,27 @@ def chat_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> list[dict
         if m["kind"] == "took_task" and isinstance(meta.get("task_id"), int):
             t = conn.execute("SELECT id, title FROM tasks WHERE id = ?", (meta["task_id"],)).fetchone()
             m["task"] = dict(t) if t else None
+        if m.get("card") and m["kind"] == "approval":
+            m["loop"] = loop_card(conn, m["card"])
+        if m["kind"] == "sit_out" and meta.get("declined") and isinstance(meta.get("request_id"), int):
+            m["request"] = _message_link(conn, m, meta["request_id"])
+        elif m["kind"] == "status" and meta.get("state") == "woke" and isinstance(meta.get("message_id"), int):
+            m["request"] = _message_link(conn, m, meta["message_id"])
         out.append(m)
     return out
+
+
+def _message_link(conn: sqlite3.Connection, row: dict[str, Any], message_id: int) -> dict[str, Any]:
+    """Where message ``message_id`` is, as seen from chat row ``row``: ``{id, href, item}``. ``href`` is ``#cm-<id>``
+    when it is in the same chat, else its chat's page (``item`` then opens that chat's panel); None if it's gone."""
+    try:
+        to = chats.get_message(conn, message_id)
+    except store.NotFound:
+        return {"id": message_id, "href": None, "item": None}
+    if to["chat_id"] == row.get("chat_id"):
+        return {"id": message_id, "href": f"#cm-{message_id}", "item": None}
+    return {"id": message_id, "href": chat_page(to["chat_kind"], str(to["chat_ref"])) + f"#cm-{message_id}",
+            "item": f"{to['chat_kind']}:{to['chat_ref']}"}
 
 
 def chat_message(conn: sqlite3.Connection, message_id: int) -> dict[str, Any]:

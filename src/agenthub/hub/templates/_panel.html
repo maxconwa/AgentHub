@@ -1,4 +1,4 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, agent_wakes, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. An agent's, task's or
     project's panel is its chat (_chat.html, `c`) under a short head whose facts fold away; a device's, approval's or
@@ -27,7 +27,8 @@
 {% if kind == 'agent' %}
 <div class="dhead chat-head">{{ avatar(ag.avatar, 48) }}
   <div class="info"><div class="kicker">agent</div><h2 id="panel-title">{{ ag.name }}</h2>
-    <div class="small-line">{% if ag.status == 'revoked' %}{{ chip(ag.status) }}{% else %}<span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }}{% if ag.status != 'active' %} {{ chip(ag.status) }}{% endif %}{% endif %}</div></div></div>
+    <div class="small-line">{% if ag.status == 'revoked' %}{{ chip(ag.status) }}{% else %}<span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }}{% if ag.status != 'active' %} {{ chip(ag.status) }}{% endif %}{% endif %}</div>
+    {{ agent_wakes(ag, next, csrf, 'panel', item) }}</div></div>
 <details class="pfacts"><summary>Details</summary>
   <dl class="facts">
     <dt>Tasks</dt><dd>{% for t in ag.tasks %}<div class="ptask"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}
@@ -44,7 +45,8 @@
 
 {% elif kind == 'task' %}
 <div class="dhead chat-head"><span class="group-icon g-task" aria-hidden="true">#</span>
-  <div class="info"><div class="kicker">task #{{ t.id }} · {{ chip(t.state) }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2></div></div>
+  <div class="info"><div class="kicker">task #{{ t.id }} · {{ chip(t.state) }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2>
+    {{ task_review_lines(t, names) }}</div></div>
 <details class="pfacts"><summary>Details · {{ t.agents | length }} agent{{ '' if t.agents | length == 1 else 's' }}</summary>
   <dl class="facts">
     <dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a></dd>
@@ -69,6 +71,12 @@
     {% else %}<li class="small-line">No live tasks</li>{% endfor %}
   </ul>
 </details>
+{{ chat(c) }}
+
+{% elif kind == 'dm' %}
+<div class="dhead chat-head"><span class="group-icon g-dm" aria-hidden="true">↔</span>
+  <div class="info"><div class="kicker">direct chat between two agents</div><h2 id="panel-title">{{ c.title }}</h2>
+    <div class="small-line">Only these two agents and you can read it.</div></div></div>
 {{ chat(c) }}
 
 {% elif kind == 'device' %}

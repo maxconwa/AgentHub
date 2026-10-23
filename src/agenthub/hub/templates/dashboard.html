@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set has_live = true %}
-{% from "_macros.html" import agent_tasks, approval_summary, avatar, task_title, open_attrs, fail_attrs %}
+{% from "_macros.html" import agent_tasks, agent_wakes, approval_summary, avatar, task_title, open_attrs, fail_attrs, pause_switch, paused_badge %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -27,11 +27,15 @@
 <div class="section-head"><h2>Agents <span class="count">{{ agents|length }}</span></h2><a href="/ui/agents">All agents</a></div>
 {% if not agents %}<p class="empty">No agents yet. Enroll one from the Agents page.</p>{% endif %}
 <div class="tally">{% for t in tally %}<span class="chip">{{ t.count }} {{ t.label }}</span>{% endfor %}</div>
+<div class="wake-controls hub-wakes">{{ pause_switch('/ui/wakes', hub_wakes.paused, 'Pause all agent wakes', path, csrf, 'live') }}
+  {% if hub_wakes.paused %}{{ paused_badge('hub') }}{% endif %}
+  {%- if hub_wakes.chains %}<span class="small-line">{{ hub_wakes.chains | length }} wake loop{{ '' if hub_wakes.chains | length == 1 else 's' }} paused, waiting on you above</span>{% endif %}</div>
 <ul class="agent-grid">
   {% for ag in agents %}
   <li class="card agent-card{{ ' is-failed' if ag.avatar and ag.avatar.pose == 'failed' }}" {{ fail_attrs('agent:' ~ ag.id, ag.avatar and ag.avatar.pose == 'failed') }} data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 64, scene=True) }}
     <div class="info"><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a>
       {{ agent_tasks(ag, names, path) }}
+      {{ agent_wakes(ag, path, csrf, 'live') }}
       </div></li>
   {% endfor %}
 </ul>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title, task_fact_rows, approval_summary, open_attrs %}
+{% from "_macros.html" import chip, avatar, task_title, task_fact_rows, approval_summary, open_attrs, agent_wakes %}
 {% from "_chat.html" import chat with context %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -7,7 +7,8 @@
 <div class="agent-head">
   {{ avatar(ag.avatar, 96, scene=True) }}
   <div class="info"><h1>{{ ag.name }} {{ chip(ag.status) }}</h1>
-    {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}</div>
+    {% if ag.status != 'revoked' %}<p class="muted"><span class="dot {{ 'on' if ag.connected else 'off' }}"></span>{{ 'connected' if ag.connected else 'offline' }} · heartbeat {{ ago(ag.last_heartbeat) }}</p>{% endif %}
+    {{ agent_wakes(ag, '/ui/agents/' ~ ag.id, csrf) }}</div>
 </div>
 {% if ag.status != 'revoked' %}
 <form class="inline" method="post" action="/ui/agents/{{ ag.id }}/avatar"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Reroll look</button></form>
@@ -40,6 +41,18 @@
     <dl class="agent-facts">{{ task_fact_rows(t) }}{% if t.role %}<dt>Stage</dt><dd>{{ t.stage }}</dd>{% endif %}</dl></div>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
+
+{% if ag.wakes and ag.wakes.recent %}
+<section class="panel">
+  <h3>Recent wakes</h3>
+  <ol class="loop-wakes" aria-label="Messages that woke {{ ag.name }}, or were handed to it, newest first">
+    {% for w in ag.wakes.recent %}<li>{{ 'You' if w.operator else (w.waker.name or w.waker.id) }} → {{ w.woken.name }} in <a {{ open_attrs(w.chat_item, w.chat_href) }}>{{ w.chat.title }}</a>
+      {%- if w.mode == 'woke' %} · woke it{% elif w.notice %} · didn't wake it{% elif w.mode %} · {{ w.mode }}{% else %} · not picked up yet{% endif %}
+      {%- if w.chain_id %} · <span class="chain" title="wake chain {{ w.chain_id }}">chain {{ w.chain_id[:9] }}</span>{% endif %} · <time datetime="{{ w.created_at }}">{{ ago(w.created_at) }}</time></li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
 
 {% if pending %}
 <section class="panel">

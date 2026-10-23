@@ -6,7 +6,7 @@
 {%- if info %}<img class="avatar" src="{{ info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
 {%- endmacro %}
 {% macro group_icon(kind, members) -%}
-<span class="group-icon g-{{ kind }}" aria-hidden="true">{{ {'task': '#', 'project': '▦'}[kind] }}
+<span class="group-icon g-{{ kind }}" aria-hidden="true">{{ {'task': '#', 'project': '▦', 'dm': '↔'}[kind] }}
   {%- if members %}<span class="stack">{% for m in members %}<img class="avatar" src="{{ m.mini }}" width="18" height="18" alt="" loading="lazy">{% endfor %}</span>{% endif %}</span>
 {%- endmacro %}
 {% macro last_line(r, empty) -%}
@@ -18,7 +18,7 @@
 {%- endmacro %}
 {% macro chat_list() -%}
 <div class="mlists">
-  {% if not (agents or tasks or projects) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
+  {% if not (agents or tasks or projects or dms) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
   {% if agents %}
   <div class="chat-group">Agents</div>
   <ul class="clist">
@@ -48,6 +48,16 @@
     <li><a class="crow" {{ open_attrs(p.item, p.href) }}>{{ group_icon('project', p.members) }}
       <span class="ctext"><span class="cline"><strong>{{ p.title }}</strong><span class="cago">{{ ago(p.last_ts) if p.last_ts else '' }}</span></span>
         {{ last_line(p, 'No messages yet') }}</span>{{ dot(p) }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if dms %}
+  <div class="chat-group">Between agents</div>
+  <ul class="clist">
+    {% for d in dms %}
+    <li><a class="crow" {{ open_attrs(d.item, d.href) }}>{{ group_icon('dm', d.members) }}
+      <span class="ctext"><span class="cline"><strong>{{ d.title }}</strong><span class="cago">{{ ago(d.last_ts) if d.last_ts else '' }}</span></span>
+        {{ last_line(d, 'No messages yet') }}</span>{{ dot(d) }}</a></li>
     {% endfor %}
   </ul>
   {% endif %}

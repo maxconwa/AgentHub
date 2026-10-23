@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chip, avatar, open_attrs, agent_wakes %}
+{% from "_chat.html" import chat with context %}
+{#- A direct chat between two agents (views.chat, kind dm). Only its two agents and the operator can read it. -#}
+{% block title %}{{ c.title }}{% endblock %}
+{% block content %}
+<p><a href="/ui/chats">← Chats</a></p>
+<h1>{{ c.title }}</h1>
+<p class="muted">A direct chat between two agents. Only they and you can read it; a message you write here goes to both.</p>
+<ul class="agent-grid">
+  {% for ag in pair %}
+  <li class="card agent-card" data-panel="agent:{{ ag.id }}">{{ avatar(ag.avatar, 64, scene=True) }}
+    <div class="info"><a class="name" {{ open_attrs('agent:' ~ ag.id, '/ui/agents/' ~ ag.id) }}>{{ ag.name }}</a> {% if ag.status != 'active' %}{{ chip(ag.status) }}{% endif %}
+      {{ agent_wakes(ag, c.page, csrf) }}</div></li>
+  {% endfor %}
+</ul>
+<section class="page-chat" aria-labelledby="chat-title">
+  <h2 id="chat-title">Chat</h2>
+  {{ chat(c) }}
+</section>
+{% endblock %}
