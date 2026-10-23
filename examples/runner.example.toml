@@ -1,7 +1,9 @@
 # Copy to ~/.config/agenthub/runner.toml on an agent machine.
 # Placeholders only.
 
-# Where each project's tasks run (a checkout owned by the agent user).
+# Where each project's tasks run (a checkout owned by the agent user). Names match
+# ignoring case ("Example-Project" on the hub finds this key); keys that differ only
+# in case are an error.
 [projects]
 example-project = "/home/agent/src/example-project"
 

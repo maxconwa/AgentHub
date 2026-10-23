@@ -22,7 +22,10 @@ hand a running session more user messages (:meth:`Session.deliver`). Measured on
 So a session ends (stdin is closed) at the first ``result`` by which every message written to it has been echoed,
 or at a failed ``result`` (an error, the usage limit): messages it hasn't taken in by then may never be, so the
 session ends anyway and returns them (``SessionResult.undelivered``) for the runner to hand to the next session.
-The prompt is written to stdin so no flag can swallow it.
+The prompt and every message are written to stdin, never put in argv or the environment, so no flag can swallow
+them and no length limit cuts them: an operator's message of any length reaches the session in full. Output is read
+in lines of any length (:func:`lines`), since the session echoes each message back whole. A system prompt too long
+for one argument (``ARGV_TEXT_MAX``) goes in a private file instead (``--append-system-prompt-file``).
 
 Subscription only: every session's environment drops ``BILLING_ENV_VARS`` (see there), and a result
 carrying the subscription usage-limit message ends with outcome ``usage_limit`` and its reset time
@@ -38,8 +41,9 @@ import logging
 import os
 import re
 import signal
+import tempfile
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -190,6 +194,45 @@ def build_command(
     if resume_session:
         cmd += ["--resume", resume_session] + (["--fork-session"] if fork_session else [])
     return cmd + list(extra_args)
+
+
+# The longest text put in one argument. Linux refuses a single argument over 128 KiB (MAX_ARG_STRLEN) and macOS all of
+# argv and the environment together over 1 MiB (ARG_MAX); longer text goes through a file or stdin.
+ARGV_TEXT_MAX = 32_000
+
+
+def spill_system_prompt(cmd: list[str]) -> tuple[list[str], Path | None]:
+    """``cmd`` with an ``--append-system-prompt`` longer than ``ARGV_TEXT_MAX`` bytes moved into a private file
+    (``--append-system-prompt-file``), and that file, which the caller removes once the session has ended."""
+    try:
+        i = cmd.index("--append-system-prompt")
+    except ValueError:
+        return cmd, None
+    if i + 1 >= len(cmd) or len(cmd[i + 1].encode()) <= ARGV_TEXT_MAX:
+        return cmd, None
+    fd, name = tempfile.mkstemp(prefix="agenthub-system-", suffix=".md")  # 0600
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(cmd[i + 1])
+    return [*cmd[:i], "--append-system-prompt-file", name, *cmd[i + 2:]], Path(name)
+
+
+async def lines(stream: asyncio.StreamReader, chunk: int = 1 << 16) -> AsyncIterator[bytes]:
+    """The stream's lines (with their newline; the last one may lack it), however long: ``StreamReader.readline``
+    gives up on a line longer than the reader's limit, and an echoed message can be longer than any limit."""
+    buffer = bytearray()
+    while True:
+        data = await stream.read(chunk)
+        if not data:
+            if buffer:
+                yield bytes(buffer)
+            return
+        start = 0
+        while (end := data.find(b"\n", start)) != -1:
+            buffer += data[start:end + 1]
+            yield bytes(buffer)
+            buffer.clear()
+            start = end + 1
+        buffer += data[start:]
 
 
 def _tool_summary(name: str, tool_input: Any) -> str:
@@ -374,17 +417,24 @@ class Session:
             proc.stdin.close()
 
     async def run(self) -> SessionResult:
+        cmd, system_file = spill_system_prompt(self.cmd)
+        try:
+            return await self._run(cmd)
+        finally:
+            if system_file is not None:
+                system_file.unlink(missing_ok=True)
+
+    async def _run(self, cmd: list[str]) -> SessionResult:
         env = session_env(self.env)
         log.debug("session environment variable names: %s", " ".join(sorted(env)))
         self._proc = await asyncio.create_subprocess_exec(
-            *self.cmd, cwd=self.cwd, env=env,
+            *cmd, cwd=self.cwd, env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True, limit=16 * 1024 * 1024,
+            start_new_session=True,
         )
         assert self._proc.stdin and self._proc.stdout
+        # Not drained here: a long prompt goes out while the output is read, so neither side waits on a full pipe.
         self._write(self.prompt, None)
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            await self._proc.stdin.drain()
         self._accepting = not self._stopped
 
         result_msg: dict[str, Any] | None = None
@@ -394,7 +444,7 @@ class Session:
         async def read() -> None:
             nonlocal result_msg, session_id
             assert self._proc and self._proc.stdout
-            async for raw in self._proc.stdout:
+            async for raw in lines(self._proc.stdout):
                 for kind, value in parse_line(raw.decode(errors="replace")):
                     if kind == "session":
                         session_id = value

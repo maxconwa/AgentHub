@@ -2,7 +2,8 @@
 
 Defaults follow the XDG base directory spec:
   config: $AGENTHUB_CONFIG_DIR or $XDG_CONFIG_HOME/agenthub or ~/.config/agenthub
-          (each further agent on the same account has its own, e.g. ~/.config/agenthub-<name>)
+          (each further agent on the same account has its own, e.g. ~/.config/agenthub-<slug>,
+           the agent name lowercased: see agenthub.names)
   data:   $AGENTHUB_DATA_DIR   or $XDG_DATA_HOME/agenthub   or ~/.local/share/agenthub
 """
 

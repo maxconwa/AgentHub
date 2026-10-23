@@ -8,7 +8,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agenthub import paths
+from agenthub import names, paths
 
 
 class RunnerConfigError(Exception):
@@ -25,7 +25,8 @@ FORBIDDEN_EXTRA_ARGS = ("--permission-mode", "--dangerously-skip-permissions",
 
 @dataclass
 class RunnerConfig:
-    # project name -> local checkout where that project's tasks run
+    # project name -> local checkout where that project's tasks run. Names match ignoring case, as on the hub
+    # ("Agent-Hub" finds an `agent-hub` key), so two keys that differ only in case are a config error.
     projects: dict[str, str] = field(default_factory=dict)
     concurrency: int = 1
     claude_bin: str = "claude"
@@ -47,6 +48,8 @@ class RunnerConfig:
 
     def project_dir(self, project: str) -> Path | None:
         path = self.projects.get(project)
+        if path is None:
+            path = next((p for name, p in self.projects.items() if names.same(name, project)), None)
         return Path(path).expanduser() if path else None
 
 
@@ -81,6 +84,12 @@ def load_runner_config(path: Path | None = None) -> RunnerConfig:
             raise RunnerConfigError(f"{key} must be unset (no limit) or a whole number of at least 1 (got {value!r})")
     if not isinstance(cfg.projects, dict) or not all(isinstance(v, str) for v in cfg.projects.values()):
         raise RunnerConfigError("[projects] must map project names to directory paths")
+    seen: dict[str, str] = {}
+    for project in cfg.projects:
+        first = seen.setdefault(names.key(project), project)
+        if first != project:
+            raise RunnerConfigError(f"[projects] has both {first!r} and {project!r}: project names ignore case, "
+                                    "so they name the same project; keep one")
     return cfg
 
 
