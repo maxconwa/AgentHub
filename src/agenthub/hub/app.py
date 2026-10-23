@@ -479,12 +479,12 @@ def create_app(state: HubState) -> FastAPI:
     @app.post(f"{api}/projects/{{project}}/messages", status_code=201)
     def post_message(project: str, caller: Caller) -> dict[str, Any]:
         """Retired: channels are read-only history (copied into the project's and tasks' chats)."""
-        require_project(caller, project)
+        project = require_project(caller, project)
         raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/projects/{{project}}/messages")
     def recent_messages(project: str, caller: Caller) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         raise HTTPException(410, RETIRED)
 
     @app.get(f"{api}/inbox")
@@ -548,7 +548,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/questions", status_code=201)
     def ask_operator(project: str, body: QuestionRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return questions.ask(conn, caller.agent, project=project, question=body.question,
                                  task_id=body.task_id, device=caller.device.name)
@@ -576,17 +576,17 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/board")
     def board_list(project: str, caller: Caller, conn: Conn, prefix: str = "") -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"keys": store.board_list(conn, project, prefix[:200])}
 
     @app.get(f"{api}/projects/{{project}}/board/{{key:path}}")
     def board_get(project: str, key: str, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return store.board_get(conn, project, key)
 
     @app.put(f"{api}/projects/{{project}}/board/{{key:path}}")
     def board_put(project: str, key: str, body: BoardPutRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return store.board_put(
                 conn, actor=caller.agent.actor, project=project, key=key, value=body.value,
@@ -604,7 +604,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/reports")
     def list_reports(project: str, caller: Caller, conn: Conn, task_id: int | None = None) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"reports": reports.list_reports(conn, projects=[project], task_id=task_id)}
 
     @app.get(f"{api}/reports/{{report_id}}")
@@ -623,13 +623,13 @@ def create_app(state: HubState) -> FastAPI:
     def list_tasks(
         project: str, caller: Caller, conn: Conn, state: str | None = None, mine: bool = False,
     ) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         member_id = caller.agent.id if mine else None
         return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=member_id)}
 
     @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
     def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             task, approval = approvals.agent_create_task(
                 conn, caller.agent, project=project, title=body.title, body=body.body,
@@ -773,7 +773,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/intents", status_code=201)
     def announce_intent(project: str, body: IntentRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return intents.announce(conn, caller.agent, project=project, patterns=body.patterns,
                                     description=body.description, ttl_minutes=body.ttl_minutes,
@@ -781,7 +781,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.get(f"{api}/projects/{{project}}/intents")
     def list_intents(project: str, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         return {"intents": intents.active(conn, project)}
 
     @app.post(f"{api}/intents/{{intent_id}}/clear")
@@ -793,7 +793,7 @@ def create_app(state: HubState) -> FastAPI:
 
     @app.post(f"{api}/projects/{{project}}/asks", status_code=201)
     def create_ask(project: str, body: AskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:
-        require_project(caller, project)
+        project = require_project(caller, project)
         with db.transaction(conn):
             return asks.create(conn, caller.agent, project=project, to=body.to, question=body.question,
                                timeout_seconds=body.timeout_seconds, device=caller.device.name)

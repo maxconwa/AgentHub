@@ -249,7 +249,7 @@ def test_task_list_shows_roles_newest_first_and_filters(busy):
     hub, a, b, ap, t = busy
     conn = hub.conn()
     with db.transaction(conn):
-        conn.execute("INSERT INTO projects VALUES ('other', '', 'x')")
+        conn.execute("INSERT INTO projects (name, description, created_at) VALUES ('other', '', 'x')")
         t2 = tasks.create_task(conn, actor=OPERATOR, project="other", title="Second", state="open")
         tasks.transition(conn, t2["id"], "cancelled", actor=OPERATOR, role="operator", note="")
     html = get(hub, "/ui/tasks").text
@@ -1446,7 +1446,9 @@ def test_new_project_is_created_with_csrf_and_duplicates_are_409(hub):
     r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={**data, "description": "again"})
     assert r.status_code == 409
     assert hub.conn().execute("SELECT description FROM projects WHERE name = 'mobile-app'").fetchone()[0] == data["description"]
-    for bad in ("Mobile", "-x", "a b", "x" * 65, ""):
+    assert hub.client.post("/ui/projects", headers=hub.op_headers(),  # names are unique ignoring case
+                           data={**data, "name": "Mobile-App"}).status_code == 409
+    for bad in ("-x", "a b", "x" * 65, "", "caf\u00e9"):
         assert hub.client.post("/ui/projects", headers=hub.op_headers(),
                                data={**data, "name": bad}).status_code == 422, bad
     r = hub.client.post("/ui/projects", headers=hub.op_headers(), data={"name": "no-csrf"})

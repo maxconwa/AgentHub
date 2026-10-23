@@ -51,7 +51,7 @@ def trio(hub):
 
 def test_migration_22_adds_chat_tables_and_nothing_else_changes(hub):
     conn = hub.conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 22
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"chats", "chat_messages", "chat_deliveries", "chat_cursors"} <= tables
     assert "chat_support" in {r["name"] for r in conn.execute("PRAGMA table_info(agents)")}
@@ -61,9 +61,10 @@ def test_an_old_hub_runs_on_a_migrated_database(tmp_path, monkeypatch):
     """0.3.7's migrate() (unchanged since) with its own 21 migrations leaves a newer database alone."""
     path = tmp_path / "hub.sqlite3"
     db.init_db(path).close()
+    newest = len(db.MIGRATIONS)
     monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:21])
     conn = db.init_db(path)  # what a rolled-back 0.3.7 hub does at start
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == newest
     with db.transaction(conn):  # and 0.3.7 still writes its own tables
         store.ensure_project(conn, "proj", actor=OPERATOR)
         store.post_message(conn, author=OPERATOR, project="proj", channel="general", body="from 0.3.7")

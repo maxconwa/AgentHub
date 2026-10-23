@@ -26,7 +26,7 @@ from typing import Any
 
 from agenthub.hub import events
 from agenthub.hub.db import now_iso
-from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent
+from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, require_project_name
 
 STATES = (
     "proposed", "awaiting_approval", "open", "claimed", "in_progress",
@@ -162,8 +162,7 @@ def create_task(
     operator's prompt, ``prompt_id``; ``awaiting_approval`` for agents via :func:`approvals.agent_create_task`)."""
     if state not in ("proposed", "awaiting_approval", "open"):
         raise Invalid(f"tasks cannot be created in state {state!r}")
-    if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone():
-        raise NotFound(f"no project {project!r}")
+    project = require_project_name(conn, project)
     ts = now_iso()
     cur = conn.execute(
         "INSERT INTO tasks (project, title, body, created_by, state, budget, created_at, updated_at) "

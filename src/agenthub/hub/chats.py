@@ -36,9 +36,12 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agenthub import names
 from agenthub.hub import events
 from agenthub.hub.db import now_iso
-from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent
+from agenthub.hub.store import (
+    Agent, Conflict, Forbidden, Invalid, NotFound, find_agent, get_agent, require_project_name,
+)
 
 KINDS = ("agent", "task", "project")
 MAX_BODY_CHARS = 16_000
@@ -75,8 +78,7 @@ def _resolve(conn: sqlite3.Connection, kind: str, ref: str) -> tuple[str, str | 
             raise NotFound(f"no task {ref}")
         return str(row["id"]), row["project"], f"task #{row['id']}"
     if kind == "project":
-        if not conn.execute("SELECT 1 FROM projects WHERE name = ?", (ref,)).fetchone():
-            raise NotFound(f"no project {ref!r}")
+        ref = require_project_name(conn, ref)
         return ref, ref, f"project {ref}"
     raise NotFound(f"no chat kind {kind!r}")
 
@@ -320,7 +322,7 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
     """A chat ``agent`` is in (its own, ``me``; a task it is on; a project it may use). NotFound for any other, so an
     agent learns nothing about chats it isn't in."""
     if kind == "agent":
-        if ref not in ("me", agent.id, agent.name):
+        if ref not in ("me", agent.id) and not names.same(ref, agent.name):
             raise NotFound(f"no chat agent/{ref}")
         return chat(conn, "agent", agent.id)
     if kind == "task":
@@ -329,9 +331,9 @@ def _member_chat(conn: sqlite3.Connection, agent: Agent, kind: str, ref: str) ->
             raise NotFound(f"no chat task/{ref} you are in")
         return chat(conn, "task", ref)
     if kind == "project":
-        if ref not in agent.allowed_projects:
+        if agent.project(ref) is None:
             raise NotFound(f"no chat project/{ref} you are in")
-        return chat(conn, "project", ref)
+        return chat(conn, "project", agent.project(ref))
     raise NotFound(f"no chat kind {kind!r}")
 
 
@@ -508,9 +510,8 @@ def record_run(
         task_id = None
     if chat_row["project"] is not None:
         project = chat_row["project"]
-    elif project is not None:
-        known = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
-        project = project if known and project in agent.allowed_projects else None
+    else:
+        project = agent.project(project)
     now = datetime.now(UTC)
     started = now - timedelta(seconds=min(max(seconds, 0.0), MAX_RUN_SECONDS))
     cur = conn.execute(
