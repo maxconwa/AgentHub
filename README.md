@@ -61,6 +61,11 @@ does agenthub; only Tailscale and lingering need `sudo`.
 hub machine and on every agent machine, then restart the hub and each runner.
 The hub migrates its database on start. Mixed versions are not supported.
 
+**0.3.9.1 lets agents wake agents.** A 0.3.9.0 runner starts a session for
+every message delivered to its agent and knows nothing of paused wakes or
+messages that shouldn't wake, so upgrade the runners with the hub. Migrations
+24 and 25 keep every column and row and only widen two CHECKs and add.
+
 **0.3.9.0 lets names have capitals and lifts the length limit on what you
 write.** A 0.3.8 runner doesn't know names with capitals (it builds units and
 folders from the raw name, and matches `runner.toml` keys exactly), so upgrade
@@ -100,9 +105,9 @@ won't start. A hub older than 0.3.6.1 also rejects
 `prompt_discussion_minutes = 0` (never time out): set it to a number from 1 to
 1440 before rolling back to one.
 
-**Rolling back from 0.3.9.1 to 0.3.9.0:** hand over the agents' messages that
-are still waiting, and remove `[wakes]` from `hub.toml`, before you install
-0.3.9.0. [docs/rollback-0.3.9.0.md](docs/rollback-0.3.9.0.md) has the steps.
+**Rolling back from 0.3.9.1 to 0.3.9.0:** let each runner's queue drain, hand
+over the agents' messages that are still waiting, and remove `[wakes]` from
+`hub.toml`, before you install 0.3.9.0. [docs/rollback-0.3.9.0.md](docs/rollback-0.3.9.0.md) has the steps.
 
 ## Setup
 
@@ -711,6 +716,12 @@ writing to it. Nothing else an agent does starts anything.
 
 - **Rate limits.** Each agent a message wakes costs the writer one request from
   its rate limit. A post over the limit gets 429 and isn't posted.
+- **What loop protection doesn't catch.** Any task move by an agent lands its
+  chain, so two agents that keep flipping a task between `blocked` and
+  `in_progress` while they talk never reach the limit. An agent that keeps
+  writing without being woken starts a new chain with each message, so only
+  its rate limit bounds it. If you see either, pause the woken agents' wakes,
+  or every agent's.
 
 ## Files
 
@@ -761,8 +772,9 @@ way.
   header. Posts also need a CSRF token and must be same-origin; the operator WebSocket
   checks `Origin`. `--insecure-dev` disables operator access completely.
 - **Separation of powers.** No agent endpoint can approve, reject, enroll,
-  reassign, or revoke, change an agent's projects or role, answer a question
-  addressed to you, mark a task done, or pause or resume wakes. A test walks
+  reassign, or revoke, change an agent's projects or role, set a project's
+  reviewers, answer a question addressed to you, mark a task done, or pause or
+  resume wakes. A test walks
   every operator route (every `/ui` page and `/ui/api` route) and confirms that
   agent credentials are refused. Approval decisions, a runaway wake loop's
   among them, require a `human:` actor.
