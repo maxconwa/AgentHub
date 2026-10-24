@@ -28,7 +28,7 @@ from markupsafe import Markup
 
 from agenthub import names as agent_names_rule
 from agenthub.hub import (
-    approvals, avatar_art, avatars, chats, db, device_board, events, markdown, questions, reports, store,
+    approvals, avatar_art, avatars, chats, db, device_board, events, markdown, questions, reports, stalls, store,
     task_agents, tasks, usage, views,
 )
 from agenthub.hub.auth import get_conn
@@ -710,6 +710,9 @@ def build_router() -> APIRouter:
         project = store.project_name(conn, project) or project if project else ""
         rows = tasks.list_tasks(conn, projects=[project] if project else None, state=state or None, limit=500,
                                 newest_first=True)
+        stuck = stalls.stalled_reviews(conn)
+        for r in rows:
+            r["stalled_review"] = stuck.get(r["id"])
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
         return render(request, operator, "tasks.html", conn, nav="tasks", rows=rows, project=project, state=state,
                       states=tasks.STATES, projects=store.list_projects(conn), agents=agents)
@@ -731,7 +734,7 @@ def build_router() -> APIRouter:
 
     @router.get("/tasks/{task_id}", response_class=HTMLResponse)
     def task_page(task_id: int, request: Request, operator: Op, conn: Conn) -> HTMLResponse:
-        t = tasks.get_task(conn, task_id)
+        t = views.stalled(conn, tasks.get_task(conn, task_id))
         rows = conn.execute(
             # A range on type (not LIKE, which can't use an index) walks events_type_id over task events only.
             "SELECT * FROM events WHERE type >= 'task.' AND type < 'task/' AND json_extract(payload, '$.task_id') = ? "

@@ -58,7 +58,8 @@
 {%- endmacro %}
 
 {#- What a status row says; `name` is its agent's. The hub writes the wake states (0.3.9.1): woke, wake_declined,
-    loop_paused and loop_resumed; their ids are the hub's, never agent text. -#}
+    loop_paused and loop_resumed, and (0.3.11) reopened; their ids are the hub's, never agent text (a reopening agent's
+    note is meta.detail, shown as agent text). -#}
 {% macro status_text(m, name) -%}
 {%- set s = m.meta.state -%}
 {%- if s == 'woke' %}{{ hub_who(m.meta.waker, True) }} woke {{ name }}{% if m.meta.task_id %} (task #{{ m.meta.task_id }}){% endif %}
@@ -69,6 +70,7 @@
   {%- if m.meta.approval_id %} · <a {{ open_attrs('approval:' ~ m.meta.approval_id, '/ui/approvals/' ~ m.meta.approval_id) }}>approval #{{ m.meta.approval_id }}</a>{% endif %}
 {%- elif s == 'loop_resumed' %}Wakes resumed: {{ chain(m.meta.chain_id or '') }}
   {%- if m.meta.approval_id %} · <a {{ open_attrs('approval:' ~ m.meta.approval_id, '/ui/approvals/' ~ m.meta.approval_id) }}>approval #{{ m.meta.approval_id }}</a> approved{% endif %}
+{%- elif s == 'reopened' %}{{ hub_who(m.meta.by, True) }} reopened task #{{ m.meta.task_id }}: back in progress, for its implementers to finish again
 {%- elif s == 'started' %}{{ name }} started{% if m.meta.task_id %} on task #{{ m.meta.task_id }}{% endif %}
 {%- elif s == 'working' %}{{ name }} is working{% if m.meta.task_id %} on task #{{ m.meta.task_id }}{% endif %}
 {%- elif s == 'usage_limit' %}{{ name }} is waiting for the usage limit to reset{% if m.meta.until %} ({{ m.meta.until | clock }}){% endif %}

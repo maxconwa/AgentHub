@@ -127,7 +127,7 @@ def test_only_a_reviewer_on_the_task_sends_it_back(hub):
         tasks.check_transition("in_progress", "review", "reviewer")
     with pytest.raises(store.Forbidden):
         tx(hub, tasks.transition, t["id"], "in_progress", actor=b.id, role="reviewer", agent=agent(hub, "b1"))
-    # And an agent's own update_task can't use it: review → in_progress stays the operator's and a reviewer's.
+    # (An agent on the task may reopen it with update_task since 0.3.11: tests/test_stalled_reviews.py.)
     resp = hub.client.patch(f"/api/v1/tasks/{t['id']}", json={"state": "in_progress"}, headers=b.headers)
     assert resp.status_code in (403, 404, 405, 409)
     assert tasks.get_task(hub.conn(), t["id"])["state"] == "review"

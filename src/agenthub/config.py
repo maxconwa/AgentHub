@@ -67,6 +67,23 @@ def check_wakes(wakes: Any) -> None:
                          f"{MAX_WAKE_LOOP_LIMIT}, not {limit!r}")
 
 
+DEFAULT_REVIEW_STALL_MINUTES = 30
+MAX_REVIEW_STALL_MINUTES = 7 * 24 * 60
+
+
+def check_reviews(reviews: Any) -> None:
+    """The [reviews] table: only stall_minutes, a whole number from 0 (off) to MAX_REVIEW_STALL_MINUTES."""
+    if not isinstance(reviews, dict):
+        raise ValueError("reviews must be a table, e.g. [reviews] stall_minutes = 30")
+    unknown = set(reviews) - {"stall_minutes"}
+    if unknown:
+        raise ValueError(f"unknown [reviews] keys: {', '.join(sorted(unknown))}")
+    minutes = reviews.get("stall_minutes", DEFAULT_REVIEW_STALL_MINUTES)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 <= minutes <= MAX_REVIEW_STALL_MINUTES:
+        raise ValueError(f"[reviews] stall_minutes must be 0 (off) or a whole number of minutes up to "
+                         f"{MAX_REVIEW_STALL_MINUTES}, not {minutes!r}")
+
+
 @dataclass
 class HubConfig:
     bind_host: str = "127.0.0.1"
@@ -109,10 +126,18 @@ class HubConfig:
     # landing (a task made, moved, finished or reviewed, or a request declined) and asks the operator; 0 turns it
     # off. A 0.3.9.0 hub rejects this table: remove it from hub.toml before rolling back.
     wakes: dict[str, Any] = field(default_factory=dict)
+    # [reviews] (0.3.11): stall_minutes = N flags a task that has sat in review N minutes with no reviewer session
+    # running and no verdict (``stalled_review`` on the dashboard, a warning in `agenthub doctor`); 0 turns it off.
+    # A 0.3.10 hub rejects this table: remove it from hub.toml before rolling back.
+    reviews: dict[str, Any] = field(default_factory=dict)
 
     @property
     def wake_loop_limit(self) -> int:
         return self.wakes.get("loop_limit", DEFAULT_WAKE_LOOP_LIMIT)
+
+    @property
+    def review_stall_minutes(self) -> int:
+        return self.reviews.get("stall_minutes", DEFAULT_REVIEW_STALL_MINUTES)
 
     @classmethod
     def load(cls, path: Path | None = None) -> HubConfig:
@@ -131,6 +156,7 @@ class HubConfig:
             if login not in cfg.operators:
                 raise ValueError(f"operator_devices: {node} maps to {login!r}, which is not in operators")
         check_wakes(cfg.wakes)
+        check_reviews(cfg.reviews)
         return cfg
 
     def save(self, path: Path | None = None) -> Path:

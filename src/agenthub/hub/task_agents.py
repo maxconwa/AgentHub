@@ -176,7 +176,8 @@ def finish(
     conn: sqlite3.Connection, task_id: int, agent: Agent, *, note: str = "", device: str | None = None
 ) -> dict[str, Any]:
     """An implementer says its part is done. When every *active* implementer has,
-    the hub moves the task to ``review``; revoked or pending ones do not block it."""
+    the hub moves the task to ``review``; revoked or pending ones do not block it, and
+    its reviewers are woken with this note (:func:`wake_reviewers`)."""
     task = _state_membership(conn, task_id, agent, "works", "in_progress")
     conn.execute(
         "UPDATE task_agents SET finished_at = COALESCE(finished_at, ?), finish_note = ? "
@@ -189,7 +190,11 @@ def finish(
         payload={"task_id": task_id, "agent_id": agent.id, "note": note,
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
-    return maybe_advance(conn, task_id, actor=agent.id)
+    fresh = maybe_advance(conn, task_id, actor=agent.id)
+    if fresh["state"] == "review":
+        wake_reviewers(conn, fresh, agent, note)
+        return tasks.get_task(conn, task_id)
+    return fresh
 
 
 def record_verdict(
@@ -241,6 +246,21 @@ def wake_builders(conn: sqlite3.Connection, task: dict[str, Any], reviewer: Agen
     # route, but that is bounded here by the task's builders
     for m in builders:
         chats.post(conn, reviewer, "task", str(task["id"]), body, to=m["agent_id"], meta=meta)
+
+
+def wake_reviewers(conn: sqlite3.Connection, task: dict[str, Any], builder: Agent, note: str) -> None:
+    """``builder``'s finish moved ``task`` to review (0.3.11): its active reviewers are woken with the finish note, by
+    the builder's message in the task chat addressed to each, the mirror of :func:`wake_builders`. A hand-off never
+    goes silent, and it keeps wake chains, loop protection and the pause switches (:func:`chats.post`)."""
+    from agenthub.hub import chats
+
+    reviewers = [m for m in task["agents"] if m["stage"] == "reviews" and m["status"] == "active"]
+    if not reviewers:
+        return
+    body = (f"Task #{task['id']} is ready for review: every implementer has finished.\n\n"
+            + (note.strip() or "(no note)"))[:chats.MAX_BODY_CHARS]
+    for m in reviewers:
+        chats.post(conn, builder, "task", str(task["id"]), body, to=m["agent_id"], meta={"handoff": True})
 
 
 def pause(

@@ -114,7 +114,7 @@ def test_agent_rows_show_role(busy):
     assert [r["name"] for r in rows] == ["worker"]
     row = rows[0]
     assert row["tasks"] == [{"id": t["id"], "title": "Fix login", "project": "proj", "state": t["state"],
-                             "role": "tester", "stage": "works", "created_by": OPERATOR}]
+                             "role": "tester", "stage": "works", "created_by": OPERATOR, "stalled_review": None}]
     assert row["avatar"]["pose"] and row["device"] and "connected" in row
 
 

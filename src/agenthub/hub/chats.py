@@ -453,9 +453,11 @@ def post(
     task's project. Whoever it can't reach that way is reported in the chat (a ``wake_declined`` status line)
     rather than woken: a wake never widens access. An addressed message (``to``, a mention, a direct chat) may wake
     an idle recipient; a task or project chat message addressed to nobody reaches everyone (into a running session,
-    or read_inbox) but wakes nobody, so the chat's chatter doesn't start sessions. The result is the message with
-    ``chain_id``, ``wakes`` (``[{agent_id, name, delivery_id, wake}]``) and ``declined`` (``[{agent_id, name,
-    reason}]``)."""
+    or read_inbox) but wakes nobody, so the chat's chatter doesn't start sessions. One exception (0.3.11): an
+    implementer's message addressed to nobody in the chat of a task in review is a hand-off, and it wakes the task's
+    reviewers (:func:`review_handoff`); everyone else still gets it without waking. The result is the message with
+    ``chain_id``, ``wakes`` (``[{agent_id, name, delivery_id, wake}]``), ``handoff`` (the reviewers it was handed
+    to) and ``declined`` (``[{agent_id, name, reason}]``)."""
     _check_body(body, max_chars)
     chat_row = _member_chat(conn, agent, kind, ref)
     _not_device(chat_row)
@@ -505,20 +507,23 @@ def post(
     found = get_message(conn, message_id)
     found["chain_id"], found["wakes"], found["broadcast"] = None, [], False
     found["declined"] = [{"agent_id": t.id, "name": t.name, "reason": r} for t, r in declined]
+    broadcast = to is None and not mentioned and chat_row["kind"] in ("task", "project")
+    handoff = review_handoff(conn, chat_row, agent) if broadcast else set()
+    found["handoff"] = [t.id for t in recipients if t.id in handoff]
     if not recipients:
         return found
     from agenthub.hub import wakes
 
     chain_id = wakes.chain_for(conn, agent)
-    broadcast = to is None and not mentioned and chat_row["kind"] in ("task", "project")
     ts = now_iso()
     waking = 0
     for target in recipients:
-        wake = not broadcast and wakes.may_wake(conn, target.id, chain_id)
+        wakes_it = not broadcast or target.id in handoff  # a notice otherwise: delivered, never waking
+        wake = wakes_it and wakes.may_wake(conn, target.id, chain_id)
         waking += wake
         cur = conn.execute("INSERT INTO chat_deliveries (message_id, agent_id, status, created_at, chain_id, wake) "
                            "VALUES (?, ?, 'pending', ?, ?, ?)",
-                           (message_id, target.id, ts, chain_id, int(not broadcast)))
+                           (message_id, target.id, ts, chain_id, int(wakes_it)))
         found["wakes"].append({"agent_id": target.id, "name": target.name, "delivery_id": cur.lastrowid,
                                "wake": wake})
         announce_delivery(conn, chat_row["id"], message_id, cur.lastrowid, target.id, actor=agent.id)
@@ -528,6 +533,22 @@ def post(
             w["wake"] = False
         found["loop_paused"] = True
     return found
+
+
+def review_handoff(conn: sqlite3.Connection, chat_row: dict[str, Any], agent: Agent) -> set[str]:
+    """The reviewers an unaddressed message of ``agent``'s hands off to (0.3.11): the active ``reviews`` members of the
+    chat's task, when it is a task chat, the task is in review and ``agent`` implements it. Otherwise none."""
+    if chat_row["kind"] != "task":
+        return set()
+    task_id = int(chat_row["ref"])
+    row = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None or row["state"] != "review" or not conn.execute(
+            "SELECT 1 FROM task_agents WHERE task_id = ? AND agent_id = ? AND stage = 'works'",
+            (task_id, agent.id)).fetchone():
+        return set()
+    return {r["agent_id"] for r in conn.execute(
+        "SELECT ta.agent_id FROM task_agents ta JOIN agents a ON a.id = ta.agent_id "
+        "WHERE ta.task_id = ? AND ta.stage = 'reviews' AND a.status = 'active'", (task_id,))}
 
 
 def _not_device(chat_row: dict[str, Any]) -> None:

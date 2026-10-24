@@ -632,6 +632,36 @@ MIGRATIONS: list[str] = [
     DROP TABLE chats;
     ALTER TABLE chats_v27 RENAME TO chats;
     """,
+    # 29 (0.3.11, task #51; it follows 28, task #46's archived_at, in the release): 'task_reopen' approvals, which
+    # reopen a task in review. approvals is rebuilt only to widen its CHECK (same columns, every row copied, as 24 did).
+    # An older hub ignores it: it never files or decides one.
+    """
+    CREATE TABLE approvals_v29 (
+        id            INTEGER PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK (kind IN ('command', 'task_create', 'task_reassign',
+                                                    'budget_exceeded', 'agent_enrollment',
+                                                    'tool_permission', 'wake_loop', 'task_reopen')),
+        project       TEXT REFERENCES projects(name),
+        requester     TEXT NOT NULL,
+        details       TEXT NOT NULL,
+        reason        TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        decided_by    TEXT,
+        decided_at    TEXT,
+        decision_note TEXT,
+        created_at    TEXT NOT NULL,
+        command_key   TEXT,
+        consumed_at   TEXT
+    );
+    INSERT INTO approvals_v29 (id, kind, project, requester, details, reason, status, decided_by, decided_at,
+                               decision_note, created_at, command_key, consumed_at)
+        SELECT id, kind, project, requester, details, reason, status, decided_by, decided_at, decision_note,
+               created_at, command_key, consumed_at FROM approvals;
+    DROP TABLE approvals;
+    ALTER TABLE approvals_v29 RENAME TO approvals;
+    CREATE INDEX approvals_status ON approvals(status, id);
+    CREATE INDEX approvals_command_key ON approvals(command_key, status);
+    """,
 ]
 
 

@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from agenthub import names
-from agenthub.hub import approvals, avatars, chats, questions, store, tasks
+from agenthub.hub import approvals, avatars, chats, questions, stalls, store, tasks
 
 TERMINAL_STATES = ("done", "rejected", "cancelled")
 
@@ -27,8 +27,10 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None,
     :func:`avatars.board` entry. ``checkouts`` (project -> path) and ``current_dir`` are
     agent-written text the runner reported. With ``agent_id`` the result is that one agent
     (revoked or not), or empty if there is none. ``with_wakes`` adds ``wakes`` (:func:`agent_wakes`), else None.
+    Each of ``tasks`` has ``stalled_review`` (:func:`stalled`).
     """
     board = avatars.board(conn)
+    stuck = stalls.stalled_reviews(conn)
     open_tasks: dict[str, list[dict[str, Any]]] = {}
     for r in conn.execute(
             "SELECT ta.agent_id, t.id, t.title, t.project, t.state, t.created_by, ta.role, ta.stage FROM task_agents ta "
@@ -36,7 +38,8 @@ def agent_rows(conn: sqlite3.Connection, *, agent_id: str | None = None,
             "ORDER BY t.id"):
         open_tasks.setdefault(r["agent_id"], []).append(
             {"id": r["id"], "title": r["title"], "project": r["project"], "state": r["state"],
-             "role": r["role"], "stage": r["stage"], "created_by": r["created_by"]})
+             "role": r["role"], "stage": r["stage"], "created_by": r["created_by"],
+             "stalled_review": stuck.get(r["id"])})
     cols = ("id, name, status, device_name, device_node_id, connected, last_heartbeat, checkouts, current_dir, "
             "prompt_support, chat_support, model, effort FROM agents ")
     rows = (conn.execute("SELECT " + cols + "WHERE id = ?", (agent_id,)) if agent_id is not None
@@ -114,6 +117,14 @@ def _agent_names(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
         return {}
     return {r["id"]: r["name"] for r in conn.execute(
         f"SELECT id, name FROM agents WHERE id IN ({','.join('?' * len(ids))})", ids)}
+
+
+def stalled(conn: sqlite3.Connection, t: dict[str, Any]) -> dict[str, Any]:
+    """``t`` (a task dict) with ``stalled_review``: ``{since, minutes, reason}`` when it has sat in review past
+    ``[reviews] stall_minutes`` with no reviewer session and no verdict (:mod:`stalls`), else None. Every task row
+    the pages get carries it."""
+    t["stalled_review"] = stalls.stalled_reviews(conn).get(t["id"]) if t.get("state") == "review" else None
+    return t
 
 
 def task_reviewers(t: dict[str, Any]) -> list[dict[str, Any]]:
@@ -266,9 +277,10 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every project, each with its live tasks and the agents on them.
 
     Terminal tasks are left out of ``tasks``. Projects with no live task (finished ones, or
-    none yet) come after the others, so the page can collapse them.
+    none yet) come after the others, so the page can collapse them. Each task has ``stalled_review``.
     """
     board = avatars.board(conn)
+    stuck = stalls.stalled_reviews(conn)
     members: dict[int, list[dict[str, Any]]] = {}
     for r in conn.execute(
             "SELECT ta.task_id, ta.agent_id, a.name, a.status, ta.role, ta.stage, a.device_name FROM task_agents ta "
@@ -283,7 +295,7 @@ def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         if r["state"] not in TERMINAL_STATES:
             live.append({"id": r["id"], "title": r["title"], "state": r["state"], "created_by": r["created_by"],
                          "last_note": r["last_note"], "last_moved_by": r["last_moved_by"],
-                         "agents": members.get(r["id"], [])})
+                         "agents": members.get(r["id"], []), "stalled_review": stuck.get(r["id"])})
     out = [{"name": p["name"], "description": p["description"], "tasks": by_project.get(p["name"], [])}
            for p in conn.execute("SELECT name, description FROM projects ORDER BY name COLLATE NOCASE")]
     return [p for p in out if p["tasks"]] + [p for p in out if not p["tasks"]]
@@ -370,7 +382,7 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
             raise store.NotFound(f"no agent {key!r}")
         return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0], "c": chat(conn, "agent", key)}
     if kind == "task":
-        t = tasks.get_task(conn, int(key))
+        t = stalled(conn, tasks.get_task(conn, int(key)))
         return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t, "c": chat(conn, "task", str(t["id"]))}
     if kind == "project":
         key = store.project_name(conn, key) or key
@@ -423,10 +435,11 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     agent-written unless its author is ``human:``), ``last_ts`` and ``unread`` (agent messages the operator hasn't
     seen). agents (not revoked): ``avatar``, ``status`` and
     ``waiting`` (its pending questions); tasks (live ones, and finished ones that have a chat): ``state``,
-    ``created_by`` and ``members`` (avatars); projects: ``members``, the agents on its live tasks; dms (direct chats
-    between two agents, once one has a message; the operator reads them all): ``members``, the pair.
+    ``created_by``, ``members`` (avatars) and ``stalled_review``; projects: ``members``, the agents on its live tasks;
+    dms (direct chats between two agents, once one has a message; the operator reads them all): ``members``, the pair.
     """
     board = avatars.board(conn)
+    stuck = stalls.stalled_reviews(conn)
     unread = {(o["kind"], str(o["ref"])): o["unread"] or 0 for o in chats.overview(conn)}
     waiting: dict[str, int] = {}
     for q in questions.pending(conn):
@@ -450,7 +463,8 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
             continue
         task_rows.append({"item": f"task:{t['id']}", "href": f"/ui/tasks/{t['id']}", "title": f"#{t['id']} {t['title']}",
                           "state": t["state"], "created_by": t["created_by"], "last": last, "last_ts": last and last["ts"],
-                          "unread": unread.get(("task", str(t["id"])), 0), "members": _faces(board, on_task.get(t["id"], []))})
+                          "unread": unread.get(("task", str(t["id"])), 0), "members": _faces(board, on_task.get(t["id"], [])),
+                          "stalled_review": stuck.get(t["id"])})
     projects = []
     for p in conn.execute("SELECT name FROM projects ORDER BY name COLLATE NOCASE"):
         last = _last_text(conn, "project", p["name"])

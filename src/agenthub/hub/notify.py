@@ -31,6 +31,7 @@ KIND_LABELS = {
     "budget_exceeded": "Budget exceeded",
     "agent_enrollment": "New agent enrolled",
     "tool_permission": "Permission needed",
+    "task_reopen": "Reopen task",
 }
 
 

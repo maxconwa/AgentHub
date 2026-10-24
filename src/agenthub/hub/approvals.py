@@ -22,10 +22,10 @@ from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Conflict, Forbidden, Invalid, NotFound
 
 KINDS = ("command", "task_create", "task_reassign", "budget_exceeded", "agent_enrollment", "tool_permission",
-         "wake_loop")
+         "wake_loop", "task_reopen")
 # What an agent may file through the generic request endpoint. task_create goes
 # through create_task; agent_enrollment and wake_loop are filed by the hub itself.
-AGENT_REQUESTABLE = frozenset({"command", "task_reassign", "budget_exceeded", "tool_permission"})
+AGENT_REQUESTABLE = frozenset({"command", "task_reassign", "budget_exceeded", "tool_permission", "task_reopen"})
 MAX_DISCUSSION_MESSAGES = 200
 COMMAND_APPROVAL_TTL = timedelta(hours=1)
 
@@ -174,6 +174,13 @@ def request(
         details = {"task_id": task["id"], "assignee": str(details.get("assignee") or "") or None}
         requester = task_agents.member(task, agent.id)
         details["role"] = requester["role"] if requester else ""
+    if kind == "task_reopen":  # any agent of the task's project may ask; the operator's approval reopens it
+        task = tasks.get_task(conn, _int(details, "task_id"))
+        if agent.project(task["project"]) is None:
+            raise Forbidden("no access to that task's project")
+        if task["state"] != "review":
+            raise Conflict(f"task {task['id']} is {task['state']}; only a task in review can be reopened")
+        project, details = task["project"], {"task_id": task["id"]}
     if kind in ("budget_exceeded", "tool_permission") and "task_id" in details:
         task = tasks.get_task(conn, _int(details, "task_id"))
         member = task_agents.member(task, agent.id)
@@ -338,6 +345,12 @@ def _apply(conn: sqlite3.Connection, approval: dict[str, Any], approve: bool, ac
         if task_agents.member(task, details["agent_id"]) is not None:
             tasks.extend_budget(conn, details["task_id"], details["agent_id"], details["limit"],
                                 details["extend_to"], actor=actor)
+    elif kind == "task_reopen" and approve:
+        # Only a task still in review reopens (one marked done or moved meanwhile stays as it is). The note is the
+        # hub's: a resumed session reads the last note as its mover's, here the operator, so no agent text goes in.
+        if tasks.get_task(conn, details["task_id"])["state"] == "review":
+            tasks.transition(conn, details["task_id"], "in_progress", actor=actor, role="operator",
+                             note=f"reopened by the operator (approval #{approval['id']})")
     elif kind == "wake_loop":  # approve: the paused wake chain wakes agents again
         from agenthub.hub import wakes
 

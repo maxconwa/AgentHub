@@ -23,7 +23,7 @@ from agenthub import __version__
 from agenthub.config import HubConfig
 from agenthub.hub import (
     approvals, asks, broadcasts, chats, db, device_board, device_stats, events, intents, private, prompts, questions,
-    reports, reviewers, store, task_agents, tasks, wakes,
+    reports, reviewers, stalls, store, task_agents, tasks, wakes,
 )
 from agenthub.hub.auth import (
     AgentCaller, active_agent, any_agent, authenticate, get_conn, require_project, resolve_device,
@@ -92,6 +92,7 @@ class HubState:
         cfg = self.config
         self.agent_limiter = RateLimiter(cfg.agent_rate_per_second, cfg.agent_rate_burst)
         wakes.configure(cfg.wake_loop_limit)
+        stalls.configure(cfg.review_stall_minutes)
         per_minute = cfg.enroll_rate_per_minute
         self.enroll_limiter = RateLimiter(per_minute / 60, max(1, int(per_minute)))
         self.enroll_global_limiter = RateLimiter(4 * per_minute / 60, max(1, int(4 * per_minute)))
