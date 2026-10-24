@@ -111,6 +111,16 @@ def agent_names(conn: sqlite3.Connection) -> dict[str, str]:
     return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")} | device_board.device_labels(conn)
 
 
+_NOT_ID_SAFE = re.compile(r"[^A-Za-z0-9-]")
+
+
+def dom_key(value: str) -> str:
+    """``value`` as a string safe inside an element id *and* a bare ``#id`` selector (htmx's hx-preserve looks the
+    element up that way, unescaped): letters, digits and ``-`` stay, anything else becomes ``_<hex>_``. One-to-one,
+    so two chats never share an id (``_`` itself is encoded)."""
+    return _NOT_ID_SAFE.sub(lambda m: f"_{ord(m[0]):x}_", value)
+
+
 def short_host(name: str | None) -> str:
     """A device name's first label (``white5070`` for ``white5070.tail1234.ts.net``); an IP address stays whole."""
     if not name:
@@ -261,6 +271,7 @@ templates.filters["clock"] = clock
 templates.filters["mentions"] = highlight_mentions
 templates.filters["md"] = markdown.render
 templates.filters["short_host"] = short_host
+templates.filters["dom_key"] = dom_key
 
 
 def pending_total(conn: sqlite3.Connection) -> int:

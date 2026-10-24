@@ -1,6 +1,7 @@
 {#- The device page's "Message all agents on this device" box (POST /ui/devices/<id>/broadcast, broadcasts.send). With
     HTMX the reply (_broadcast_result.html) lands in #broadcast-result; without it the page comes back with ?sent=&woke=.
-    Outside the live region, so a poll never wipes a half-written message. -#}
+    Outside the live region, so a poll never wipes a half-written message; app.js also keeps it per device in
+    sessionStorage (data-draft-key "device:<node_id>") until the hub has taken it, like a chat's box. -#}
 {% set reach = d.agents | selectattr('status', 'equalto', 'active') | list %}
 <section class="panel broadcast" aria-labelledby="broadcast-title">
   <h2 id="broadcast-title">Message all agents on this device</h2>
@@ -9,7 +10,7 @@
         hx-post="/ui/devices/{{ d.node_id | urlencode }}/broadcast" hx-target="#broadcast-result" hx-swap="innerHTML">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label class="sr-only" for="broadcast-body">Message</label>
-    <textarea id="broadcast-body" name="body" rows="3" required placeholder="Write to every agent on {{ d.name }}"></textarea>
+    <textarea id="broadcast-body" data-draft-key="device:{{ d.node_id }}" name="body" rows="3" required placeholder="Write to every agent on {{ d.name }}"></textarea>
     <p class="small-line">Goes to {{ reach | length }} agent{{ 's' if reach | length != 1 }} ({{ reach | map(attribute='name') | join(', ') }}), each in its chat with you. Idle ones wake, unless their wakes are paused.</p>
     <button type="submit">Send to all {{ reach | length }}</button>
   </form>

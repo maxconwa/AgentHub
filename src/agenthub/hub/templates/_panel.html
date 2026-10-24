@@ -42,7 +42,7 @@
     <dt>Directory</dt><dd><span class="dir">{{ ag.current_dir or 'None reported' }}</span> <span class="small-line">reported by the agent</span></dd>
   </dl>
 </details>
-{{ chat(c) }}
+{{ chat(c, 'panel') }}
 
 {% elif kind == 'task' %}
 <div class="dhead chat-head"><span class="group-icon g-task" aria-hidden="true">#</span>
@@ -59,7 +59,7 @@
     {% else %}<li class="small-line">Nobody yet</li>{% endfor %}
   </ul>
 </details>
-{{ chat(c) }}
+{{ chat(c, 'panel') }}
 
 {% elif kind == 'project' %}
 <div class="dhead chat-head"><span class="group-icon g-project" aria-hidden="true">▦</span>
@@ -72,13 +72,13 @@
     {% else %}<li class="small-line">No live tasks</li>{% endfor %}
   </ul>
 </details>
-{{ chat(c) }}
+{{ chat(c, 'panel') }}
 
 {% elif kind == 'dm' %}
 <div class="dhead chat-head"><span class="group-icon g-dm" aria-hidden="true">↔</span>
   <div class="info"><div class="kicker">direct chat between two agents</div><h2 id="panel-title">{{ c.title }}</h2>
     <div class="small-line">Only these two agents and you can read it.</div></div></div>
-{{ chat(c) }}
+{{ chat(c, 'panel') }}
 
 {% elif kind == 'device' %}
 <div class="dhead"><span class="group-icon g-device" aria-hidden="true">▣</span>

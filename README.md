@@ -469,6 +469,15 @@ keyboard; on a phone the arrow button sends. Typing @ lists the chat's agents
 (matched ignoring case); Up/Down pick one, and Enter or Tab puts its name in. Updates are pushed over the dashboard's WebSocket. If it drops,
 open chats catch up every 10 s until it's back.
 
+**Drafts.** Since 0.3.11, a half-written message is kept per chat, in an
+agent's, task's, project's or direct chat and in a device page's broadcast
+box. Click away, open another chat, close the panel, leave the page: when you
+come back the text is still there. Each chat's draft is separate. The draft is
+dropped only once the hub has taken the message. A refused or failed send
+keeps it. Drafts live in the browser tab's sessionStorage, so closing the tab
+discards them, and they're never sent to the hub. Without JavaScript the boxes
+are plain forms as before, with no drafts.
+
 0.3.7's Prompt, Send, Post, "Send to each agent", boards and prompt pages are
 gone from the UI. Old /ui/board links and /ui/chats/<agent> links redirect.
 

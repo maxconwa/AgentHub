@@ -62,7 +62,7 @@
   document.addEventListener("htmx:afterRequest", function (evt) {
     var form = evt.detail.elt;
     if (!form || !form.matches || !form.matches(".broadcast form") || !evt.detail.successful) return;
-    if (form.parentNode.querySelector("#broadcast-result .ok-line")) form.reset();
+    if (form.parentNode.querySelector("#broadcast-result .ok-line")) { form.reset(); forgetDrafts(form); }
   });
 
   // Failed: an item that can fail carries data-fail-key (and data-failed while failed; see fail_attrs in
@@ -462,6 +462,7 @@
         if (!r.ok) throw { status: r.status, text: text };
         if (form.hasAttribute("data-chat-send")) {
           form.reset();
+          forgetDrafts(form);
           sizeBox(form.querySelector("textarea"));
           var log = chat && logOf(chat);
           if (log) log.scrollTop = log.scrollHeight;  // your own message: go to it
@@ -596,6 +597,51 @@
     evt.preventDefault();
     evt.stopPropagation();
   }, true);
+
+  // Drafts: a message box with data-draft-key (a chat's: "agent:<id>", "task:<id>", "project:<name>", "dm:<ref>"; the
+  // device page's broadcast box: "device:<node_id>") keeps what the operator typed in sessionStorage, per chat and
+  // per tab, so it survives the panel closing, another chat opening in it, a swap re-rendering it, and leaving the
+  // page and coming back. Restored into an empty box wherever one with that key appears (page load, anything HTMX
+  // swaps in). Forgotten only once the hub has taken the message (the 2xx paths above call forgetDrafts); a refusal
+  // or a failed send keeps the box and the draft as they are. Emptying the box by hand forgets it too. Storage that
+  // is off or full (private browsing) just means no drafts: every access is guarded.
+  var DRAFT = "agenthub.draft.";
+  function draftKey(ta) { return DRAFT + ta.getAttribute("data-draft-key"); }
+  function saveDraft(ta) {
+    try {
+      if (ta.value.trim()) sessionStorage.setItem(draftKey(ta), ta.value);
+      else sessionStorage.removeItem(draftKey(ta));
+    } catch (e) { /* no storage: no drafts */ }
+  }
+  function forgetDrafts(form) {
+    if (!form || !form.querySelectorAll) return;
+    form.querySelectorAll("textarea[data-draft-key]").forEach(function (ta) {
+      try { sessionStorage.removeItem(draftKey(ta)); } catch (e) { /* no storage */ }
+    });
+  }
+  function restoreDrafts(root) {
+    if (!root || !root.querySelectorAll) return;
+    var boxes = Array.prototype.slice.call(root.querySelectorAll("textarea[data-draft-key]"));
+    if (root.matches && root.matches("textarea[data-draft-key]")) boxes.push(root);
+    boxes.forEach(function (ta) {
+      if (ta.value) return;  // hx-preserve kept the element, or the browser refilled it: that text wins
+      var text = null;
+      try { text = sessionStorage.getItem(draftKey(ta)); } catch (e) { return; }
+      if (!text) return;
+      ta.value = text;
+      if (ta.closest(".chatbox")) sizeBox(ta);
+    });
+  }
+  document.addEventListener("input", function (evt) {
+    if (evt.target.matches && evt.target.matches("textarea[data-draft-key]")) saveDraft(evt.target);
+  });
+  // Without HTMX the broadcast box posts as a plain form and the page comes back with its "Sent to N" line: the hub
+  // took that message, so its draft goes before restoring would put it back. (With HTMX a "Sent" line on load is
+  // only an old ?sent= address revisited, not this draft being sent.)
+  if (!window.htmx) document.querySelectorAll(".broadcast").forEach(function (box) {
+    if (box.querySelector("#broadcast-result .ok-line")) forgetDrafts(box.querySelector("form"));
+  });
+  if (window.htmx) htmx.onLoad(restoreDrafts); else restoreDrafts(document.body);
 
   // A chat on the page (not in the panel) starts at its newest row too.
   openChats().forEach(showLatest);
