@@ -233,8 +233,15 @@
 {% endfor %}
 {%- endmacro %}
 
-{#- The whole chat: the log, then its one message box (or why there is none). -#}
-{% macro chat(c) -%}
+{#- The whole chat: the log, then its one message box (or why there is none). `where` is 'page' or 'panel', so the
+    same chat open on its page and in the panel still has two distinct box ids.
+
+    The box keeps a half-written message (a draft): its textarea has a stable id (`chatbox-<where>-<chat>`, made
+    selector-safe by dom_key) and hx-preserve, so a swap of #panel that re-renders the same chat (a wake toggle in
+    its head) keeps the very element and its text; and data-draft-key ("<kind>:<ref>") under which app.js keeps the
+    text in sessionStorage, so closing the panel, opening another chat or leaving the page and coming back brings it
+    back. app.js clears it only once the hub has taken the message. -#}
+{% macro chat(c, where='page') -%}
 <div class="chat" data-chat="{{ c.kind }}:{{ c.ref }}" data-url="{{ c.url }}">
   <ol class="chat-log" aria-label="Chat with {{ c.title }}" aria-live="polite" tabindex="0">
     {{ chat_rows(c.rows) }}
@@ -244,7 +251,8 @@
   <form class="chatbox" method="post" action="{{ c.url }}" data-chat-form data-chat-send>
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-    <textarea name="body" rows="1" required aria-label="Message to {{ c.title }}" placeholder="{{ c.placeholder }}"
+    <textarea id="chatbox-{{ where }}-{{ (c.kind ~ ':' ~ c.ref) | dom_key }}" hx-preserve data-draft-key="{{ c.kind }}:{{ c.ref }}"
+      name="body" rows="1" required aria-label="Message to {{ c.title }}" placeholder="{{ c.placeholder }}"
       {%- if c.mention_names %} data-mentions='{{ c.mention_names | tojson }}' aria-autocomplete="list"{% endif %}></textarea>
     <button type="submit" class="send-btn" aria-label="Send to {{ c.title }}"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
   </form>
