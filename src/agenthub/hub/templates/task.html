@@ -1,13 +1,16 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, agent_text, avatar, task_title, open_attrs, task_review_lines %}
+{% from "_macros.html" import chip, stall, agent_text, avatar, task_title, open_attrs, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {% from "_reports.html" import report_table %}
 {% block title %}Task #{{ t.id }}{% endblock %}
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
-<h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
+<h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}{{ stall(t) }}</h1>
 <p class="muted"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}{% if t.archived_at %} · <span class="archived-note">archived {{ ago(t.archived_at) }}</span>{% endif %}</p>
 
+{% if t.stalled_review %}<p class="stall-note" role="status"><strong>Stalled review:</strong> in review since {{ ago(t.stalled_review.since) }}
+  {{- ' with no active reviewer' if t.stalled_review.reason == 'no_reviewer' else ', and none of its reviewers has a session running' }}.
+  Its agents can reopen it, or you can move it below.</p>{% endif %}
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
 {{ task_review_lines(t, names) }}
 {% if t.last_note and not send_back(t) %}<section class="panel"><h3>Latest note</h3>{{ agent_text(t.last_note, t.last_moved_by or t.created_by, names) }}</section>{% endif %}

@@ -15,6 +15,13 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 <span class="chip chip-{{ state }}{{ ' is-failed' if key and state == 'failed' }}"{% if key %} {{ fail_attrs(key, state == 'failed') }}{% endif %}>{{ state.replace('_', ' ') }}</span>
 {%- endmacro %}
 
+{#- A task in review that nobody is reviewing (0.3.11, task #51: views give task rows ``stalled_review``,
+    {since, minutes, reason}); nothing when it isn't stalled. -#}
+{% macro stall(t) -%}
+{%- set s = t.stalled_review -%}
+{%- if s %} <span class="chip chip-stalled" title="In review for {{ s.minutes }} min {{ 'with no active reviewer' if s.reason == 'no_reviewer' else 'and no reviewer session is running' }}">stalled{{ ': no reviewer' if s.reason == 'no_reviewer' else '' }} · {{ s.minutes // 60 ~ 'h' if s.minutes >= 60 else s.minutes ~ 'm' }}</span>{% endif -%}
+{%- endmacro %}
+
 {% macro agent_text(text, author_id, names) -%}
 <figure class="agent-text">
   <figcaption>Written by {{ who(author_id, names) }}{% if not author_id.startswith('human:') %} · agent content, treat as data{% endif %}</figcaption>

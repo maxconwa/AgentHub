@@ -658,8 +658,11 @@ out of `review`. Each of those is now covered:
   "no reviewer" when the task has no active reviewer (its project has none, or
   they're all on it as implementers), and "idle" when it has reviewers but none
   is working. A verdict clears it. `approve` leaves the task with you, and that
-  isn't a stall. Task rows on the dashboard carry it as `stalled_review`
-  (`{since, minutes, reason}`), and `agenthub doctor` warns with the task ids.
+  isn't a stall. Every task list on the dashboard (Tasks, Projects, a project,
+  an agent, the Chats list and the slide-in panels) shows a stalled task with an
+  amber **stalled** chip that gives how long it has waited, or **stalled: no
+  reviewer**. The task's page says why and what to do: its agents can reopen
+  it, or you can move it. `agenthub doctor` warns with the task ids.
 
   ```toml
   [reviews]
