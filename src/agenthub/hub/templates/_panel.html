@@ -1,4 +1,4 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, agent_wakes, task_review_lines %}
+{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, agent_wakes, task_review_lines, archived_tasks %}
 {% from "_chat.html" import chat with context %}
 {% from "_meters.html" import usage_full with context %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. An agent's, task's or
@@ -42,6 +42,7 @@
     <dt>Directory</dt><dd><span class="dir">{{ ag.current_dir or 'None reported' }}</span> <span class="small-line">reported by the agent</span></dd>
   </dl>
 </details>
+{{ archived_tasks(archived, names, 'pfacts') }}
 {{ chat(c) }}
 
 {% elif kind == 'task' %}
