@@ -13,7 +13,8 @@ holds what is particular to agents waking agents:
   with a ``wake_loop`` approval. Approving resumes it; only the operator decides.
 * **Pause switches.** Per agent (``agents.wakes_paused``) and hub-wide (``hub_settings`` ``wakes_paused``), set by the
   operator only (routes under ``/ui/api``). A paused agent still receives messages (into a running session, or
-  through read_inbox) but no agent's message wakes it. The operator's messages always wake.
+  through read_inbox) but no agent's message wakes it. The operator's messages always wake, except (0.3.10) one to
+  every agent on a device (a device chat, :mod:`broadcasts`): that one respects both switches too.
 * **Records.** A wake record is a delivery of an agent's message (or one of the operator's that woke its agent): who
   woke whom, in which chat and chain, and when. The chat shows a status line when an agent's message wakes another.
 
@@ -103,10 +104,12 @@ def settings(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"paused": hub_paused(conn), "loop_limit": _loop_limit, "chains": paused}
 
 
-# SQL for whether a delivery (d, its message m) may wake its agent now: the operator's always do; an agent's not
-# when it is a notice, its agent's or the hub's wakes are paused, or its chain is paused.
+# SQL for whether a delivery (d, its message m) may wake its agent now: the operator's always do, but for one to a
+# whole device; an agent's (or that) not when it is a notice, its agent's or the hub's wakes are paused, or its chain is
+# paused (an operator's message has no chain).
+DEVICE_SQL = "EXISTS (SELECT 1 FROM chats dc WHERE dc.id = m.chat_id AND dc.kind = 'device')"
 WAKE_SQL = (
-    "CASE WHEN m.author LIKE 'human:%' THEN 1 "
+    f"CASE WHEN m.author LIKE 'human:%' AND NOT {DEVICE_SQL} THEN 1 "
     "WHEN d.wake = 0 OR (SELECT wakes_paused FROM agents WHERE id = d.agent_id) = 1 "
     "OR EXISTS (SELECT 1 FROM hub_settings WHERE key = 'wakes_paused' AND value = '1') "
     "OR EXISTS (SELECT 1 FROM wake_chains w WHERE w.id = d.chain_id AND w.status = 'paused') THEN 0 ELSE 1 END"
@@ -114,7 +117,8 @@ WAKE_SQL = (
 
 
 def may_wake(conn: sqlite3.Connection, agent_id: str, chain_id: str | None) -> bool:
-    """Whether a new delivery of an agent's message to ``agent_id`` in ``chain_id`` would wake it."""
+    """Whether a new delivery of an agent's message (or the operator's to a device) to ``agent_id`` in ``chain_id``
+    would wake it."""
     row = conn.execute("SELECT wakes_paused FROM agents WHERE id = ?", (agent_id,)).fetchone()
     if row is None or row["wakes_paused"] or hub_paused(conn):
         return False
@@ -125,13 +129,15 @@ def may_wake(conn: sqlite3.Connection, agent_id: str, chain_id: str | None) -> b
 
 
 def _redeliver(conn: sqlite3.Connection, where: str = "1 = 1", params: list[Any] | None = None) -> int:
-    """Tell runners again about pending deliveries of agents' messages that may wake now (after a pause lifts)."""
+    """Tell runners again about pending deliveries that a pause held back (agents' messages, the operator's to a device)
+    and that may wake now (after a pause lifts)."""
     from agenthub.hub import chats
 
     rows = conn.execute(
         "SELECT d.id, d.agent_id, d.message_id, m.chat_id FROM chat_deliveries d "
         "JOIN chat_messages m ON m.id = d.message_id "
-        f"WHERE d.status = 'pending' AND m.author NOT LIKE 'human:%' AND ({WAKE_SQL}) = 1 AND {where} ORDER BY d.id",
+        f"WHERE d.status = 'pending' AND (m.author NOT LIKE 'human:%' OR {DEVICE_SQL}) AND ({WAKE_SQL}) = 1 "
+        f"AND {where} ORDER BY d.id",
         params or []).fetchall()
     for r in rows:
         chats.announce_delivery(conn, r["chat_id"], r["message_id"], r["id"], r["agent_id"])
