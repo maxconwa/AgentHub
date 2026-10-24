@@ -749,16 +749,13 @@ class ChatRunner:
 
     async def _task_loop_due(self, task_id: int) -> bool:
         """The task's own loop may launch now but isn't running (a changes verdict just sent the task back, and the
-        sync that starts its loop comes after the chat messages are routed): start it, so the message is queued into
-        that one session instead of waking a second one. If the loop ends without a session it hands the message
-        on (:meth:`task_loop_ended`)."""
+        sync that starts its loop comes after the chat messages are routed). The caller queues the message and then
+        starts the loop, so that one session takes it in instead of a second one waking for it. If the loop ends
+        without a session it hands the message on (:meth:`task_loop_ended`)."""
         try:
-            if await self.runner._verified_task(task_id) is None:
-                return False
+            return await self.runner._verified_task(task_id) is not None
         except HubError:  # gone, or no longer ours: route it as before
             return False
-        self.runner._start(task_id)
-        return True
 
     async def route(self, d: Delivery) -> None:
         refusal = await self._refusal(d)
@@ -792,6 +789,10 @@ class ChatRunner:
             if self._task_loop_active(d.task_id) or await self._task_loop_due(d.task_id):
                 if await self._claim(d, "queued"):
                     self.state.add(d)
+                # Start a due loop only now: started before the claim, it could reach take_for_task during the
+                # claim's await, run its session without this message, and leave it to a second session.
+                if not self._task_loop_active(d.task_id):
+                    self.runner._start(d.task_id)
                 return
             project = d.project or await self._task_project(d.task_id)
             if await self.checkout(project) is None:

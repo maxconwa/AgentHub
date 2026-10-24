@@ -354,6 +354,39 @@ async def test_a_changes_verdict_starts_one_builder_session(live_hub, fake_claud
     assert d["mode"] == "queued"
 
 
+async def test_a_slow_claim_still_starts_one_builder_session(live_hub, fake_claude, tmp_path):
+    """The race behind the flaky test above: the message is claimed and queued before the task's loop starts, so a
+    slow claim can't let the loop's "returned" session run without it and leave it to a second session."""
+    claude_bin, calls = fake_claude
+    runner, cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    claim = runner.chats._claim
+
+    async def slow_claim(d, mode, *args, **kwargs):
+        if mode == "queued":
+            await asyncio.sleep(0.5)  # a busy hub: the loop's own calls would finish first
+        return await claim(d, mode, *args, **kwargs)
+
+    runner.chats._claim = slow_claim
+    task_id = live_hub.op_task("Add health check", assignee="worker")
+    waker = peer(live_hub, tmp_path)
+    live_hub.add(task_id, PEER, "reviews")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review"
+                       and (task_id not in runner.work or runner.work[task_id].task.done()))
+        before = len(calls())
+        conn = live_hub.conn()
+        with db.transaction(conn):
+            task_agents.record_verdict(conn, task_id, store.find_agent(conn, waker), verdict="changes",
+                                       notes="rename the flag")
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review", timeout=30)
+        await asyncio.sleep(3)
+    finally:
+        await stop(main)
+    (session,) = calls()[before:]
+    assert "sent back to in_progress" in session["stdin"] and "rename the flag" in session["stdin"]
+
+
 # --- a wake never widens project access ----------------------------------------------------------------------------
 
 
