@@ -418,7 +418,7 @@ def _last_text(conn: sqlite3.Connection, kind: str, ref: str) -> dict[str, Any] 
 
 
 def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """Every chat for the list: ``{agents, projects, tasks, dms}``, in the order they're shown, each newest first.
+    """Every chat for the list: ``{projects, agents, tasks, dms}``, in the order they're shown, each newest first.
 
     Every row has ``item`` (the panel that is its chat), ``href`` (its page), ``title``, ``last`` (:func:`_last_text`,
     agent-written unless its author is ``human:``), ``last_ts`` and ``unread`` (agent messages the operator hasn't
@@ -468,9 +468,9 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
         dms.append({"item": f"dm:{o['ref']}", "href": chat_page("dm", o["ref"]), "title": o["title"],
                     "last": last, "last_ts": (last and last["ts"]) or o["last_ts"], "unread": o["unread"] or 0,
                     "members": [board[i] for i in pair if i in board]})
-    for rows in (agents, projects, task_rows, dms):
+    for rows in (projects, agents, task_rows, dms):
         rows.sort(key=_ts_key, reverse=True)
-    return {"agents": agents, "projects": projects, "tasks": task_rows, "dms": dms}
+    return {"projects": projects, "agents": agents, "tasks": task_rows, "dms": dms}
 
 
 def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -> list[dict[str, Any]]:

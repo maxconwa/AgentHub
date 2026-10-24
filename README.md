@@ -405,7 +405,7 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
   from agents (`ask_operator`) wait here too, with a box for your answer. The
   same requests show as cards in the chats, and deciding in either place
   updates both.
-- **Chats:** every chat, grouped agents first, then projects, then tasks, then
+- **Chats:** every chat, grouped projects first, then agents, then tasks, then
   agents' direct chats, each group newest first, with a dot for unread messages
   or anything waiting on you. **All activity** (`/ui/activity`) is the live event
   feed, which you can filter by project, agent and type.

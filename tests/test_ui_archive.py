@@ -1,4 +1,4 @@
-"""#772 on the dashboard: chats listed agents, then projects, then tasks; archived (done) tasks left out of the
+"""#772 on the dashboard: chats listed projects, then agents, then tasks (the order set in #1120); archived (done) tasks left out of the
 at-a-glance views and listed, folded, on their agents' pages and panels."""
 
 import re
@@ -50,27 +50,27 @@ def shelf(hub):
     return hub, a, made
 
 
-def test_chat_groups_are_agents_then_projects_then_tasks(shelf):
+def test_chat_groups_are_projects_then_agents_then_tasks(shelf):
     hub, a, made = shelf
-    assert list(views.chat_index(hub.conn())) == ["agents", "projects", "tasks", "dms"]
+    assert list(views.chat_index(hub.conn())) == ["projects", "agents", "tasks", "dms"]
     for html in (get(hub, "/ui/messenger", **{"hx-request": "true"}).text, get(hub, "/ui/chats").text):
-        assert groups(html)[:3] == ["Agents", "Projects", "Tasks"]
+        assert groups(html)[:3] == ["Projects", "Agents", "Tasks"]
         order = chat_rows(html)
-        first = {k: order.index(k) for k in (f"agent:{a.id}", "project:proj", f"task:{made['live']}")}
-        assert first[f"agent:{a.id}"] < first["project:proj"] < first[f"task:{made['live']}"]
+        first = {k: order.index(k) for k in ("project:proj", f"agent:{a.id}", f"task:{made['live']}")}
+        assert first["project:proj"] < first[f"agent:{a.id}"] < first[f"task:{made['live']}"]
 
 
 def test_direct_chats_come_after_tasks(shelf):
     hub, a, made = shelf
     hub.enroll("helper")
     say(hub, a, "dm", "helper", "psst")
-    assert groups(get(hub, "/ui/chats").text) == ["Agents", "Projects", "Tasks", "Between agents"]
+    assert groups(get(hub, "/ui/chats").text) == ["Projects", "Agents", "Tasks", "Between agents"]
 
 
-def test_nav_lists_agents_before_projects_and_tasks(hub):
+def test_nav_lists_projects_then_agents_then_tasks(hub):
     nav = re.search(r'<nav aria-label="Pages">(.*?)</nav>', get(hub, "/ui/dashboard").text, re.S).group(1)
     labels = re.findall(r'href="/ui/(\w+)"', nav)
-    assert labels.index("agents") < labels.index("projects") < labels.index("tasks")
+    assert labels.index("projects") < labels.index("agents") < labels.index("tasks")
 
 
 def test_an_archived_task_leaves_the_chat_list(shelf):

@@ -10,7 +10,7 @@ from agenthub.hub import approvals, chats, db, private, questions, store, task_a
 from .conftest import OP_LOGIN, OPERATOR
 from .test_chat_ui import add_row
 
-LABELS = ["Dashboard", "Agents", "Projects", "Tasks", "Devices", "Approvals", "Chats", "Reports", "Usage"]
+LABELS = ["Dashboard", "Projects", "Agents", "Tasks", "Devices", "Approvals", "Chats", "Reports", "Usage"]
 
 
 def get(hub, path):
@@ -964,7 +964,7 @@ def test_messenger_lists_every_section_with_the_right_rows(window):
     html = resp.text
     assert_fragment(html)
     heads = re.findall(r'<div class="chat-group">([^<]+)</div>', html)
-    assert heads == ["Agents", "Projects", "Tasks"]  # no device boards, no agent-to-agent pairs
+    assert heads == ["Projects", "Agents", "Tasks"]  # no device boards, no agent-to-agent pairs
     found = rows(html)
     tid = t["id"]
     assert set(found) == {f"agent:{a.id}", f"agent:{c.id}", f"task:{tid}", "project:proj"}  # no revoked agent
@@ -978,7 +978,7 @@ def test_messenger_lists_every_section_with_the_right_rows(window):
     assert "task says &lt;script&gt;" in task_row
     assert task_row.count('<img class="avatar"') == 2  # its members, worker and helper
     assert found["project:proj"].count('<img class="avatar"') == 2  # agents on its live tasks
-    order = [html.index(f'data-panel="{k}"') for k in (f"agent:{a.id}", "project:proj", f"task:{tid}")]
+    order = [html.index(f'data-panel="{k}"') for k in ("project:proj", f"agent:{a.id}", f"task:{tid}")]
     assert order == sorted(order)
     poller = re.search(r'<div class="mscroll"[^>]*>', html).group(0)
     assert 'hx-get="/ui/messenger"' in poller and 'hx-trigger="every 10s"' in poller
