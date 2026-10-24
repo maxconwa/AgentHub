@@ -701,8 +701,11 @@ def create_app(state: HubState) -> FastAPI:
             if body.state is None:
                 tasks.add_note(conn, task_id, body.note, agent=caller.agent, device=caller.device.name)
                 return tasks.get_task(conn, task_id)
-            return tasks.transition(conn, task_id, body.state, actor=caller.agent.id, role="agent",
-                                    agent=caller.agent, note=body.note, device=caller.device.name)
+            before = tasks.get_task(conn, task_id)["state"]
+            moved = tasks.transition(conn, task_id, body.state, actor=caller.agent.id, role="agent",
+                                     agent=caller.agent, note=body.note, device=caller.device.name)
+            # a reopen (0.3.11): its implementers' runners resume their task sessions for the move
+            return {**moved, "reopened": True} if before == "review" and moved["state"] == "in_progress" else moved
 
     @app.post(f"{api}/tasks/{{task_id}}/finish")
     def finish_task(task_id: int, body: FinishRequest, caller: Caller, conn: Conn) -> dict[str, Any]:

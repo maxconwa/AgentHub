@@ -615,7 +615,7 @@ details.tools[open] .fold { transform: rotate(90deg); }
 
 /* Agents waking agents (0.3.9.1): who woke whom, the pause switches and their badge, the loop-pause card. */
 .sline.st-woke .ct { color: var(--text); }
-.sline.st-wake_declined, .sline.st-loop_paused, .sline.st-declined { color: var(--warn); }
+.sline.st-wake_declined, .sline.st-loop_paused, .sline.st-declined, .sline.st-no_verdict { color: var(--warn); }
 .chain { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; color: var(--muted); }
 .tag-sendback { font-size: 0.68rem; border: 1px solid var(--warn); color: var(--warn); border-radius: 6px; padding: 0 5px; }
 .wakes { margin-top: 6px; }

@@ -433,7 +433,14 @@ def end_run(
     events.emit(conn, type="task.run_ended", actor=agent.id, project=task["project"], device=device,
                 payload={"task_id": task_id, "run_id": run_id, "outcome": outcome, "num_turns": num_turns,
                          "cost_usd": cost_usd, "agents": _member_ids(task)})
-    return usage(conn, task_id, agent.id)  # the ending agent's own consumption
+    found = usage(conn, task_id, agent.id)  # the ending agent's own consumption
+    m = _require_member(get_task(conn, task_id), agent)
+    if outcome == "success" and m["stage"] == "reviews" and task["state"] == "review" and m["verdict"] is None:
+        from agenthub.hub import task_agents  # a reviewer's session ended without its verdict (0.3.11)
+
+        task_agents.warn(conn, task_id, agent, "no_verdict")
+        found["warning"] = "no_verdict"
+    return found
 
 
 def set_run_session(conn: sqlite3.Connection, task_id: int, run_id: int, agent: Agent, session_id: str) -> None:

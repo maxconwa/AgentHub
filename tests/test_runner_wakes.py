@@ -12,10 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from agenthub.hub import chats, db, store, task_agents, wakes
+from agenthub.hub import chats, db, reviewers, store, task_agents, wakes
 from agenthub.hub.db import now_iso
 from agenthub.runner.chat import ChatState, Delivery, chain_ids, delivery_text
 
+from .conftest import OPERATOR
 from .test_chat_runner import chat_runner, running, states, turns_log
 from .test_runner import fake_claude, live_hub, stop, wait_for  # noqa: F401 - fixtures
 
@@ -352,6 +353,69 @@ async def test_a_changes_verdict_starts_one_builder_session(live_hub, fake_claud
     (msg,) = [r for r in chats.messages(live_hub.conn(), "task", str(task_id)) if r["meta"].get("send_back")]
     (d,) = deliveries(live_hub, msg)
     assert d["mode"] == "queued"
+
+
+async def test_the_39_stall_replayed_through_the_runner(live_hub, fake_claude, tmp_path):
+    """#39, end to end (0.3.11, task #51): the project's reviewer owns a review task and its session ends before
+    anything is ready, so the task goes to review and the hub warns no_verdict. Another member then hands off in the
+    task chat, addressed to nobody, and the reviewer's task session resumes for it, with no operator action: exactly
+    one session."""
+    claude_bin, calls = fake_claude
+    runner, cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    conn = live_hub.conn()
+    with db.transaction(conn):
+        reviewers.set_reviewers(conn, "proj", [cfg.agent_id], actor=OPERATOR)
+    task_id = live_hub.op_task("Review 0.3.10", assignee="worker")
+    member = peer(live_hub, tmp_path)
+    live_hub.add(task_id, PEER, "reviews")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        # 1. the session ends early: the runner finishes the task, which goes to review with the warning
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review"
+                       and (task_id not in runner.work or runner.work[task_id].task.done()))
+        warned = [r["meta"] for r in chats.messages(live_hub.conn(), "task", str(task_id))
+                  if r["kind"] == "status" and r["meta"].get("warning") == "no_verdict"]
+        assert [w["agent_id"] for w in warned] == [cfg.agent_id]
+        before = len(calls())
+        # 2. a member hands off, addressed to nobody
+        msg = agent_says(live_hub, member, "task", str(task_id), "0.3.10 is integrated at 5606725", to=None)
+        assert msg["handoff"] == [cfg.agent_id]
+        # 3. the reviewer's task session resumes for it
+        await wait_for(lambda: states(live_hub, "task", str(task_id)).count("finished") >= 2, timeout=30)
+        await asyncio.sleep(1)
+    finally:
+        await stop(main)
+    (call,) = calls()[before:]  # exactly one session
+    task_run = calls()[before - 1]
+    assert call["argv"][call["argv"].index("--resume") + 1] == task_run["session"]  # the task's own session
+    assert call["env"]["AGENTHUB_TASK_ID"] == str(task_id) and f"#{msg['id']}" in call["stdin"]
+    assert untrusted_from_peer(call["stdin"], msg, member) and mode(live_hub, msg) == "woke"
+
+
+async def test_a_reopen_restarts_the_assignees_task_session(live_hub, fake_claude, tmp_path):
+    """After its assignee reopens a task from review, the runner runs the task again: one session, resumed."""
+    import httpx
+
+    claude_bin, calls = fake_claude
+    runner, cfg = chat_runner(live_hub, tmp_path, claude_bin)
+    task_id = live_hub.op_task("Review 0.3.10", assignee="worker")
+    main = asyncio.create_task(runner.run_forever())
+    try:
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review"
+                       and (task_id not in runner.work or runner.work[task_id].task.done()))
+        before = len(calls())
+        token = open(cfg.token_file).read().strip()
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{live_hub.url}/api/v1/tasks/{task_id}/update",
+                             json={"state": "in_progress", "note": "the branches are in"},
+                             headers={"authorization": f"Bearer {token}"})
+        assert r.status_code == 200 and r.json()["reopened"] is True, r.text
+        await wait_for(lambda: live_hub.task(task_id)["state"] == "review" and len(calls()) > before, timeout=30)
+        await asyncio.sleep(1)
+    finally:
+        await stop(main)
+    (session,) = calls()[before:]
+    assert "--resume" in session["argv"] and "the branches are in" in session["stdin"]
 
 
 # --- a wake never widens project access ----------------------------------------------------------------------------

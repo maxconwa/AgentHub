@@ -453,11 +453,11 @@ def post(
     task's project. Whoever it can't reach that way is reported in the chat (a ``wake_declined`` status line)
     rather than woken: a wake never widens access. An addressed message (``to``, a mention, a direct chat) may wake
     an idle recipient; a task or project chat message addressed to nobody reaches everyone (into a running session,
-    or read_inbox) but wakes nobody, so the chat's chatter doesn't start sessions. One exception (0.3.11): an
-    implementer's message addressed to nobody in the chat of a task in review is a hand-off, and it wakes the task's
-    reviewers (:func:`review_handoff`); everyone else still gets it without waking. The result is the message with
-    ``chain_id``, ``wakes`` (``[{agent_id, name, delivery_id, wake}]``), ``handoff`` (the reviewers it was handed
-    to) and ``declined`` (``[{agent_id, name, reason}]``)."""
+    or read_inbox) but wakes nobody, so the chat's chatter doesn't start sessions. One exception (0.3.11): in the
+    chat of a task in review, a member's message addressed to nobody is a hand-off, and it wakes every other member of
+    the task, implementers and reviewers (:func:`review_handoff`). The result is the message with ``chain_id``,
+    ``wakes`` (``[{agent_id, name, delivery_id, wake}]``), ``handoff`` (the members it was handed to) and
+    ``declined`` (``[{agent_id, name, reason}]``)."""
     _check_body(body, max_chars)
     chat_row = _member_chat(conn, agent, kind, ref)
     _not_device(chat_row)
@@ -536,19 +536,16 @@ def post(
 
 
 def review_handoff(conn: sqlite3.Connection, chat_row: dict[str, Any], agent: Agent) -> set[str]:
-    """The reviewers an unaddressed message of ``agent``'s hands off to (0.3.11): the active ``reviews`` members of the
-    chat's task, when it is a task chat, the task is in review and ``agent`` implements it. Otherwise none."""
+    """The members an unaddressed message of ``agent``'s hands off to (0.3.11): when it is the chat of a task in
+    review, every other member of the task (implementers and reviewers, never ``agent``; :func:`post` still leaves out
+    pending, revoked and no longer allowed ones). Otherwise none. Only the task's members can write there."""
     if chat_row["kind"] != "task":
         return set()
     task_id = int(chat_row["ref"])
     row = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if row is None or row["state"] != "review" or not conn.execute(
-            "SELECT 1 FROM task_agents WHERE task_id = ? AND agent_id = ? AND stage = 'works'",
-            (task_id, agent.id)).fetchone():
+    if row is None or row["state"] != "review":
         return set()
-    return {r["agent_id"] for r in conn.execute(
-        "SELECT ta.agent_id FROM task_agents ta JOIN agents a ON a.id = ta.agent_id "
-        "WHERE ta.task_id = ? AND ta.stage = 'reviews' AND a.status = 'active'", (task_id,))}
+    return set(members(conn, "task", chat_row["ref"])) - {agent.id}
 
 
 def _not_device(chat_row: dict[str, Any]) -> None:

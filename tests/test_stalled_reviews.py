@@ -109,8 +109,13 @@ def test_the_39_stall_no_longer_blocks(team):
     build_task = running(hub, [b1], title="Message all the agents on a device")  # #41
 
     # 1. The reviewer's session finishes before any branch is ready: #39 goes to review with nobody to review it.
+    # (c) It still finishes, but the hub warns: the project's reviewer recorded no verdict since #39 started.
     t39 = finish(hub, rev, review_task["id"], note="nothing to review yet")
     assert t39["state"] == "review" and not views.task_reviewers(t39)
+    assert t39["warning"] == "no_verdict"
+    assert status_lines(hub, review_task["id"], "no_verdict") == [
+        {"state": "no_verdict", "warning": "no_verdict", "task_id": review_task["id"], "agent_id": rev.id,
+         "agent_name": "rev"}]
     # (d) Left like that, it shows as a stalled review once stall_minutes pass.
     assert review_task["id"] not in stalls.stalled_reviews(hub.conn())
     flag = stalls.stalled_reviews(hub.conn(), now=later(31))[review_task["id"]]
@@ -135,7 +140,7 @@ def test_the_39_stall_no_longer_blocks(team):
     r = reopen(hub, rev, review_task["id"], note="the branches are ready now")
     assert r.status_code == 200, r.text
     t39 = r.json()
-    assert t39["state"] == "in_progress" and t39["last_moved_by"] == rev.id
+    assert t39["state"] == "in_progress" and t39["last_moved_by"] == rev.id and t39["reopened"] is True
     assert t39["last_note"] == "the branches are ready now"
     assert task_agents.member(t39, rev.id)["finished_at"] is None  # it has to finish again: no check is skipped
     assert status_lines(hub, review_task["id"], "reopened") == [
@@ -145,7 +150,13 @@ def test_the_39_stall_no_longer_blocks(team):
     page = hub.client.get(f"/ui/tasks/{review_task['id']}", headers=hub.op_headers()).text
     assert f"rev reopened task #{review_task['id']}: back in progress" in page
     assert "the branches are ready now" in page
-    assert finish(hub, rev, review_task["id"], note="reviewed #41: approve")["state"] == "review"
+    assert "rev finished task #%d without recording a review verdict" % review_task["id"] in page
+
+    # 5. rev reviews #41 for real, then finishes #39 again: no warning now.
+    r = api(hub, rev, "POST", f"/tasks/{build_task['id']}/verdict", json={"verdict": "approve", "notes": "ok"})
+    assert r.status_code == 200, r.text
+    t39 = finish(hub, rev, review_task["id"], note="reviewed #41: approve")
+    assert t39["state"] == "review" and "warning" not in t39
 
 
 def test_the_39_stall_with_an_operator_reopen(team):
@@ -246,29 +257,68 @@ def test_an_operator_send_back_writes_a_reopened_line_but_a_changes_verdict_does
     assert len(status_lines(hub, t["id"], "reopened")) == 1  # the verdict's own messages say it
 
 
-# --- (b) hand-offs wake the reviewers --------------------------------------------------------------------------------
+# --- (b) hand-offs wake the other members ---------------------------------------------------------------------------
 
 
-def test_an_unaddressed_message_in_review_wakes_only_the_reviewers(team):
+def test_an_unaddressed_message_in_review_wakes_every_other_member(team):
     hub, rev, b1, b2 = team
     t = running(hub, [b1, b2])
     finish(hub, b1, t["id"])
     finish(hub, b2, t["id"])
     msg = post(hub, b1, t["id"], "ready: agent/b1 @ 1234")
-    assert {(w["agent_id"], w["wake"]) for w in msg["wakes"]} == {(rev.id, True), (b2.id, False)}
-    assert msg["handoff"] == [rev.id]
-    d = next(d for d in deliveries(hub, b2) if d["message_id"] == msg["id"])
-    assert claim(hub, b2, d["id"]).status_code == 409  # the other builder only gets a notice
+    assert {(w["agent_id"], w["wake"]) for w in msg["wakes"]} == {(rev.id, True), (b2.id, True)}
+    assert sorted(msg["handoff"]) == sorted([rev.id, b2.id])  # never its author
+    for creds in (rev, b2):
+        d = next(d for d in deliveries(hub, creds) if d["message_id"] == msg["id"])
+        assert claim(hub, creds, d["id"]).status_code == 200
 
 
-def test_no_handoff_wake_outside_review_or_from_a_reviewer(team):
+def test_a_reviewers_unaddressed_message_wakes_the_implementers_too(team):
+    """#39's shape: the assignee finished early; another member's hand-off in the review task's chat wakes it."""
+    hub, rev, b1, _ = team
+    t = running(hub, [b1], [rev])
+    finish(hub, b1, t["id"])
+    msg = post(hub, rev, t["id"], "the branch you wait for is ready, reopen")
+    assert [(w["agent_id"], w["wake"]) for w in msg["wakes"]] == [(b1.id, True)]
+
+
+def test_outside_review_an_unaddressed_message_still_wakes_nobody(team):
     hub, rev, b1, _ = team
     t = running(hub, [b1], [rev])
     msg = post(hub, b1, t["id"], "still working")  # in progress: a notice, as before
     assert [w["wake"] for w in msg["wakes"]] == [False] and msg["handoff"] == []
-    finish(hub, b1, t["id"])
-    msg = post(hub, rev, t["id"], "looking now")  # the reviewer's own chatter wakes nobody
+    msg = post(hub, rev, t["id"], "fyi")
     assert [w["wake"] for w in msg["wakes"]] == [False]
+
+
+def test_agents_off_the_task_still_cannot_write_in_its_chat(team):
+    hub, rev, b1, b2 = team
+    t = running(hub, [b1])
+    finish(hub, b1, t["id"])
+    r = api(hub, b2, "POST", f"/chats/task/{t['id']}/messages", json={"body": "#42 is ready"})
+    assert r.status_code in (403, 404)
+
+
+def test_handoff_wakes_among_three_members_are_capped_by_the_loop_limit(tmp_path):
+    hub = make_hub(tmp_path, wakes={"loop_limit": 4})
+    try:
+        b1, r1, r2 = hub.enroll("b1"), hub.enroll("r1"), hub.enroll("r2")
+        t = running(hub, [b1], [r1, r2])
+        finish(hub, b1, t["id"])  # wakes r1 and r2, one chain each (b1 is in no chain yet)
+        first = post(hub, b1, t["id"], "ready @ abc")  # a new chain: two wakes
+        assert sorted(first["handoff"]) == sorted([r1.id, r2.id])
+        d = next(x for x in deliveries(hub, r1) if x["message_id"] == first["id"])
+        assert claim(hub, r1, d["id"]).status_code == 200
+        reply = post(hub, r1, t["id"], "which tests?")  # r1 answers in that chain: b1 and r2, four
+        assert reply["chain_id"] == first["chain_id"] and all(w["wake"] for w in reply["wakes"])
+        d = next(x for x in deliveries(hub, b1) if x["message_id"] == reply["id"])
+        assert claim(hub, b1, d["id"]).status_code == 200
+        tripped = post(hub, b1, t["id"], "tests/test_x.py")  # six: over the limit, the chain pauses
+        assert tripped["chain_id"] == first["chain_id"] and tripped.get("loop_paused") is True
+        assert not any(w["wake"] for w in tripped["wakes"])
+        assert wakes.chain_view(hub.conn(), tripped["chain_id"])["status"] == "paused"
+    finally:
+        wakes.configure(HubConfig().wake_loop_limit)
 
 
 def test_an_addressed_message_is_unchanged(team):
@@ -493,3 +543,69 @@ def test_doctor_warns_about_stalled_reviews(tmp_path, monkeypatch):
               reviews={"stall_minutes": 1}).save(paths.hub_config_path())
     names = [c.name for c in doctor.hub_checks(lambda argv: doctor.subprocess.CompletedProcess(argv, 1, "", ""))]
     assert "stalled reviews" in names
+
+
+# --- no_verdict: a reviewer finishing without a verdict -------------------------------------------------------------
+
+
+def test_a_non_reviewer_finishing_gets_no_warning(team):
+    hub, rev, b1, _ = team
+    t = running(hub, [b1])
+    got = finish(hub, b1, t["id"])
+    assert got["state"] == "review" and "warning" not in got
+    assert status_lines(hub, t["id"], "no_verdict") == []
+
+
+def test_a_verdict_before_the_task_last_entered_in_progress_does_not_count(team):
+    hub, rev, b1, _ = team
+    other = running(hub, [b1])
+    finish(hub, b1, other["id"])
+    assert api(hub, rev, "POST", f"/tasks/{other['id']}/verdict", json={"verdict": "approve"}).status_code == 200
+    t = running(hub, [rev])  # it starts after that verdict
+    assert finish(hub, rev, t["id"])["warning"] == "no_verdict"
+
+
+def test_a_reviewers_task_session_ending_without_a_verdict_warns(team):
+    hub, rev, b1, _ = team
+    t = running(hub, [b1])
+    finish(hub, b1, t["id"])  # rev is added as the project's reviewer
+    run = api(hub, rev, "POST", f"/tasks/{t['id']}/runs").json()
+    end = {"outcome": "success", "session_id": "s1", "num_turns": 3, "cost_usd": 0}
+    r = api(hub, rev, "POST", f"/tasks/{t['id']}/runs/{run['id']}/end", json=end)
+    assert r.status_code == 200 and r.json()["warning"] == "no_verdict"
+    assert [m["agent_id"] for m in status_lines(hub, t["id"], "no_verdict")] == [rev.id]
+    # With a verdict recorded, its next session ends quietly.
+    assert api(hub, rev, "POST", f"/tasks/{t['id']}/verdict", json={"verdict": "approve"}).status_code == 200
+    run = api(hub, rev, "POST", f"/tasks/{t['id']}/runs").json()
+    assert "warning" not in api(hub, rev, "POST", f"/tasks/{t['id']}/runs/{run['id']}/end", json=end).json()
+
+
+def test_mcp_texts_say_what_happened():
+    from agenthub import mcp_server
+
+    line = mcp_server._hub_status({"state": "no_verdict", "warning": "no_verdict", "task_id": 39,
+                                   "agent_id": "ag1", "agent_name": "rev"}, {})
+    assert line == "warning no_verdict: rev finished task #39 without recording a review_task verdict"
+
+
+async def test_mcp_finish_warns_and_a_reopen_says_the_sessions_resume(dev_hub):
+    import httpx
+    from mcp import Client
+
+    from agenthub.client import HubClient
+    from agenthub.mcp_server import build_server
+
+    rev = dev_hub.enroll("rev")
+    tx(dev_hub, store.ensure_project, "proj", actor=OPERATOR)
+    tx(dev_hub, reviewers.set_reviewers, "proj", [rev.id], actor=OPERATOR)
+    t = running(dev_hub, [rev])
+    client = HubClient("http://hub", rev.token, transport=httpx.ASGITransport(app=dev_hub.client.app))
+    async with Client(build_server(lambda: client)) as c:
+        done = "\n".join(x.text for x in (await c.call_tool("finish_task", {"task_id": t["id"]})).content)
+        assert "moves to review" in done and "Warning no_verdict" in done
+        back = "\n".join(x.text for x in (await c.call_tool(
+            "update_task", {"task_id": t["id"], "state": "in_progress", "note": "the branches are in"})).content)
+        assert f"Task #{t['id']} is reopened" in back and "task sessions resume" in back
+        blocked = "\n".join(x.text for x in (await c.call_tool(
+            "update_task", {"task_id": t["id"], "state": "blocked"})).content)
+        assert blocked == f"Task #{t['id']} is now blocked."

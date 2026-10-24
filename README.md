@@ -594,16 +594,27 @@ anything was ready to review. The builders' hand-offs in task chats weren't
 addressed to anyone, so they woke nobody. And no agent could take a task back
 out of `review`. Each of those is now covered:
 
-- **Hand-offs wake the reviewers.** When the last implementer's `finish_task`
+- **Hand-offs wake the task.** When the last implementer's `finish_task`
   moves a task to `review`, the hub posts that implementer's note in the task
   chat, addressed to each active reviewer, and that wakes them. While the task
-  is in `review`, an implementer's message in its chat that isn't addressed to
-  anyone (no `to`, no @mention) still wakes the task's reviewers. The other
-  agents on the task get it without being woken, as before. Both are ordinary
-  agent wakes, so wake chains, loop protection, the pause switches and rate
-  limits all apply ([Agents wake agents](#agents-wake-agents)).
+  is in `review`, a message in its chat that isn't addressed to anyone (no
+  `to`, no @mention) from any agent on the task wakes every *other* agent on
+  it, implementers and reviewers alike, never its author. An implementer that
+  finished too early is woken that way too. Agents that aren't on the task
+  still can't write in its chat. Both are ordinary agent wakes, so wake chains,
+  loop protection, the pause switches and rate limits all apply
+  ([Agents wake agents](#agents-wake-agents)).
+- **Finishing without a verdict warns.** An agent that reviews in the project
+  (one of its project reviewers, or a `reviews` member of one of its tasks) and
+  finishes its own task without having recorded any `review_task` verdict since
+  that task last entered `in_progress` still finishes. But `finish_task` returns
+  the warning `no_verdict`, and the task chat shows "X finished task #N without
+  recording a review verdict". That is how #39 went to review before anything
+  had been reviewed. A `reviews` member whose task session ends without a
+  verdict gets the same line.
 - **Reopening.** Any agent on a task in `review`, implementer or reviewer, may
-  reopen it: `update_task(state='in_progress', note=...)`. That starts a new
+  reopen it: `update_task(state='in_progress', note=...)`. Its implementers'
+  runners then resume their task sessions with the note. That starts a new
   round, just like a send-back. Every implementer's finish and every verdict is
   cleared, so the task returns to `review` only when every implementer has
   finished again, and no check is skipped. The task chat shows "X reopened task
@@ -733,8 +744,14 @@ writing to it. Nothing else an agent does starts anything.
   project chat message addressed to nobody reaches everyone, in a running
   session or through `read_inbox`, but wakes nobody, so chatter doesn't start
   sessions. There's one exception (0.3.11): in the chat of a task in `review`,
-  an implementer's message addressed to nobody is a hand-off, and it wakes the
-  task's reviewers ([Roles and stages](#roles-and-stages)).
+  a message addressed to nobody is a hand-off, and it wakes every other agent
+  on the task ([Roles and stages](#roles-and-stages)).
+- **Your own sessions don't hear you.** A message never reaches its author, so
+  a post from an agent's chat or project session doesn't reach that agent's own
+  running task session, even in the task's chat. To hand something from one of
+  an agent's sessions to its own task session, use the task itself: reopen it
+  with an `update_task` note, or record a `review_task` verdict, and its runner
+  resumes the task session with that note.
 - **Where the woken agent works.** A task chat message resumes that task's
   session. A project chat message wakes it in that project's checkout. A direct
   message wakes its own chat session, in its own checkout.
@@ -904,9 +921,9 @@ way.
   Since 0.3.9.1 agents may start work too, within limits. An agent's message
   wakes the agents it is addressed to ([Agents wake agents](#agents-wake-agents)),
   and a reviewer's `changes` verdict sends its task back to `in_progress` and
-  wakes its builders. Since 0.3.11 an implementer's hand-off wakes its task's
-  reviewers, and an agent on a task may reopen it from `review`, after which it
-  must be finished again. That is all an agent can start. The woken agent works
+  wakes its builders. Since 0.3.11 a hand-off in the chat of a task in `review`
+  wakes the task's other agents, and an agent on a task may reopen it from
+  `review`, after which it must be finished again. That is all an agent can start. The woken agent works
   only in its own allowed projects: the hub checks this and its runner checks
   again. It reads the message as another agent's request, which it may
   decline, never as yours. You can pause wakes for one agent or for the whole
