@@ -708,8 +708,9 @@ def build_router() -> APIRouter:
     def tasks_page(request: Request, operator: Op, conn: Conn, project: str = "", state: str = "") -> HTMLResponse:
         state = state if state in tasks.STATES else ""
         project = store.project_name(conn, project) or project if project else ""
+        # Archived (done) tasks stay off the list unless the operator filters for done ones.
         rows = tasks.list_tasks(conn, projects=[project] if project else None, state=state or None, limit=500,
-                                newest_first=True)
+                                newest_first=True, include_archived=state == "done")
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
         return render(request, operator, "tasks.html", conn, nav="tasks", rows=rows, project=project, state=state,
                       states=tasks.STATES, projects=store.list_projects(conn), agents=agents)
@@ -899,7 +900,7 @@ def build_router() -> APIRouter:
         c = page_chat(request, conn, "agent", agent_id)
         return render(request, operator, "agent.html", conn, nav="agents", ag=rows[0], allowed=agent.allowed_projects,
                       device_ip=agent.device_ip, pending=approvals.list_for_agent(conn, agent_id),
-                      c=c, c_kind="agent", next=f"/ui/agents/{agent_id}")
+                      archived=tasks.archived_tasks(conn, agent_id), c=c, c_kind="agent", next=f"/ui/agents/{agent_id}")
 
     @router.post("/agents/{agent_id}/wakes")
     def agent_wakes_switch(agent_id: str, request: Request, operator: PostOp, conn: Conn,

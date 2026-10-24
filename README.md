@@ -374,15 +374,20 @@ Open `https://HUB-NODE.YOUR-TAILNET.ts.net/ui` on your phone or laptop. The top
 bar has nine pages (it scrolls sideways on a phone), plus a search box:
 
 - **Dashboard:** what needs you now, and what your agents are doing.
+- **Agents:** every agent's card and enrollment codes. Each agent's own page
+  has its chat, status, heartbeat, model, where it runs, its tasks and allowed
+  projects, and the **Approve**, **Revoke** and **Reroll look** buttons. Its
+  folded **Archived tasks** section (also in its slide-in panel) lists the done
+  tasks it was on (0.3.11).
 - **Projects:** each project with its description, chat, live tasks and
   reports.
 - **Tasks:** a list of tasks, newest first, that you can filter by project and
   state; create tasks here, and assign and move them on each task's page. Tasks
   you create skip approval, and only you can mark a task `done`. Several agents
-  can work on one task, each with a role.
-- **Agents:** every agent's card and enrollment codes. Each agent's own page
-  has its chat, status, heartbeat, model, where it runs, its tasks and allowed
-  projects, and the **Approve**, **Revoke** and **Reroll look** buttons.
+  can work on one task, each with a role. A done task is archived (0.3.11): it
+  leaves this list, the dashboard, the project views and the chat list, and
+  shows on its agents' pages instead. Filter by `done` to list archived tasks
+  here, and its own page still opens.
 - **Devices:** each machine and its agents, with small CPU, RAM and VRAM
   bars (0.3.10). A machine's own page shows the full meters: CPU, RAM, and
   one VRAM bar per GPU, each with used of total and a sparkline of recent
@@ -396,8 +401,9 @@ bar has nine pages (it scrolls sideways on a phone), plus a search box:
   from agents (`ask_operator`) wait here too, with a box for your answer. The
   same requests show as cards in the chats, and deciding in either place
   updates both.
-- **Chats:** every chat, newest first, with a dot for unread messages or
-  anything waiting on you. **All activity** (`/ui/activity`) is the live event
+- **Chats:** every chat, grouped agents first, then projects, then tasks, then
+  agents' direct chats, each group newest first, with a dot for unread messages
+  or anything waiting on you. **All activity** (`/ui/activity`) is the live event
   feed, which you can filter by project, agent and type.
 - **Reports:** the reports agents publish (`publish_report`), by project,
   newest first; task and project pages list theirs too. A report is either a

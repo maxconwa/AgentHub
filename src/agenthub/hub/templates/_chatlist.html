@@ -1,6 +1,6 @@
 {% from "_macros.html" import open_attrs, chip, task_title %}
-{#- The chat list (views.chat_index): Agents, Tasks, Projects, each newest first. The Chat button's window
-    (_messenger.html) and the Chats page share it. A row is a link to the item's page that opens its slide-in
+{#- The chat list (views.chat_index): Agents, then Projects, then Tasks, then the agents' direct chats, each newest
+    first; archived (done) tasks are left out. The Chat button's window (_messenger.html) and the Chats page share it. A row is a link to the item's page that opens its slide-in
     panel (its chat) when JavaScript runs. A last line an agent wrote carries the "agent text" tag. -#}
 {% macro face(info, size) -%}
 {%- if info %}<img class="avatar" src="{{ info.mini }}" width="{{ size }}" height="{{ size }}" alt="{{ info.alt }}" loading="lazy">{% endif -%}
@@ -18,7 +18,7 @@
 {%- endmacro %}
 {% macro chat_list() -%}
 <div class="mlists">
-  {% if not (agents or tasks or projects or dms) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
+  {% if not (agents or projects or tasks or dms) %}<p class="empty">No chats yet. Enroll an agent, or make a project, with the + button.</p>{% endif %}
   {% if agents %}
   <div class="chat-group">Agents</div>
   <ul class="clist">
@@ -31,16 +31,6 @@
     {% endfor %}
   </ul>
   {% endif %}
-  {% if tasks %}
-  <div class="chat-group">Tasks</div>
-  <ul class="clist">
-    {% for t in tasks %}
-    <li><a class="crow" {{ open_attrs(t.item, t.href) }}>{{ group_icon('task', t.members) }}
-      <span class="ctext"><span class="cline"><strong>{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}</strong><span class="cago">{{ ago(t.last_ts) if t.last_ts else '' }}</span></span>
-        {{ last_line(t, 'No messages yet · ' ~ t.state.replace('_', ' ')) }}</span>{{ dot(t) }}</a></li>
-    {% endfor %}
-  </ul>
-  {% endif %}
   {% if projects %}
   <div class="chat-group">Projects</div>
   <ul class="clist">
@@ -48,6 +38,16 @@
     <li><a class="crow" {{ open_attrs(p.item, p.href) }}>{{ group_icon('project', p.members) }}
       <span class="ctext"><span class="cline"><strong>{{ p.title }}</strong><span class="cago">{{ ago(p.last_ts) if p.last_ts else '' }}</span></span>
         {{ last_line(p, 'No messages yet') }}</span>{{ dot(p) }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if tasks %}
+  <div class="chat-group">Tasks</div>
+  <ul class="clist">
+    {% for t in tasks %}
+    <li><a class="crow" {{ open_attrs(t.item, t.href) }}>{{ group_icon('task', t.members) }}
+      <span class="ctext"><span class="cline"><strong>{{ task_title({'title': t.title, 'created_by': t.created_by}, names) }}</strong><span class="cago">{{ ago(t.last_ts) if t.last_ts else '' }}</span></span>
+        {{ last_line(t, 'No messages yet · ' ~ t.state.replace('_', ' ')) }}</span>{{ dot(t) }}</a></li>
     {% endfor %}
   </ul>
   {% endif %}

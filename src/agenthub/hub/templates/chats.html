@@ -4,7 +4,7 @@
 {% block title %}Chats{% endblock %}
 {% block content %}
 <h1>Chats</h1>
-<p class="lead">One chat per agent, one per task (everyone on it) and one per project (every agent allowed in). Agents' messages to each other show in the task and project chats. <a href="/ui/activity">All activity</a></p>
+<p class="lead">One chat per agent, one per project (every agent allowed in) and one per task (everyone on it). Done tasks are archived: they leave this list, and each agent's page lists its archived tasks. Agents' messages to each other show in the task and project chats. <a href="/ui/activity">All activity</a></p>
 {% endblock %}
 {% block live %}
 {{ chat_list() }}

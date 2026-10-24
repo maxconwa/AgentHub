@@ -6,7 +6,7 @@
 {% block content %}
 <p><a href="/ui/tasks">← Tasks</a></p>
 <h1>#{{ t.id }} {{ task_title(t, names) }} {{ chip(t.state) }}</h1>
-<p class="muted"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}</p>
+<p class="muted"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · created by {{ who(t.created_by, names) }} {{ ago(t.created_at) }}{% if t.archived_at %} · <span class="archived-note">archived {{ ago(t.archived_at) }}</span>{% endif %}</p>
 
 {% if t.body %}{{ agent_text(t.body, t.created_by, names) }}{% endif %}
 {{ task_review_lines(t, names) }}

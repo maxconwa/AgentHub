@@ -353,10 +353,10 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
     """What the slide-in panel shows for ``item`` (``<kind>:<id>``): ``{kind, href, ...}``.
 
     ``href`` is the item's full page. An agent's, task's or project's panel is its chat, ``c`` (:func:`chat`), under
-    a few facts. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not); task: ``t``; project: ``project`` and
-    its live ``tasks``; device: ``d`` (no chat: devices have none); approval: ``a`` and its ``task``; question: ``q``
-    and its ``task``; dm (a direct chat between two agents, by pair key): only ``c``. Raises store.NotFound for a
-    malformed or unknown item.
+    a few facts. agent: ``ag`` (an :func:`agent_rows` entry, revoked or not) and ``archived`` (its archived tasks,
+    ``tasks.archived_tasks``); task: ``t``; project: ``project`` and its live ``tasks``; device: ``d`` (no chat:
+    devices have none); approval: ``a`` and its ``task``; question: ``q`` and its ``task``; dm (a direct chat between
+    two agents, by pair key): only ``c``. Raises store.NotFound for a malformed or unknown item.
     """
     m = _PANEL_ITEM.fullmatch(item)
     if not m:
@@ -368,7 +368,8 @@ def panel(conn: sqlite3.Connection, item: str) -> dict[str, Any]:
         rows = agent_rows(conn, agent_id=key, with_wakes=True)
         if not rows:
             raise store.NotFound(f"no agent {key!r}")
-        return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0], "c": chat(conn, "agent", key)}
+        return {"kind": kind, "href": f"/ui/agents/{key}", "ag": rows[0], "archived": tasks.archived_tasks(conn, key),
+                "c": chat(conn, "agent", key)}
     if kind == "task":
         t = tasks.get_task(conn, int(key))
         return {"kind": kind, "href": f"/ui/tasks/{t['id']}", "t": t, "c": chat(conn, "task", str(t["id"]))}
@@ -417,12 +418,13 @@ def _last_text(conn: sqlite3.Connection, kind: str, ref: str) -> dict[str, Any] 
 
 
 def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
-    """Every chat for the list: ``{agents, tasks, projects, dms}``, each newest first.
+    """Every chat for the list: ``{agents, projects, tasks, dms}``, in the order they're shown, each newest first.
 
     Every row has ``item`` (the panel that is its chat), ``href`` (its page), ``title``, ``last`` (:func:`_last_text`,
     agent-written unless its author is ``human:``), ``last_ts`` and ``unread`` (agent messages the operator hasn't
     seen). agents (not revoked): ``avatar``, ``status`` and
-    ``waiting`` (its pending questions); tasks (live ones, and finished ones that have a chat): ``state``,
+    ``waiting`` (its pending questions); tasks (live ones, and cancelled or rejected ones that have a chat; an archived,
+    done, task is left out: it is listed on its agents' pages): ``state``,
     ``created_by`` and ``members`` (avatars); projects: ``members``, the agents on its live tasks; dms (direct chats
     between two agents, once one has a message; the operator reads them all): ``members``, the pair.
     """
@@ -441,7 +443,7 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     for r in conn.execute("SELECT task_id, agent_id FROM task_agents ORDER BY added_at, rowid"):
         on_task.setdefault(r["task_id"], []).append(r["agent_id"])
     task_rows, live_members = [], {}
-    for t in conn.execute("SELECT id, project, title, state, created_by FROM tasks ORDER BY id"):
+    for t in conn.execute("SELECT id, project, title, state, created_by FROM tasks WHERE archived_at IS NULL ORDER BY id"):
         live = t["state"] not in TERMINAL_STATES
         if live:
             live_members.setdefault(t["project"], []).extend(on_task.get(t["id"], []))
@@ -466,9 +468,9 @@ def chat_index(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
         dms.append({"item": f"dm:{o['ref']}", "href": chat_page("dm", o["ref"]), "title": o["title"],
                     "last": last, "last_ts": (last and last["ts"]) or o["last_ts"], "unread": o["unread"] or 0,
                     "members": [board[i] for i in pair if i in board]})
-    for rows in (agents, task_rows, projects, dms):
+    for rows in (agents, projects, task_rows, dms):
         rows.sort(key=_ts_key, reverse=True)
-    return {"agents": agents, "tasks": task_rows, "projects": projects, "dms": dms}
+    return {"agents": agents, "projects": projects, "tasks": task_rows, "dms": dms}
 
 
 def _faces(board: dict[str, dict[str, Any]], agent_ids: list[str], n: int = 3) -> list[dict[str, Any]]:

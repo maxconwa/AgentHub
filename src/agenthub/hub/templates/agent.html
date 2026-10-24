@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title, task_fact_rows, approval_summary, open_attrs, agent_wakes %}
+{% from "_macros.html" import chip, avatar, task_title, task_fact_rows, approval_summary, open_attrs, agent_wakes, archived_tasks %}
 {% from "_chat.html" import chat with context %}
 {% block title %}{{ ag.name }}{% endblock %}
 {% block content %}
@@ -41,6 +41,7 @@
     <dl class="agent-facts">{{ task_fact_rows(t) }}{% if t.role %}<dt>Stage</dt><dd>{{ t.stage }}</dd>{% endif %}</dl></div>
   {% else %}<p class="muted">No open tasks.</p>{% endfor %}
 </section>
+{{ archived_tasks(archived, names) }}
 
 {% if ag.wakes and ag.wakes.recent %}
 <section class="panel">

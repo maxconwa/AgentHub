@@ -74,6 +74,18 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {% if t.role %}<dt>Role</dt><dd>{{ t.role }}</dd>{% else %}<dt>Stage</dt><dd>{{ t.stage }}</dd>{% endif %}
 {%- endmacro %}
 
+{# An agent's archived tasks (tasks.archived_tasks: the done tasks it was on, newest first), folded away: its page and
+   its panel. They are left out of the dashboard, the Tasks page, the project views and the chat list. #}
+{% macro archived_tasks(rows, names, cls='panel') -%}
+<details class="{{ cls }} archived-tasks">
+  <summary>Archived tasks <span class="count">{{ rows | length }}</span></summary>
+  {% for t in rows %}
+  <div class="task-row"><div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+    <div class="small-line"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · archived {{ ago(t.archived_at) }}</div></div>
+  {% else %}<p class="muted small">No archived tasks. A task is archived when it's done.</p>{% endfor %}
+</details>
+{%- endmacro %}
+
 {# An agent card's facts, one per line: Task, Project and Role for each current task, then
    Device (the short host; the full name in title) and Folder once. An agent with no task has only the last two. #}
 {% macro agent_tasks(ag, names, next) -%}
