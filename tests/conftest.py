@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agenthub.config import HubConfig
-from agenthub.hub import approvals, db, store
+from agenthub.hub import approvals, db, device_stats, store
 from agenthub.hub.app import HubState, create_app
 from agenthub.hub.store import Device
 from agenthub.hub.tailscale import IdentityError, WhoisResult
@@ -30,6 +30,25 @@ def isolated_dirs(tmp_path, monkeypatch):
                  "AGENTHUB_PERMISSION_WAIT_SECONDS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
+class QuietCollector:
+    """Stands in for the runner's usage collector, so runner tests never read this machine or run nvidia-smi."""
+
+    def sample(self):
+        return {"cpu_pct": 1.0, "mem_used": 1, "mem_total": 2, "gpus": []}
+
+
+@pytest.fixture(autouse=True)
+def quiet_device_stats(monkeypatch):
+    """Each test starts with an empty stats ring and throttle (they live in the hub's memory), and runners
+    sample a fixed QuietCollector. test_device_stats tests the real collector directly."""
+    from agenthub.runner import daemon
+
+    monkeypatch.setattr(daemon, "Collector", QuietCollector)
+    device_stats.reset()
+    yield
+    device_stats.reset()
 
 
 class FakeWhois:

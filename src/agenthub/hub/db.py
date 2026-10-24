@@ -604,6 +604,16 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (project, agent_id)
     );
     """,
+    # 26: device usage stats (0.3.10, task #42): the latest CPU/RAM/VRAM sample a machine's runners reported, one
+    # row per device_node_id, replaced in place (recent history lives only in the hub's memory). Additive.
+    """
+    CREATE TABLE IF NOT EXISTS device_stats (
+        node_id    TEXT PRIMARY KEY,
+        sample     TEXT NOT NULL,
+        agent_id   TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 
