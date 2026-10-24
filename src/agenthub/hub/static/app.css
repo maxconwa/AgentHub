@@ -642,6 +642,14 @@ details.tools[open] .fold { transform: rotate(90deg); }
 .reviewers { margin: 2px 0; }
 .send-back { margin: 6px 0; border-left: 3px solid var(--warn); }
 .stall-note { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--warn); }
+/* The Tasks page's bulk move (0.3.12): its bar above the list, a row's tick box, and what the last move did. */
+.bulk-move { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }
+.bulk-move input[name="note"] { flex: 1 1 12em; width: auto; }
+.bulk-move .buttons { margin-top: 0; flex: 1 1 16em; }
+.bulk-move p { flex-basis: 100%; margin: 0; }
+.pick-all { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.task-row input[data-pick], .pick-all input { width: 20px; height: 20px; padding: 0; margin: 0 4px 0 0; vertical-align: -4px; }
+.bulk-result { margin: 6px 0 12px; padding: 4px 10px; border-left: 3px solid var(--ok); }
 .checks { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .checks legend { margin-bottom: 4px; }
 .check { display: inline-flex; align-items: center; gap: 4px; }

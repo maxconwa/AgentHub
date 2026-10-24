@@ -69,8 +69,10 @@ def test_route_inventory_is_not_empty(hub):
     assert ("PUT", "/ui/api/projects/{name}/reviewers") in routes
     assert ("POST", "/ui/api/devices/{node_id}/broadcast") in routes
     # 0.3.9.1: 53 + 5 wake routes (#30) + 2 reviewer routes (#32) + 4 dashboard routes (#34); 0.3.10: + 2 stats (#42)
-    # + 2 device broadcast routes (#41) + the device page's broadcast form route (#40)
-    assert len(routes) == 69, "a route was added or removed: the walk tests cover it, update this count"
+    # + 2 device broadcast routes (#41) + the device page's broadcast form route (#40); 0.3.12: the Tasks page's bulk
+    # move (#55)
+    assert ("POST", "/ui/tasks/move") in routes
+    assert len(routes) == 70, "a route was added or removed: the walk tests cover it, update this count"
 
 
 def test_agent_token_cannot_reach_any_operator_endpoint(world):

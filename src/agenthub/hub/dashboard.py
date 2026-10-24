@@ -458,6 +458,36 @@ def operator_moves(state: str) -> list[str]:
     return sorted(tasks.TRANSITIONS.get(state, ()))
 
 
+# The Tasks page's bulk move (0.3.12): its two buttons, how many tasks one post may move, and the stalled filter.
+BULK_MOVES = {"done": "marked done", "cancelled": "cancelled"}
+BULK_MAX = 500  # the list shows at most 500
+STALLED_FILTERS = ("all", "no_reviewer")
+
+
+def bulk_result(to: str, moved: str, skipped: str) -> dict[str, Any] | None:
+    """What a bulk move did, from its redirect's query: ``{verb, moved: [ids], skipped: [(id, reason)]}``, or None
+    when there is none. A skip's reason comes from the state the task was in (``missing`` when there is no task)."""
+    if to not in BULK_MOVES or not (moved or skipped):
+        return None
+    out: list[tuple[int, str]] = []
+    for item in skipped.split(","):
+        task_id, _, state = item.partition(":")
+        if not task_id.isdigit():
+            continue
+        if state == "missing":
+            reason = "no such task"
+        elif state == to:
+            reason = f"already {BULK_MOVES[to]}"
+        elif to in tasks.TRANSITIONS.get(state, ()):  # a legal move refused: it changed under the post
+            reason = "it changed while moving; try again"
+        elif state in tasks.STATES:
+            reason = f"{state.replace('_', ' ')}, which can't be {BULK_MOVES[to]}"
+        else:
+            continue
+        out.append((int(task_id), reason))
+    return {"verb": BULK_MOVES[to], "moved": [int(x) for x in moved.split(",") if x.isdigit()], "skipped": out}
+
+
 # --- routes ------------------------------------------------------------------------
 
 def build_router() -> APIRouter:
@@ -716,8 +746,12 @@ def build_router() -> APIRouter:
     # tasks ------------------------------------------------------------------------------
 
     @router.get("/tasks", response_class=HTMLResponse)
-    def tasks_page(request: Request, operator: Op, conn: Conn, project: str = "", state: str = "") -> HTMLResponse:
+    def tasks_page(request: Request, operator: Op, conn: Conn, project: str = "", state: str = "", stalled: str = "",
+                   to: str = "", moved: str = "", skipped: str = "") -> HTMLResponse:
+        """``stalled``: only the tasks carrying ``stalled_review`` (``all``), or only those with no reviewer
+        (``no_reviewer``). ``to``/``moved``/``skipped``: what a bulk move just did (task_bulk_move's PRG redirect)."""
         state = state if state in tasks.STATES else ""
+        stalled = stalled if stalled in STALLED_FILTERS else ""
         project = store.project_name(conn, project) or project if project else ""
         # Archived (done) tasks stay off the list unless the operator filters for done ones.
         rows = tasks.list_tasks(conn, projects=[project] if project else None, state=state or None, limit=500,
@@ -725,9 +759,50 @@ def build_router() -> APIRouter:
         stuck = stalls.stalled_reviews(conn)
         for r in rows:
             r["stalled_review"] = stuck.get(r["id"])
+        if stalled:
+            rows = [r for r in rows if r["stalled_review"]
+                    and (stalled == "all" or r["stalled_review"]["reason"] == stalled)]
         agents = [a for a in store.list_agents(conn) if a["status"] == "active"]
         return render(request, operator, "tasks.html", conn, nav="tasks", rows=rows, project=project, state=state,
-                      states=tasks.STATES, projects=store.list_projects(conn), agents=agents)
+                      stalled=stalled, stalled_count=len(stuck), states=tasks.STATES,
+                      projects=store.list_projects(conn), agents=agents, bulk=bulk_result(to, moved, skipped))
+
+    @router.post("/tasks/move")
+    def task_bulk_move(request: Request, operator: PostOp, conn: Conn,
+                       state: Annotated[str, Form(max_length=32)],
+                       ids: Annotated[list[int], Form(alias="id")] = [],  # noqa: B006  (FastAPI copies it)
+                       pick_all: Annotated[str, Form(alias="all", max_length=1)] = "",
+                       shown: Annotated[str, Form()] = "",
+                       note: Annotated[str, Form()] = "",
+                       project: Annotated[str, Form(max_length=64)] = "",
+                       filter_state: Annotated[str, Form(max_length=32)] = "",
+                       stalled: Annotated[str, Form(max_length=16)] = "") -> Response:
+        """Mark done or cancel every selected task: the ticked rows, or every row shown when ``all`` is ticked
+        (``shown``, so a form posted without JavaScript can select all). Each moves through the same
+        tasks.transition as the single Move form, in its own transaction; a task whose state doesn't allow the move
+        (or that is gone) is skipped, not an error. Back to the list, filters kept, with what moved and what didn't."""
+        if state not in BULK_MOVES:
+            raise HTTPException(422, f"a bulk move marks tasks done or cancels them, not {state!r}")
+        picked = [int(x) for x in shown.split(",") if x.strip().isdigit()] if pick_all else ids
+        picked = list(dict.fromkeys(picked))[:BULK_MAX]
+        if not picked:
+            raise HTTPException(422, "select at least one task")
+        moved, skipped = [], []
+        for task_id in picked:
+            try:
+                with db.transaction(conn):
+                    tasks.transition(conn, task_id, state, actor=operator.actor, role="operator", note=note)
+                moved.append(str(task_id))
+            except store.NotFound:
+                skipped.append(f"{task_id}:missing")
+            except (store.Conflict, store.Forbidden, store.Invalid):
+                current = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                skipped.append(f"{task_id}:{current['state'] if current else 'missing'}")
+        query = {"project": project, "state": filter_state if filter_state in tasks.STATES else "",
+                 "stalled": stalled if stalled in STALLED_FILTERS else "",
+                 "to": state, "moved": ",".join(moved), "skipped": ",".join(skipped)}
+        return RedirectResponse(f"/ui/tasks?{urlencode({k: v for k, v in query.items() if v})}", status_code=303,
+                                headers=SECURITY_HEADERS)
 
     @router.post("/tasks")
     def task_create(request: Request, operator: PostOp, conn: Conn,

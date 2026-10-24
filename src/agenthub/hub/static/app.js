@@ -65,6 +65,44 @@
     if (form.parentNode.querySelector("#broadcast-result .ok-line")) { form.reset(); forgetDrafts(form); }
   });
 
+  // The Tasks page's bulk move: "All shown" ticks every row and a row unticked clears it again (half-ticked while
+  // some are). The rows' boxes keep their ticks across the live refresh (hx-preserve); a row that arrives while
+  // "All shown" is ticked comes in ticked, so what moves is what is ticked on screen. Done and cancelled are final,
+  // so the buttons ask first, with the count.
+  function picks() { return Array.prototype.slice.call(document.querySelectorAll("input[data-pick]")); }
+  function syncPickAll() {
+    var all = document.querySelector("input[data-pick-all]");
+    if (!all) return;
+    var boxes = picks(), ticked = boxes.filter(function (b) { return b.checked; }).length;
+    all.checked = boxes.length > 0 && ticked === boxes.length;
+    all.indeterminate = ticked > 0 && ticked < boxes.length;
+  }
+  document.addEventListener("change", function (evt) {
+    var el = evt.target;
+    if (el.matches && el.matches("input[data-pick-all]")) {
+      picks().forEach(function (b) { b.checked = el.checked; });
+      el.indeterminate = false;
+    } else if (el.matches && el.matches("input[data-pick]")) {
+      syncPickAll();
+    }
+  });
+  if (window.htmx) htmx.onLoad(function (root) {
+    if (!root || !root.querySelector || !root.querySelector("input[data-pick]")) return;
+    var all = document.querySelector("input[data-pick-all]");
+    if (all && all.checked) picks().forEach(function (b) { b.checked = true; });
+    syncPickAll();
+  });
+  document.addEventListener("submit", function (evt) {
+    var form = evt.target;
+    if (!form || form.id !== "bulk-move") return;
+    var n = picks().filter(function (b) { return b.checked; }).length;
+    var done = evt.submitter && evt.submitter.value === "done";
+    if (!n) { evt.preventDefault(); window.alert("Tick the tasks to move first."); return; }
+    var ask = (done ? "Mark " : "Cancel ") + n + " task" + (n === 1 ? "" : "s") + (done ? " done" : "") +
+      "? This can't be undone; a task whose state doesn't allow it is skipped.";
+    if (!window.confirm(ask)) evt.preventDefault();
+  });
+
   // Failed: an item that can fail carries data-fail-key (and data-failed while failed; see fail_attrs in
   // _macros.html). When a swap brings in a key failed that this page last showed not failed, the new element plays
   // .failed-new once. A key first seen already failed (on page load, say) only shows its red edge.

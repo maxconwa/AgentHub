@@ -682,6 +682,18 @@ out of `review`. Each of those is now covered:
   stall_minutes = 30   # the default; 0 turns the flag off
   ```
 
+**Clearing many tasks at once (0.3.12).** The Tasks page can filter for
+stalled reviews (all of them, or only those with no reviewer), and its lead
+links to them when there are any. Each row has a tick box, and **All shown**
+selects every row the list shows. **Mark done** and **Cancel** move every
+ticked task in one plain form post (`POST /ui/tasks/move`, operator only,
+CSRF-checked). Each task goes through the same move as the Move form on its
+own page, with the note you give. Marking a task done archives it. A task whose
+state doesn't allow the move is skipped, not an error: only `review` can be
+marked done, and a done or cancelled task can't be cancelled. The page then
+says how many moved and why each skipped one was skipped. Neither move can be
+undone, so with JavaScript on, the buttons ask first and give the count.
+
 **Reviewers are always there.** On a project's page you mark some of its
 agents as the project's reviewers. A task that enters `review` with no active
 reviewer gets them added in the `reviews` stage, with the role "Project

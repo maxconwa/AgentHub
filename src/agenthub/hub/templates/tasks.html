@@ -4,7 +4,12 @@
 {% block title %}Tasks{% endblock %}
 {% block content %}
 <h1>Tasks</h1>
-<p class="lead">Done tasks are archived and left out of this list. Filter by done, or open an agent, to see them.</p>
+<p class="lead">Done tasks are archived and left out of this list. Filter by done, or open an agent, to see them.
+{%- if stalled_count and not stalled %} <a href="/ui/tasks?stalled=all">{{ stalled_count }} stalled review{{ 's' if stalled_count != 1 }}</a>.{% endif %}</p>
+{% if bulk %}
+<p class="bulk-result" role="status"><strong>{{ bulk.moved|length }} {{ bulk.verb }}</strong>{% if bulk.moved %} ({% for i in bulk.moved %}<a href="/ui/tasks/{{ i }}">#{{ i }}</a>{{ ', ' if not loop.last }}{% endfor %}){% endif %},
+  {{ bulk.skipped|length }} skipped{% if bulk.skipped %} ({% for i, why in bulk.skipped %}<a href="/ui/tasks/{{ i }}">#{{ i }}</a>: {{ why }}{{ '; ' if not loop.last }}{% endfor %}){% endif %}.</p>
+{% endif %}
 <form class="filters" method="get" action="/ui/tasks">
   <select name="project" aria-label="Project">
     <option value="">All projects</option>
@@ -13,6 +18,11 @@
   <select name="state" aria-label="State">
     <option value="">All states</option>
     {% for s in states %}<option value="{{ s }}" {{ 'selected' if s == state else '' }}>{{ s.replace('_', ' ') }}</option>{% endfor %}
+  </select>
+  <select name="stalled" aria-label="Stalled reviews">
+    <option value="">Stalled or not</option>
+    <option value="all" {{ 'selected' if stalled == 'all' else '' }}>Stalled reviews</option>
+    <option value="no_reviewer" {{ 'selected' if stalled == 'no_reviewer' else '' }}>Stalled: no reviewer</option>
   </select>
   <button type="submit">Filter</button>
 </form>
@@ -26,12 +36,29 @@
     <button type="submit">Create task</button>
   </form>
 </details>
+
+{#- The rows' checkboxes (in the live region, kept across its refresh by hx-preserve) belong to this form through
+    their form attribute. "All shown" posts the ids listed when the page drew the rows, so it works without JS. -#}
+<form id="bulk-move" class="bulk-move" method="post" action="/ui/tasks/move">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="project" value="{{ project }}">
+  <input type="hidden" name="filter_state" value="{{ state }}">
+  <input type="hidden" name="stalled" value="{{ stalled }}">
+  <label class="pick-all"><input type="checkbox" name="all" value="1" data-pick-all> All shown</label>
+  <input name="note" placeholder="Note (optional)" aria-label="Note for every task moved">
+  <div class="buttons wrap">
+    <button type="submit" name="state" value="done" class="approve">Mark done</button>
+    <button type="submit" name="state" value="cancelled" class="reject">Cancel</button>
+  </div>
+  <p class="muted small">Moves the ticked tasks; one whose state doesn't allow it is skipped. Done archives a task. Neither can be undone.</p>
+</form>
 {% endblock %}
 {% block live %}
-{% if not rows %}<p class="empty">No tasks{{ ' match' if project or state }}.</p>{% endif %}
+{% if not rows %}<p class="empty">No tasks{{ ' match' if project or state or stalled }}.</p>{% endif %}
+<input type="hidden" form="bulk-move" name="shown" value="{{ rows|map(attribute='id')|join(',') }}">
 {% for t in rows %}
 <div class="task-row">
-  <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ stall(t) }}</div>
+  <div class="row"><span><input type="checkbox" form="bulk-move" name="id" value="{{ t.id }}" id="pick-{{ t.id }}" hx-preserve data-pick aria-label="Select #{{ t.id }}"> <a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span><span>{{ chip(t.state) }}{{ stall(t) }}</span></div>
   <div class="small-line"><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a> · {{ ago(t.updated_at) }}</div>
   {{ task_review_lines(t, names) }}
   {% for m in t.agents %}
