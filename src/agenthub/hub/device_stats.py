@@ -57,7 +57,9 @@ def reset() -> None:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    # an int is always finite, and math.isfinite() on one too big for a float raises OverflowError
+    return isinstance(value, int | float) and not isinstance(value, bool) and (
+        isinstance(value, int) or math.isfinite(value))
 
 
 def _pct(value: Any) -> float | None:

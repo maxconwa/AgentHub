@@ -309,6 +309,8 @@ def test_validate_accepts_the_pinned_shape_and_drops_unknown_keys():
     _gpu(name=None), _gpu(name="x" * 101), _gpu(name="evil\nname"), _gpu(name="\x1b[31m"),
     _gpu(mem_used=None), _gpu(mem_used=None, mem_total=None), _gpu(mem_used=13 << 30),
     _gpu(util_pct=math.nan), _gpu(util_pct=101), _gpu(util_pct=-math.inf),
+    _with(cpu_pct=10 ** 400), _with(cpu_pct=-10 ** 400), _gpu(util_pct=10 ** 400),  # too big for a float
+    _with(mem_used=10 ** 400, mem_total=10 ** 400),
 ])
 def test_validate_rejects_bad_samples_whole(bad):
     assert device_stats.validate(bad) is None
@@ -380,6 +382,12 @@ def test_an_invalid_sample_is_dropped_and_the_rest_of_the_heartbeat_applies(hub)
     assert rows(hub) == [] and device_stats.history("na") == []
     agent = hub.conn().execute("SELECT checkouts, last_heartbeat FROM agents WHERE id = ?", (a.id,)).fetchone()
     assert json.loads(agent["checkouts"]) == {"proj": "/w"} and agent["last_heartbeat"]
+
+
+def test_a_huge_int_percentage_is_dropped_and_acked_not_a_dead_socket(hub):
+    a = hub.enroll("a")
+    beat(hub, a, {"stats": _with(cpu_pct=10 ** 400)}, {"checkouts": {}})  # both frames acked
+    assert rows(hub) == []
 
 
 def test_an_old_runner_without_stats_means_no_data(hub):
