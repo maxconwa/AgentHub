@@ -114,7 +114,7 @@ def test_device_panel_has_no_chat(team):
     hub, a, _, _ = team
     html = get(hub, f"/ui/panel?item=device:n{a.name}").text
     assert 'class="chat"' not in html and "<textarea" not in html
-    assert "Devices have no chat" in html
+    assert "Message all agents on this device</a> from its page" in html  # the box is on the page, not here
 
 
 def test_revoked_agent_and_finished_task_chats_are_read_only(team):

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% set has_live = true %}
 {% from "_macros.html" import chip, avatar, open_attrs %}
+{% from "_meters.html" import usage_compact with context %}
 {% block title %}Devices{% endblock %}
 {% block content %}
 <h1>Devices</h1>
-<p class="lead">The machines your agents run on. CPU, GPU, memory and subscription usage arrive in the devices-and-usage plan.</p>
+<p class="lead">The machines your agents run on, with how much CPU, RAM and GPU memory each is using. Open one for the full meters and to message all its agents.</p>
 {% endblock %}
 {% block live %}
 <ul class="device-grid">
@@ -13,6 +14,7 @@
     <div class="row"><a class="name" {{ open_attrs('device:' ~ d.node_id, '/ui/devices/' ~ d.node_id|urlencode) }}>{{ d.name }}</a>
       <span class="chip {{ 'chip-online' if d.online else 'chip-offline' }}">{{ 'online' if d.online else 'offline' }}</span></div>
     <div class="small-line">{% if d.online %}online{% else %}last seen {{ ago(d.last_seen) }}{% endif %}</div>
+    {{ usage_compact(d.meters, d) }}
     <ul class="device-agents">
       {% for a in d.agents %}
       <li>{{ avatar(a.avatar, 32) }} <a class="name" {{ open_attrs('agent:' ~ a.id, '/ui/agents/' ~ a.id) }}>{{ a.name }}</a> {{ chip(a.status) }}

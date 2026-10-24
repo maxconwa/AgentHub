@@ -182,6 +182,86 @@ def device(conn: sqlite3.Connection, node_id: str) -> dict[str, Any]:
     return found
 
 
+# --- Device usage meters ----------------------------------------------------------------------
+
+METER_WARN, METER_HIGH = 75.0, 90.0  # a meter's fill turns amber, then red, at these percentages
+SPARK_W, SPARK_H = 120, 24  # a sparkline's viewBox
+COMPACT_GPUS = 4  # a device card shows a VRAM row per GPU up to this many, then one row for them all
+
+
+def _sizes(used: float, total: float) -> str:
+    """``12.0 / 32.0 GiB``: both in the unit that suits the total (MiB under 1 GiB)."""
+    unit, size = ("GiB", 2**30) if total >= 2**30 else ("MiB", 2**20)
+    return f"{used / size:.1f} / {total / size:.1f} {unit}"
+
+
+def _pct(used: Any, total: Any) -> float | None:
+    if not isinstance(used, int | float) or not isinstance(total, int | float) or total <= 0:
+        return None
+    return 100.0 * used / total
+
+
+def _spark(series: list[float | None]) -> dict[str, Any] | None:
+    """A sparkline of percentages, oldest first: ``{points, n, lo, hi}`` (points in the SPARK_W x SPARK_H viewBox,
+    100 % at the top), or None with fewer than two readings."""
+    vals = [min(max(v, 0.0), 100.0) for v in series if v is not None]
+    if len(vals) < 2:
+        return None
+    step = SPARK_W / (len(vals) - 1)
+    pts = " ".join(f"{i * step:.1f},{SPARK_H - 1 - v / 100 * (SPARK_H - 2):.1f}" for i, v in enumerate(vals))
+    return {"points": pts, "n": len(vals), "lo": f"{min(vals):.0f}%", "hi": f"{max(vals):.0f}%"}
+
+
+def _meter(label: str, pct: float, detail: str, series: list[float | None]) -> dict[str, Any]:
+    pct = min(max(pct, 0.0), 100.0)
+    level = "high" if pct >= METER_HIGH else "warn" if pct >= METER_WARN else "ok"
+    return {"label": label, "pct": round(pct, 1), "value": f"{pct:.0f}%", "detail": detail, "level": level,
+            "spark": _spark(series)}
+
+
+def device_meters(sample: dict[str, Any] | None, history: list[dict[str, Any]] | None = None, *,
+                  stale: bool = False) -> dict[str, Any] | None:
+    """The Devices pages' usage meters from a device's latest stats sample (``device_stats``; None: no data yet).
+
+    ``{ts, stale, cpu, mem, vram, gpus}``: ``cpu`` and ``mem`` are a meter, or None when the runner couldn't read
+    that value; ``gpus`` has one VRAM meter per GPU (``[]``: no GPU), with its ``gpu`` ('GPU 0'), ``name`` and
+    ``util``; ``vram`` is the device card's VRAM rows: one per GPU, or past COMPACT_GPUS one for them all, coloured by the fullest. A
+    meter is ``{label, pct (0-100), value ('37%'), detail ('12.0 / 32.0 GiB'), level (ok, warn, high), spark}``,
+    ``spark`` a sparkline over ``history`` (samples oldest first; None with fewer than two readings).
+    """
+    if not sample:
+        return None
+    history = history or []
+    cpu = sample.get("cpu_pct")
+    mem = _pct(sample.get("mem_used"), sample.get("mem_total"))
+    out: dict[str, Any] = {
+        "ts": sample.get("ts"), "stale": stale, "gpus": [], "vram": [],
+        "cpu": None if not isinstance(cpu, int | float) else _meter(
+            "CPU", cpu, "", [h.get("cpu_pct") for h in history]),
+        "mem": None if mem is None else _meter(
+            "RAM", mem, _sizes(sample["mem_used"], sample["mem_total"]),
+            [_pct(h.get("mem_used"), h.get("mem_total")) for h in history]),
+    }
+    gpus = [g for g in sample.get("gpus") or [] if _pct(g.get("mem_used"), g.get("mem_total")) is not None]
+    for g in gpus:
+        past = [next((x for x in h.get("gpus") or [] if x.get("index") == g.get("index")), {}) for h in history]
+        m = _meter("VRAM", _pct(g["mem_used"], g["mem_total"]) or 0.0,
+                   _sizes(g["mem_used"], g["mem_total"]), [_pct(x.get("mem_used"), x.get("mem_total")) for x in past])
+        m["gpu"], m["name"] = f"GPU {g.get('index')}", g.get("name") or ""
+        m["util"] = None if not isinstance(g.get("util_pct"), int | float) else f"{g['util_pct']:.0f}%"
+        out["gpus"].append(m)
+    if len(out["gpus"]) > COMPACT_GPUS:  # one row for them all, as hot as the fullest card (a total would hide it)
+        used, total = sum(g["mem_used"] for g in gpus), sum(g["mem_total"] for g in gpus)
+        row = _meter(f"VRAM ×{len(gpus)}", _pct(used, total) or 0.0, _sizes(used, total), [])
+        fullest = max(out["gpus"], key=lambda m: m["pct"])
+        row["level"], row["detail"] = fullest["level"], f"{row['detail']}; fullest {fullest['gpu']} {fullest['value']}"
+        out["vram"] = [row]
+    else:
+        out["vram"] = [{**m, "label": "VRAM" if len(gpus) == 1 else f"VRAM {m['gpu'].removeprefix('GPU ')}",
+                        "spark": None} for m in out["gpus"]]
+    return out
+
+
 def project_tree(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every project, each with its live tasks and the agents on them.
 

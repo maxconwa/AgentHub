@@ -477,7 +477,7 @@ def test_offline_device_shows_last_seen_and_sorts_after_online(hub):
     place(hub, b, "n2", "zzz-box", True, "2026-01-01T00:00:00.000Z")
     assert [d["name"] for d in views.devices(hub.conn())] == ["zzz-box", "aaa-box"]
     html = get(hub, "/ui/devices").text
-    assert "last seen" in html and "ago" in html and "arrive in the devices-and-usage plan" in html
+    assert "last seen" in html and "ago" in html and "CPU, RAM and GPU memory" in html
 
 
 def test_revoked_only_device_hidden_and_empty_state(hub):
