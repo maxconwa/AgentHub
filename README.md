@@ -61,6 +61,16 @@ does agenthub; only Tailscale and lingering need `sudo`.
 hub machine and on every agent machine, then restart the hub and each runner.
 The hub migrates its database on start. Mixed versions are not supported.
 
+**0.3.11 archives done tasks, keeps drafts, orders chats projects → agents →
+tasks, and keeps reviews from stalling.** A task in review can be reopened by an
+agent on it (or through a "Reopen task" approval), and one that sits in review
+with no reviewer session running is flagged "stalled" after `[reviews]
+stall_minutes` (hub.toml, default 30, 0 turns it off). Upgrade the agent machines with
+the hub as usual: their 0.3.10 MCP tools work, but can't ask `list_tasks` for
+archived tasks and don't describe reopening. Migration 28
+only adds a column; 29 keeps every column and row and only widens the approvals
+CHECK.
+
 **0.3.10 adds device usage stats and messages to every agent on a device.**
 Upgrade the runners with the hub: a 0.3.9.1 runner sends no stats, and it
 doesn't know device messages. Migration 26 only adds; 27 keeps every column
@@ -120,9 +130,12 @@ from any `runner.toml`, before you install 0.3.9.1. Device chats stay in the
 database, titled by node id under 0.3.9.1.
 [docs/rollback-0.3.9.1.md](docs/rollback-0.3.9.1.md) has the steps.
 
-**Rolling back from 0.3.11 to 0.3.10:** nothing to do first. 0.3.10 ignores the
-archive and lists done tasks again, and 0.3.11 archives what was marked done in
-the meantime when it next starts. [docs/rollback-0.3.10.md](docs/rollback-0.3.10.md) has the details.
+**Rolling back from 0.3.11 to 0.3.10:** remove the `[reviews]` table from
+hub.toml first (0.3.10 refuses to start with it), and decide any pending "Reopen
+task" approval, which 0.3.10 ignores. Migrations 28 and 29 keep every row, so
+0.3.10 runs on the database as it is. 0.3.10 lists done tasks again, and 0.3.11
+archives what was marked done in the meantime when it next starts.
+[docs/rollback-0.3.10.md](docs/rollback-0.3.10.md) has the details.
 
 ## Setup
 
