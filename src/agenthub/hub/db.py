@@ -632,6 +632,13 @@ MIGRATIONS: list[str] = [
     DROP TABLE chats;
     ALTER TABLE chats_v27 RENAME TO chats;
     """,
+    # 28: archived tasks (0.3.11, task #46): a task is archived when it's marked done, and the at-a-glance lists leave
+    # it out. Tasks already done are archived as of their last move. Additive: an older hub ignores the column.
+    """
+    ALTER TABLE tasks ADD COLUMN archived_at TEXT;
+    UPDATE tasks SET archived_at = updated_at WHERE state = 'done';
+    CREATE INDEX IF NOT EXISTS tasks_archived ON tasks(archived_at) WHERE archived_at IS NOT NULL;
+    """,
 ]
 
 

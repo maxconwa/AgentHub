@@ -363,6 +363,10 @@ def create_app(state: HubState) -> FastAPI:
             added = chats.backfill(conn)
         if added:
             log.info("copied %d earlier messages, prompts, approvals and questions into chats", added)
+        with db.transaction(conn):  # tasks an older hub marked done while rolled back
+            archived = tasks.archive_done(conn)
+        if archived:
+            log.info("archived %d done tasks", archived)
         conn.close()
         state.bus.start()
         try:
@@ -665,10 +669,12 @@ def create_app(state: HubState) -> FastAPI:
     @app.get(f"{api}/projects/{{project}}/tasks")
     def list_tasks(
         project: str, caller: Caller, conn: Conn, state: str | None = None, mine: bool = False,
+        include_archived: bool = False,
     ) -> dict[str, Any]:
         project = require_project(caller, project)
         member_id = caller.agent.id if mine else None
-        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=member_id)}
+        return {"tasks": tasks.list_tasks(conn, projects=[project], state=state, agent=member_id,
+                                          include_archived=include_archived)}
 
     @app.post(f"{api}/projects/{{project}}/tasks", status_code=201)
     def create_task(project: str, body: CreateTaskRequest, caller: Caller, conn: Conn) -> dict[str, Any]:

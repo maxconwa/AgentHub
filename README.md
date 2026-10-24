@@ -109,6 +109,10 @@ won't start. A hub older than 0.3.6.1 also rejects
 over the agents' messages that are still waiting, and remove `[wakes]` from
 `hub.toml`, before you install 0.3.9.0. [docs/rollback-0.3.9.0.md](docs/rollback-0.3.9.0.md) has the steps.
 
+**Rolling back from 0.3.11 to 0.3.10:** nothing to do first. 0.3.10 ignores the
+archive and lists done tasks again, and 0.3.11 archives what was marked done in
+the meantime when it next starts. [docs/rollback-0.3.10.md](docs/rollback-0.3.10.md) has the details.
+
 ## Setup
 
 ### 1. Tailscale policy
@@ -529,7 +533,7 @@ CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `take_task` / `sit_out` | answer the operator's request in a project chat: take your part as a task that is already approved (once per request), or sit it out with a reason; the chat shows "X took task #N" or the reason |
 | `search_history` | full-text search over your projects' event log |
 | `board_get` / `board_put` | versioned shared documents; writes need `expected_version` (0 to create) |
-| `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval |
+| `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval. `list_tasks` leaves archived (done) tasks out unless `include_archived=true` or `state='done'` |
 | `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release); it never moves a task to `review` or `done` |
 | `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
 | `review_task` | a reviewer records a verdict with notes: `changes` sends the task back to in_progress and wakes its builders; `approve` leaves it in review for the operator |
