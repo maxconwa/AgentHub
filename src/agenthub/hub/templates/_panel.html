@@ -1,4 +1,4 @@
-{% from "_macros.html" import chip, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, agent_wakes, task_review_lines %}
+{% from "_macros.html" import chip, stall, agent_text, avatar, task_title, approval_summary, approval_details, open_attrs, agent_wakes, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {% from "_meters.html" import usage_full with context %}
 {#- The slide-in panel (GET /ui/panel?item=...), loaded into <aside id="panel"> by app.js. An agent's, task's or
@@ -32,7 +32,7 @@
     {{ agent_wakes(ag, next, csrf, 'panel', item) }}</div></div>
 <details class="pfacts"><summary>Details</summary>
   <dl class="facts">
-    <dt>Tasks</dt><dd>{% for t in ag.tasks %}<div class="ptask"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}
+    <dt>Tasks</dt><dd>{% for t in ag.tasks %}<div class="ptask"><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}{{ stall(t) }}
       <dl class="agent-facts"><dt>Project</dt><dd><a {{ open_attrs('project:' ~ t.project, project_url(t.project)) }}>{{ t.project }}</a></dd>{% if t.role %}<dt>Role</dt><dd>{{ t.role }}</dd>{% endif %}<dt>Stage</dt><dd>{{ t.stage }}</dd></dl></div>
       {% else %}No current task{% endfor %}</dd>
     <dt>Device</dt><dd>{% if ag.status != 'revoked' %}<a {{ open_attrs('device:' ~ ag.device_node_id, '/ui/devices/' ~ ag.device_node_id|urlencode) }}>{{ ag.device }}</a>{% else %}{{ ag.device }}{% endif %}</dd>
@@ -46,7 +46,7 @@
 
 {% elif kind == 'task' %}
 <div class="dhead chat-head"><span class="group-icon g-task" aria-hidden="true">#</span>
-  <div class="info"><div class="kicker">task #{{ t.id }} · {{ chip(t.state) }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2>
+  <div class="info"><div class="kicker">task #{{ t.id }} · {{ chip(t.state) }}{{ stall(t) }}</div><h2 id="panel-title">{{ task_title(t, names) }}</h2>
     {{ task_review_lines(t, names) }}</div></div>
 <details class="pfacts"><summary>Details · {{ t.agents | length }} agent{{ '' if t.agents | length == 1 else 's' }}</summary>
   <dl class="facts">
@@ -68,7 +68,7 @@
   {% if project.description %}<div class="muted small md">{{ project.description|md }}</div>{% endif %}
   <h4>Live tasks</h4>
   <ul class="tlinks">
-    {% for t in tasks %}<li><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}</li>
+    {% for t in tasks %}<li><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a> {{ chip(t.state) }}{{ stall(t) }}</li>
     {% else %}<li class="small-line">No live tasks</li>{% endfor %}
   </ul>
 </details>

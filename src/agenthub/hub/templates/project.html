@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chip, avatar, task_title, open_attrs, task_review_lines %}
+{% from "_macros.html" import chip, stall, avatar, task_title, open_attrs, task_review_lines %}
 {% from "_chat.html" import chat with context %}
 {% from "_reports.html" import report_table %}
 {% block title %}{{ project.name }}{% endblock %}
@@ -39,7 +39,7 @@
 {% if not tasks %}<p class="empty">No live tasks.</p>{% endif %}
 {% for t in tasks %}
 <div class="task-row">
-  <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}</div>
+  <div class="row"><span><a {{ open_attrs('task:' ~ t.id, '/ui/tasks/' ~ t.id) }}>#{{ t.id }} {{ task_title(t, names) }}</a></span>{{ chip(t.state) }}{{ stall(t) }}</div>
   {{ task_review_lines(t, names) }}
   {% for m in t.agents %}
   <div class="member">{{ avatar(m.avatar, 32) }}<div class="who"><a {{ open_attrs('agent:' ~ m.agent_id, '/ui/agents/' ~ m.agent_id) }}><strong>{{ m.name }}</strong></a>{% if m.role %} — {{ m.role }}{% endif %}
