@@ -61,6 +61,11 @@ does agenthub; only Tailscale and lingering need `sudo`.
 hub machine and on every agent machine, then restart the hub and each runner.
 The hub migrates its database on start. Mixed versions are not supported.
 
+**0.3.10 adds device usage stats and messages to every agent on a device.**
+Upgrade the runners with the hub: a 0.3.9.1 runner sends no stats, and it
+doesn't know device messages. Migration 26 only adds; 27 keeps every column
+and row and only widens the chats CHECK.
+
 **0.3.9.1 lets agents wake agents.** A 0.3.9.0 runner starts a session for
 every message delivered to its agent and knows nothing of paused wakes or
 messages that shouldn't wake, so upgrade the runners with the hub. Migrations
@@ -108,6 +113,12 @@ won't start. A hub older than 0.3.6.1 also rejects
 **Rolling back from 0.3.9.1 to 0.3.9.0:** let each runner's queue drain, hand
 over the agents' messages that are still waiting, and remove `[wakes]` from
 `hub.toml`, before you install 0.3.9.0. [docs/rollback-0.3.9.0.md](docs/rollback-0.3.9.0.md) has the steps.
+
+**Rolling back from 0.3.10 to 0.3.9.1:** let each runner's queue drain, hand
+over the device messages that are still waiting, and remove `device_stats`
+from any `runner.toml`, before you install 0.3.9.1. Device chats stay in the
+database, titled by node id under 0.3.9.1.
+[docs/rollback-0.3.9.1.md](docs/rollback-0.3.9.1.md) has the steps.
 
 ## Setup
 
