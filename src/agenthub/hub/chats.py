@@ -184,14 +184,19 @@ def _names(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
     return {r["id"]: r["name"] for r in rows}
 
 
-def overview(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def overview(conn: sqlite3.Connection, *, include_archived: bool = False) -> list[dict[str, Any]]:
     """Every chat with a message: ``{id, kind, ref, project, title, last_ts, unread}``, the latest first. ``unread``
-    counts what agents and the hub wrote (not tool lines or statuses) past the operator's read mark."""
+    counts what agents and the hub wrote (not tool lines or statuses) past the operator's read mark. An archived
+    task's chat is left out unless ``include_archived`` (so its unread messages don't count toward a badge either)."""
+    archived = "" if include_archived else (
+        "WHERE NOT (c.kind = 'task' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = CAST(c.ref AS INTEGER) "
+        "AND t.archived_at IS NOT NULL)) ")
     rows = conn.execute(
         "SELECT c.id, c.kind, c.ref, c.project, MAX(m.created_at) AS last_ts, "
         "SUM(CASE WHEN m.id > c.operator_read_id AND m.author NOT LIKE 'human:%' "
         "AND m.kind IN ('text', 'took_task', 'sit_out', 'approval', 'question') THEN 1 ELSE 0 END) AS unread "
-        "FROM chats c JOIN chat_messages m ON m.chat_id = c.id GROUP BY c.id ORDER BY last_ts DESC, c.id DESC")
+        "FROM chats c JOIN chat_messages m ON m.chat_id = c.id " + archived +
+        "GROUP BY c.id ORDER BY last_ts DESC, c.id DESC")
     return [dict(r) | {"title": chat_title(conn, r["kind"], r["ref"])} for r in rows]
 
 

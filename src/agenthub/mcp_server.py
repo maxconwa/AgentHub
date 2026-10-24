@@ -214,7 +214,8 @@ def _format_task(t: dict[str, Any], *, with_body: bool = False) -> str:
     who = untrusted.author_label(t.get("created_by"), t.get("created_by_name"))
     # Roles are written by the operator only, so they sit outside the untrusted block.
     members = ", ".join(f"{m['name']} ({m['role']}, {m['stage']})" for m in t.get("agents") or []) or "none"
-    header = f"task #{t['id']} [{t['state']}] project={t['project']} agents (roles set by the operator): {members} budget={t['budget']}"
+    state = f"{t['state']}, archived" if t.get("archived_at") else t["state"]
+    header = f"task #{t['id']} [{state}] project={t['project']} agents (roles set by the operator): {members} budget={t['budget']}"
     text = t["title"] + ("\n\n" + t["body"] if with_body and t.get("body") else "")
     return header + "\n" + untrusted.wrap(text, author=who, kind="task", id=t["id"])
 
@@ -435,11 +436,19 @@ def build_server(client_factory: Callable[[], HubClient], *, poll_seconds: float
         return f"Wrote {project}:{r['key']} version {r['version']}."
 
     @server.tool()
-    async def list_tasks(project: str, state: str | None = None, mine: bool = False) -> str:
-        """List tasks in a project, optionally filtered by state or to tasks assigned to you."""
-        rows = await call(lambda c: c.list_tasks(project, state=state, mine=mine))
+    async def list_tasks(
+        project: str, state: str | None = None, mine: bool = False, include_archived: bool = False,
+    ) -> str:
+        """List tasks in a project, optionally filtered by state or to tasks assigned to you.
+
+        A task is archived once it is done, and archived tasks are left out unless include_archived=true.
+        An explicit state='done' lists them too: every archived task is a done one.
+        """
+        rows = await call(lambda c: c.list_tasks(project, state=state, mine=mine, include_archived=include_archived))
         if not rows:
-            return "No matching tasks."
+            hidden = not include_archived and state != "done"
+            return "No matching tasks." + (" Archived (done) tasks are hidden: include_archived=true lists them."
+                                           if hidden else "")
         return "\n\n".join([untrusted.NOTICE, *(_format_task(t) for t in rows)])
 
     @server.tool()

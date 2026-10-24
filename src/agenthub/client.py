@@ -193,10 +193,14 @@ class HubClient:
 
     # --- tasks -----------------------------------------------------------------
 
-    async def list_tasks(self, project: str, state: str | None = None, mine: bool = False) -> list[dict[str, Any]]:
+    async def list_tasks(
+        self, project: str, state: str | None = None, mine: bool = False, include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"mine": mine}
         if state:
             params["state"] = state
+        if include_archived:  # only when asked, so the runner's polls look as they did to an older hub
+            params["include_archived"] = True
         return (await self._request("GET", f"/projects/{quote(project)}/tasks", params=params))["tasks"]
 
     async def create_task(
