@@ -481,6 +481,7 @@ def approvals_reject(approval_id: int, note: str = "") -> None:
 def tasks_list(
     project: Annotated[str | None, typer.Option()] = None,
     state: Annotated[str | None, typer.Option()] = None,
+    archived: Annotated[bool, typer.Option(help="Include archived (done) tasks.")] = False,
 ) -> None:
     from agenthub.hub import store, tasks
 
@@ -488,7 +489,7 @@ def tasks_list(
     try:
         # names ignore case: --project Golem lists project golem's tasks
         projects = [store.project_name(conn, project) or project] if project else None
-        rows = tasks.list_tasks(conn, projects=projects, state=state)
+        rows = tasks.list_tasks(conn, projects=projects, state=state, include_archived=archived)
     except store.StoreError as exc:
         _fail(str(exc))
     for t in rows:

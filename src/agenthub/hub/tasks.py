@@ -9,6 +9,7 @@ knows the legal moves and who may make them:
                   rejected                                  ▼   │            ▼  changes requested)
                                                           blocked         in_progress
   Any non-terminal state ──▶ cancelled (operator only).
+  Moving to done archives a task (``archived_at``): the at-a-glance lists leave it out, its page and chat stay.
 
 Roles:
   agent     a ``works`` member of the task (claiming an unstaffed task joins it); may not
@@ -126,7 +127,10 @@ def list_tasks(
     agent: str | None = None,
     limit: int = 100,
     newest_first: bool = False,
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
+    """Tasks, oldest first (``newest_first`` reverses it). Archived tasks are left out unless ``include_archived`` or
+    an explicit ``state='done'`` (every archived task is done, so that filter would otherwise never match)."""
     sql = _SELECT + "WHERE 1 = 1 "
     params: list[Any] = []
     if projects is not None:
@@ -139,12 +143,31 @@ def list_tasks(
             raise Invalid(f"unknown task state {state!r}")
         sql += "AND t.state = ? "
         params.append(state)
+    if not include_archived and state != "done":
+        sql += "AND t.archived_at IS NULL "
     if agent is not None:
         sql += "AND EXISTS (SELECT 1 FROM task_agents ta WHERE ta.task_id = t.id AND ta.agent_id = ?) "
         params.append(agent)
     sql += "ORDER BY t.id DESC LIMIT ?" if newest_first else "ORDER BY t.id LIMIT ?"
     params.append(limit)
     return [_row(conn, r) for r in conn.execute(sql, params)]
+
+
+def archive_done(conn: sqlite3.Connection) -> int:
+    """Archive done tasks that aren't yet, as of their last move; returns how many. Migration 28 does this once; the
+    hub runs it at every start too, for tasks an older hub (which ignores ``archived_at``) marked done while rolled
+    back."""
+    return conn.execute(
+        "UPDATE tasks SET archived_at = updated_at WHERE state = 'done' AND archived_at IS NULL").rowcount
+
+
+def archived_tasks(conn: sqlite3.Connection, agent_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    """The archived tasks ``agent_id`` is on (either stage), the most recently archived first, for its agent page."""
+    rows = conn.execute(
+        _SELECT + "WHERE t.archived_at IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM task_agents ta WHERE ta.task_id = t.id AND ta.agent_id = ?) "
+        "ORDER BY t.archived_at DESC, t.id DESC LIMIT ?", (agent_id, limit))
+    return [_row(conn, r) for r in rows]
 
 
 def create_task(
@@ -246,10 +269,11 @@ def transition(
         for m in task["agents"]:  # operator unclaim: implementers leave, reviewers stay
             if m["stage"] == "works":
                 task_agents.remove_agent(conn, task_id, m["agent_id"], actor=actor, advance=False)
-    cur = conn.execute(
-        "UPDATE tasks SET state = ?, updated_at = ?, last_note = ?, last_moved_by = ? "
+    ts = now_iso()
+    cur = conn.execute(  # done archives the task; any other state un-archives it
+        "UPDATE tasks SET state = ?, updated_at = ?, last_note = ?, last_moved_by = ?, archived_at = ? "
         "WHERE id = ? AND state = ?",
-        (new_state, now_iso(), note, actor, task_id, current),
+        (new_state, ts, note, actor, ts if new_state == "done" else None, task_id, current),
     )
     if cur.rowcount == 0:
         raise Conflict(f"task {task_id} changed concurrently; re-read and retry")

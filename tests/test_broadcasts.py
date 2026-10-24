@@ -78,8 +78,8 @@ def box(hub):
 
 def test_migration_widens_chats_with_device_and_keeps_every_row(tmp_path, monkeypatch):
     path = tmp_path / "hub.sqlite3"
-    newest = list(db.MIGRATIONS)
-    monkeypatch.setattr(db, "MIGRATIONS", newest[:-1])
+    newest = list(db.MIGRATIONS)[:27]  # only 27: later migrations may change other tables
+    monkeypatch.setattr(db, "MIGRATIONS", newest[:26])
     conn = db.init_db(path)  # the database before this migration, with a chat and a message in it
     with db.transaction(conn):
         store.ensure_project(conn, "proj", actor=OPERATOR)
