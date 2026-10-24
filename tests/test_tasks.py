@@ -48,8 +48,8 @@ def test_terminal_states_have_no_exits():
 
 @pytest.mark.parametrize("current,new", [
     ("review", "done"), ("awaiting_approval", "open"), ("open", "in_progress"),
-    ("in_progress", "cancelled"), ("review", "in_progress"), ("proposed", "awaiting_approval"),
-])
+    ("in_progress", "cancelled"), ("proposed", "awaiting_approval"),
+])  # review → in_progress is a reopen since 0.3.11 (tests/test_stalled_reviews.py)
 def test_agent_forbidden_moves(current, new):
     with pytest.raises((store.Forbidden, store.Conflict)):
         tasks.check_transition(current, new, "agent")

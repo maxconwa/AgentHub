@@ -176,7 +176,12 @@ def finish(
     conn: sqlite3.Connection, task_id: int, agent: Agent, *, note: str = "", device: str | None = None
 ) -> dict[str, Any]:
     """An implementer says its part is done. When every *active* implementer has,
-    the hub moves the task to ``review``; revoked or pending ones do not block it."""
+    the hub moves the task to ``review``; revoked or pending ones do not block it, and
+    its reviewers are woken with this note (:func:`wake_reviewers`).
+
+    A reviewer finishing a task of its own (a review task, as #39 was) without having recorded any verdict since the
+    task last entered in_progress still finishes, but the result carries ``warning: "no_verdict"`` and the task chat
+    gets a status line saying so (:func:`missing_verdict`)."""
     task = _state_membership(conn, task_id, agent, "works", "in_progress")
     conn.execute(
         "UPDATE task_agents SET finished_at = COALESCE(finished_at, ?), finish_note = ? "
@@ -189,7 +194,47 @@ def finish(
         payload={"task_id": task_id, "agent_id": agent.id, "note": note,
                  "agents": [m["agent_id"] for m in fresh["agents"]]},
     )
-    return maybe_advance(conn, task_id, actor=agent.id)
+    warning = missing_verdict(conn, task, agent)
+    fresh = maybe_advance(conn, task_id, actor=agent.id)
+    if fresh["state"] == "review":
+        wake_reviewers(conn, fresh, agent, note)
+        fresh = tasks.get_task(conn, task_id)
+    return {**fresh, "warning": warning} if warning else fresh
+
+
+def is_reviewer(conn: sqlite3.Connection, project: str, agent_id: str) -> bool:
+    """Whether ``agent_id`` reviews in ``project``: one of its project reviewers, or a ``reviews`` member of one of
+    its tasks."""
+    return conn.execute(
+        "SELECT 1 FROM project_reviewers WHERE project = ? AND agent_id = ? UNION ALL "
+        "SELECT 1 FROM task_agents ta JOIN tasks t ON t.id = ta.task_id "
+        "WHERE t.project = ? AND ta.agent_id = ? AND ta.stage = 'reviews' LIMIT 1",
+        (project, agent_id, project, agent_id)).fetchone() is not None
+
+
+def missing_verdict(conn: sqlite3.Connection, task: dict[str, Any], agent: Agent) -> str | None:
+    """``"no_verdict"`` when ``agent``, a reviewer in the task's project, finishes its part of ``task`` having recorded
+    no verdict (``review_task``, on any task) since the task last entered in_progress, and the task chat says so;
+    else None. That is how #39 went to review before anything had been reviewed."""
+    if not is_reviewer(conn, task["project"], agent.id):
+        return None
+    entered = conn.execute(
+        "SELECT MAX(ts) FROM events WHERE type = 'task.transitioned' AND json_extract(payload, '$.task_id') = ? "
+        "AND json_extract(payload, '$.to') = 'in_progress'", (task["id"],)).fetchone()[0] or task["created_at"]
+    if conn.execute("SELECT 1 FROM events WHERE type = 'task.verdict' AND actor = ? AND ts >= ? LIMIT 1",
+                    (agent.id, entered)).fetchone():
+        return None
+    warn(conn, task["id"], agent, "no_verdict")
+    return "no_verdict"
+
+
+def warn(conn: sqlite3.Connection, task_id: int, agent: Agent, warning: str) -> None:
+    """A hub status line in the task chat warning about ``agent`` (``meta.warning``: ``no_verdict``)."""
+    from agenthub.hub import chats
+
+    chats.hub_status(conn, chats.chat(conn, "task", str(task_id)),
+                     {"state": warning, "warning": warning, "task_id": task_id, "agent_id": agent.id,
+                      "agent_name": agent.name})
 
 
 def record_verdict(
@@ -241,6 +286,21 @@ def wake_builders(conn: sqlite3.Connection, task: dict[str, Any], reviewer: Agen
     # route, but that is bounded here by the task's builders
     for m in builders:
         chats.post(conn, reviewer, "task", str(task["id"]), body, to=m["agent_id"], meta=meta)
+
+
+def wake_reviewers(conn: sqlite3.Connection, task: dict[str, Any], builder: Agent, note: str) -> None:
+    """``builder``'s finish moved ``task`` to review (0.3.11): its active reviewers are woken with the finish note, by
+    the builder's message in the task chat addressed to each, the mirror of :func:`wake_builders`. A hand-off never
+    goes silent, and it keeps wake chains, loop protection and the pause switches (:func:`chats.post`)."""
+    from agenthub.hub import chats
+
+    reviewers = [m for m in task["agents"] if m["stage"] == "reviews" and m["status"] == "active"]
+    if not reviewers:
+        return
+    body = (f"Task #{task['id']} is ready for review: every implementer has finished.\n\n"
+            + (note.strip() or "(no note)"))[:chats.MAX_BODY_CHARS]
+    for m in reviewers:
+        chats.post(conn, builder, "task", str(task["id"]), body, to=m["agent_id"], meta={"handoff": True})
 
 
 def pause(

@@ -560,10 +560,10 @@ CLI: `agenthub hub approvals|tasks|agents|project ...`.
 | `search_history` | full-text search over your projects' event log |
 | `board_get` / `board_put` | versioned shared documents; writes need `expected_version` (0 to create) |
 | `list_tasks` / `create_task` / `claim_task` | tasks; agent-created tasks wait for approval. `list_tasks` leaves archived (done) tasks out unless `include_archived=true` or `state='done'` |
-| `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release); it never moves a task to `review` or `done` |
-| `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` |
+| `update_task` | an agent on the task sets it to `blocked`, `in_progress` or `open` (release), or reopens it from `review` to `in_progress` (any agent on it, implementer or reviewer); it never moves a task to `review` or `done` |
+| `finish_task` | an implementer says its part is done; when every active implementer has, the hub moves the task to `review` and wakes its reviewers with the note |
 | `review_task` | a reviewer records a verdict with notes: `changes` sends the task back to in_progress and wakes its builders; `approve` leaves it in review for the operator |
-| `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through |
+| `request_approval` / `wait_for_approval` / `discuss_approval` | ask the operator, wait, and talk it through; kinds: `command`, `task_reassign`, `budget_exceeded`, `task_reopen` (send a task in review back to `in_progress`) |
 | `message_operator` | write to the operator in your own chat (the same as `chat_post(chat='me')`); no other agent sees it |
 | `ask_operator` / `get_question` | ask the operator a question and carry on; it shows as a card in the chat, the answer arrives in your inbox as the operator's message, and `get_question` looks it up |
 | `publish_report` / `list_reports` | publish a report for the operator (a Claude page link, or a self-contained HTML file), or revise one with `report_id`; list a project's reports |
@@ -617,6 +617,54 @@ change roles. Each agent is in one **stage**:
   task chat reaches each of them, and each builder's runner resumes its task
   session with the notes. `approve` leaves the task in `review`. Only you mark
   a task `done`.
+
+**The review flow, and how it can't stall** (0.3.11). Review tasks #39 and #44
+stalled because three things lined up. Each review task finished before
+anything was ready to review. The builders' hand-offs in task chats weren't
+addressed to anyone, so they woke nobody. And no agent could take a task back
+out of `review`. Each of those is now covered:
+
+- **Hand-offs wake the task.** When the last implementer's `finish_task`
+  moves a task to `review`, the hub posts that implementer's note in the task
+  chat, addressed to each active reviewer, and that wakes them. While the task
+  is in `review`, a message in its chat that isn't addressed to anyone (no
+  `to`, no @mention) from any agent on the task wakes every *other* agent on
+  it, implementers and reviewers alike, never its author. An implementer that
+  finished too early is woken that way too. Agents that aren't on the task
+  still can't write in its chat. Both are ordinary agent wakes, so wake chains,
+  loop protection, the pause switches and rate limits all apply
+  ([Agents wake agents](#agents-wake-agents)).
+- **Finishing without a verdict warns.** An agent that reviews in the project
+  (one of its project reviewers, or a `reviews` member of one of its tasks) and
+  finishes its own task without having recorded any `review_task` verdict since
+  that task last entered `in_progress` still finishes. But `finish_task` returns
+  the warning `no_verdict`, and the task chat shows "X finished task #N without
+  recording a review verdict". That is how #39 went to review before anything
+  had been reviewed. A `reviews` member whose task session ends without a
+  verdict gets the same line.
+- **Reopening.** Any agent on a task in `review`, implementer or reviewer, may
+  reopen it: `update_task(state='in_progress', note=...)`. Its implementers'
+  runners then resume their task sessions with the note. That starts a new
+  round, just like a send-back. Every implementer's finish and every verdict is
+  cleared, so the task returns to `review` only when every implementer has
+  finished again, and no check is skipped. The task chat shows "X reopened task
+  #N", with the agent's note marked as agent text. A reopen needs an active
+  implementer on the task. An agent that isn't on the task, or a task with no
+  implementer left, asks you instead with a `task_reopen` approval (details:
+  `task_id`). Approving it reopens the task, if it is still in `review`.
+- **Stalled reviews show.** A task is flagged as a stalled review once it has
+  been in `review` for `stall_minutes` with no verdict and no reviewer
+  session running: no task run, and no session woken by its chat. The flag says
+  "no reviewer" when the task has no active reviewer (its project has none, or
+  they're all on it as implementers), and "idle" when it has reviewers but none
+  is working. A verdict clears it. `approve` leaves the task with you, and that
+  isn't a stall. Task rows on the dashboard carry it as `stalled_review`
+  (`{since, minutes, reason}`), and `agenthub doctor` warns with the task ids.
+
+  ```toml
+  [reviews]
+  stall_minutes = 30   # the default; 0 turns the flag off
+  ```
 
 **Reviewers are always there.** On a project's page you mark some of its
 agents as the project's reviewers. A task that enters `review` with no active
@@ -725,7 +773,15 @@ writing to it. Nothing else an agent does starts anything.
   idle recipient, and a busy one gets it in its running session. A task or
   project chat message addressed to nobody reaches everyone, in a running
   session or through `read_inbox`, but wakes nobody, so chatter doesn't start
-  sessions.
+  sessions. There's one exception (0.3.11): in the chat of a task in `review`,
+  a message addressed to nobody is a hand-off, and it wakes every other agent
+  on the task ([Roles and stages](#roles-and-stages)).
+- **Your own sessions don't hear you.** A message never reaches its author, so
+  a post from an agent's chat or project session doesn't reach that agent's own
+  running task session, even in the task's chat. To hand something from one of
+  an agent's sessions to its own task session, use the task itself: reopen it
+  with an `update_task` note, or record a `review_task` verdict, and its runner
+  resumes the task session with that note.
 - **Where the woken agent works.** A task chat message resumes that task's
   session. A project chat message wakes it in that project's checkout. A direct
   message wakes its own chat session, in its own checkout.
@@ -895,7 +951,9 @@ way.
   Since 0.3.9.1 agents may start work too, within limits. An agent's message
   wakes the agents it is addressed to ([Agents wake agents](#agents-wake-agents)),
   and a reviewer's `changes` verdict sends its task back to `in_progress` and
-  wakes its builders. That is all an agent can start. The woken agent works
+  wakes its builders. Since 0.3.11 a hand-off in the chat of a task in `review`
+  wakes the task's other agents, and an agent on a task may reopen it from
+  `review`, after which it must be finished again. That is all an agent can start. The woken agent works
   only in its own allowed projects: the hub checks this and its runner checks
   again. It reads the message as another agent's request, which it may
   decline, never as yours. You can pause wakes for one agent or for the whole

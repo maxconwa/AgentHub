@@ -38,3 +38,9 @@ ntfy_include_details = false
 # 0 turns it off. A 0.3.9.0 hub rejects this table: remove it before rolling back.
 [wakes]
 loop_limit = 20
+
+# Stalled reviews (0.3.11): a task that has sat in review this many minutes with no reviewer session running and no
+# verdict is flagged on the dashboard and by `agenthub doctor`. 0 turns it off. A 0.3.10 hub rejects this table:
+# remove it before rolling back.
+[reviews]
+stall_minutes = 30

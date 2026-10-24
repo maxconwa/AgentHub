@@ -34,7 +34,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from agenthub.config import DEFAULT_WAKE_LOOP_LIMIT
-from agenthub.hub import db, events
+from agenthub.hub import db, events, stalls
 from agenthub.hub.dashboard import Conn, Op, PostOp  # the dashboard's operator checks
 from agenthub.hub.db import now_iso
 from agenthub.hub.store import Agent, Forbidden, NotFound, find_agent
@@ -42,7 +42,7 @@ from agenthub.hub.store import Agent, Forbidden, NotFound, find_agent
 SYSTEM = "system:hub"
 CHAIN_TTL = timedelta(hours=2)
 # Status lines only the hub writes (a runner's stream may not: it could forge "X woke Y").
-HUB_STATES = ("woke", "wake_declined", "loop_paused", "loop_resumed")
+HUB_STATES = ("woke", "wake_declined", "loop_paused", "loop_resumed", "reopened", "no_verdict")
 DECLINE_REASONS = ("not_in_project", "not_in_chat", "pending", "revoked")
 # What an agent does that counts as its chain landing: real progress, or an answer (checked in events.emit).
 LANDING_EVENTS = events.LANDING_EVENTS
@@ -296,7 +296,7 @@ def records(conn: sqlite3.Connection, *, agent_id: str | None = None, chain_id: 
              "notice": not r["wake"], "operator": r["author"].startswith("human:")} for r in rows]
 
 
-AWAKE_STATES = ("started", "working", "queued", "approval_wait")
+AWAKE_STATES = stalls.AWAKE_STATES  # a status line's states while its session runs
 
 
 def awake(conn: sqlite3.Connection, agent_id: str) -> bool:

@@ -343,6 +343,31 @@ def check_litestream() -> Check:
                  "see docs/backup.md")
 
 
+STALLED_SHOWN = 10  # task ids named in the stalled-reviews warning; the rest are counted
+
+
+def check_stalled_reviews(conn: sqlite3.Connection, minutes: int, *, now: Any = None) -> Check:
+    """Tasks that have sat in review ``minutes`` with no reviewer session and no verdict (:mod:`agenthub.hub.stalls`;
+    ``[reviews] stall_minutes`` in hub.toml, 0 = off)."""
+    from agenthub.hub import stalls
+
+    if minutes <= 0:
+        return Check("stalled reviews", OK, "off ([reviews] stall_minutes = 0)")
+    try:
+        found = stalls.stalled_reviews(conn, minutes=minutes, now=now)
+    except sqlite3.Error as exc:
+        return Check("stalled reviews", WARN, f"could not check: {exc}")
+    if not found:
+        return Check("stalled reviews", OK, f"none in review over {minutes} min without a reviewer")
+    ids = sorted(found)
+    named = ", ".join(f"#{i}" + (" (no reviewer)" if found[i]["reason"] == "no_reviewer" else "")
+                      for i in ids[:STALLED_SHOWN])
+    more = f" and {len(ids) - STALLED_SHOWN} more" if len(ids) > STALLED_SHOWN else ""
+    return Check("stalled reviews", WARN,
+                 f"{len(ids)} task(s) in review over {minutes} min with no reviewer session or verdict: {named}{more}. "
+                 "Reopen one (an agent on it, or a task_reopen approval), set the project's reviewers, or mark it done")
+
+
 def hub_checks(run: Runner = run_cmd) -> list[Check]:
     import ipaddress
 
@@ -370,9 +395,11 @@ def hub_checks(run: Runner = run_cmd) -> list[Check]:
     if db_path.exists():
         out.append(check_private(db_path, "database", 0o600))
         conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
         try:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            stalled = check_stalled_reviews(conn, cfg.review_stall_minutes)
         finally:
             conn.close()
         current = len(db.MIGRATIONS)
@@ -382,6 +409,7 @@ def hub_checks(run: Runner = run_cmd) -> list[Check]:
                          journal if journal == "wal" else
                          f"{journal}, not wal: the hub and Litestream both need WAL; the hub sets it when it "
                          "opens the database, so is something else (a copy, a restore) replacing the file?"))
+        out.append(stalled)
     else:
         out.append(Check("database", WARN, f"{db_path} not created yet (run `agenthub hub init` or start the hub)"))
     out.append(check_litestream())

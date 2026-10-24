@@ -30,6 +30,7 @@ data-fail-key="{{ key }}"{% if failed %} data-failed{% endif %}
 {%- elif a.kind == 'budget_exceeded' -%}{{ d.limit.replace('_', ' ') }}: {{ d.current }} → {{ d.extend_to }}
 {%- elif a.kind == 'agent_enrollment' -%}{{ d.name }} on {{ d.device.name }}
 {%- elif a.kind == 'task_reassign' -%}Task #{{ d.task_id }} → {{ d.assignee or 'unassigned' }}
+{%- elif a.kind == 'task_reopen' -%}Reopen task #{{ d.task_id }}: review → in progress
 {%- elif a.kind == 'wake_loop' -%}Wake loop paused: {{ d.wakes }} wakes (limit {{ d.limit }}) among {{ (d.agents or []) | length }} agents
 {%- endif -%}
 {%- endmacro %}

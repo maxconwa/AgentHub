@@ -5,15 +5,16 @@ knows the legal moves and who may make them:
 
   proposed ──▶ awaiting_approval ──▶ open ──▶ claimed ──▶ in_progress ──▶ review ──▶ done
                      │                 ▲         │          │   ▲            │
-                     ▼                 └─────────┴──────────┤   │            │ (operator:
-                  rejected                                  ▼   │            ▼  changes requested)
+                     ▼                 └─────────┴──────────┤   │            │ (reopened: the operator,
+                  rejected                                  ▼   │            ▼  a reviewer, an implementer)
                                                           blocked         in_progress
   Any non-terminal state ──▶ cancelled (operator only).
   Moving to done archives a task (``archived_at``): the at-a-glance lists leave it out, its page and chat stay.
 
 Roles:
   agent     a ``works`` member of the task (claiming an unstaffed task joins it); may not
-            move a task to review: agents finish, and the hub moves it
+            move a task to review: agents finish, and the hub moves it. Any member, ``works`` or
+            ``reviews``, may reopen it (0.3.11): review → in_progress, for its implementers to finish again
   system    the hub itself: in_progress → review once every active implementer finished
   reviewer  a ``reviews`` member whose ``changes`` verdict sends the task back: review → in_progress
             (``task_agents.record_verdict``); ``approve`` never moves a task, only the operator marks it done
@@ -53,6 +54,7 @@ AGENT_MOVES = frozenset({
     ("claimed", "in_progress"), ("claimed", "blocked"), ("claimed", "open"),
     ("in_progress", "blocked"), ("in_progress", "open"),
     ("blocked", "in_progress"), ("blocked", "open"),
+    ("review", "in_progress"),  # a reopen (0.3.11): any member, while an implementer is active to finish it again
 })
 APPROVAL_MOVES = frozenset({("awaiting_approval", "open"), ("awaiting_approval", "rejected")})
 SYSTEM_MOVES = frozenset({("in_progress", "review")})
@@ -249,6 +251,10 @@ def transition(
             raise Invalid("agent role requires the acting agent")
         if new_state == "claimed" and not any(m["stage"] == "works" for m in task["agents"]):
             task_agents.add_agent(conn, task_id, agent.id, role="", stage="works", actor=actor)
+        elif current == "review":  # a reopen: by any member, for its implementers to finish again
+            _require_member(task, agent)
+            if not any(m["stage"] == "works" and m["status"] == "active" for m in task["agents"]):
+                raise Conflict(f"task {task_id} has no active implementer to reopen it for; ask the operator")
         else:
             _require_member(task, agent, "works")
         released = new_state == "open" and current in ("claimed", "in_progress", "blocked")
@@ -277,12 +283,14 @@ def transition(
     )
     if cur.rowcount == 0:
         raise Conflict(f"task {task_id} changed concurrently; re-read and retry")
-    if current == "review" and new_state == "in_progress":  # the operator or a reviewer sent it back
+    if current == "review" and new_state == "in_progress":  # sent back or reopened: a new round
         conn.execute("UPDATE task_agents SET finished_at = NULL WHERE task_id = ? AND stage = 'works'", (task_id,))
         conn.execute(
             "UPDATE task_agents SET verdict = NULL, verdict_notes = '' WHERE task_id = ? AND stage = 'reviews'",
             (task_id,),
         )
+        if role != "reviewer":  # a changes verdict says so in its own messages to the builders
+            _reopened_line(conn, task_id, actor, agent if role == "agent" else None, note)
     if new_state == "review":  # reviewers are always there: the project's, if the task has none
         from agenthub.hub import reviewers
 
@@ -297,6 +305,19 @@ def transition(
         # an unblock may find every remaining implementer already finished
         return task_agents.maybe_advance(conn, task_id, actor=actor)
     return fresh
+
+
+def _reopened_line(conn: sqlite3.Connection, task_id: int, actor: str, agent: Agent | None, note: str) -> None:
+    """The task chat's status line for a reopen (review → in_progress by the operator, an approval or an agent on the
+    task). An agent's note goes in as ``detail``, which the chat shows as agent text."""
+    from agenthub.hub import chats
+
+    meta: dict[str, Any] = {"state": "reopened", "task_id": task_id, "by": actor}
+    if agent is not None:
+        meta |= {"agent_id": agent.id, "agent_name": agent.name}
+        if note:
+            meta["detail"] = note[:chats.MAX_DETAIL_CHARS]
+    chats.hub_status(conn, chats.chat(conn, "task", str(task_id)), meta)
 
 
 def assign(
@@ -436,7 +457,14 @@ def end_run(
     events.emit(conn, type="task.run_ended", actor=agent.id, project=task["project"], device=device,
                 payload={"task_id": task_id, "run_id": run_id, "outcome": outcome, "num_turns": num_turns,
                          "cost_usd": cost_usd, "agents": _member_ids(task)})
-    return usage(conn, task_id, agent.id)  # the ending agent's own consumption
+    found = usage(conn, task_id, agent.id)  # the ending agent's own consumption
+    m = _require_member(get_task(conn, task_id), agent)
+    if outcome == "success" and m["stage"] == "reviews" and task["state"] == "review" and m["verdict"] is None:
+        from agenthub.hub import task_agents  # a reviewer's session ended without its verdict (0.3.11)
+
+        task_agents.warn(conn, task_id, agent, "no_verdict")
+        found["warning"] = "no_verdict"
+    return found
 
 
 def set_run_session(conn: sqlite3.Connection, task_id: int, run_id: int, agent: Agent, session_id: str) -> None:
